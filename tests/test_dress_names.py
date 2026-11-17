@@ -210,6 +210,7 @@ class RowTest(unittest.TestCase):
         self.assertEqual(c["colors"], ["#D8C8BA", "#010203", None, None, None, None])
         self.assertEqual(c["models"], {"Male": [], "Female": ["Female_X_Bottom_02"], "Boy": [], "Girl": ["Infant_X_F_Bottom_02"]})
         self.assertEqual(c["icons"], ("Icons/m.asset", "Icons/f.asset"))
+        self.assertEqual(c["jobs"], [123456])   # 장착 직업 (CombatJob 행 id)
         with self.assertRaises(G.SheetError):   # 패치로 필드가 늘면 행 끝이 안 맞는다
             N.costume_row(G.Reader(b + b"\x00", 0, bytes(t.b)))
 
@@ -227,6 +228,30 @@ class RowTest(unittest.TestCase):
         self.assertEqual(got["icons"], ("TempIconPath", "Icons/x.asset"))
         self.assertEqual(got["colors"][0], "#010203")
         self.assertIsNone(N.equipment_tail(b[:-1], bytes(t.b)))   # 끝이 안 맞으면 쓰지 않는다
+
+
+class JobTest(unittest.TestCase):
+    def test_job_key(self):
+        self.assertEqual(N.job_key("NoviceWarrior"), "Warrior")
+        self.assertEqual(N.job_key("ExpertWarrior"), "HighWarrior")
+        self.assertEqual(N.job_key("GreatSwordWarrior"), "GreatSwordWarrior")
+        self.assertEqual(N.job_key("Novice"), "Novice")
+
+    def test_combat_jobs_and_weapon(self):
+        t = Text()
+        icon = "UI/Sprites/Common/Icon64/Class/Icon64_Class_{}.png"
+        # 앞쪽 필드 길이가 행마다 다르다 — 아이콘 문자열 자리를 찾아 읽는다
+        jobs = [t.s("견습 전사") + fi(0) + t.s("Warrior") + t.s(icon.format("NoviceWarrior")) + t.s("Drawn"),
+                b"\x01\x03" + t.s("대검전사") + fi(123456) + t.s(icon.format("GreatSwordWarrior")),
+                t.s("이름만")]
+        cos = [costume_bytes(t, "로즈 블레이드", kind="Weapon", models={"Male": ["Tool_GreatSword_X"], "Female": ["Tool_GreatSword_X"]}),
+               costume_bytes(t, "로즈 코트", models={"Female": ["Female_Rose_Top_00"]})]
+        sh = make_sheets(t, {"CombatJob": (fi(7) + fi(123456) + fi(9), jobs), "Costume": (fi(1) + fi(2), cos)})
+        self.assertEqual(N.combat_jobs(sh), {7: "Warrior", 123456: "GreatSwordWarrior"})
+        names = N.build(sh)
+        self.assertEqual(names["Tool_GreatSword_X"]["job"], "GreatSwordWarrior")   # 시험 행은 모두 직업 123456
+        self.assertEqual(names["Female_Rose_Top_00"]["job"], "GreatSwordWarrior")
+        self.assertNotIn("job", N.build(make_sheets(t, {"Costume": (fi(1), cos[:1])}))["Tool_GreatSword_X"])   # 직업 시트 없음
 
 
 # ---------------------------------------------------------------- 고르기·모으기

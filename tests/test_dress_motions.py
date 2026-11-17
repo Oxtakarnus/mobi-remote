@@ -41,7 +41,10 @@ PATHS = paths(
     "Customize/HF@Customize_Costume_02_Default_Start", "Customize/HF@Customize_Costume_02_Default_Loop",
     "Customize/HF@Customize_Stand_Start_01_Default",
     "PlayerCommon/_FaceOnly/HF@PlayerCommon_FaceOnly_Grin_Facial",
-) + [C.ANIM + "Female/Battle/HF@Attack.fbx", C.ANIM + "Male/Customize/HM@Customize_Stand_Default.fbx"]
+) + [C.ANIM + "Female/Battle/HF@Attack.fbx", C.ANIM + "Male/Customize/HM@Customize_Stand_Default.fbx",
+      F + "NoviceWarrior/HF@NoviceWarrior_Alert_Stand.fbx", F + "NoviceArcher/HF@NoviceArcher_Alert_Stand.fbx",
+      F + "NoviceArcher/HF@NoviceArcher_Alert_Stand_Fat.fbx", F + "NoviceWarrior/HF@NoviceWarrior_Combat_Stand.fbx",
+      C.ANIM + "Male/GreatSword/HM@GreatSword_Groggy_Start.fbx"]
 
 ROWS = [
     ("PlayerFemale", "Any", "PeaceStand", F + "Stand/Default/HF@Stand_Default_01.fbx"),
@@ -51,7 +54,19 @@ ROWS = [
     ("PlayerFemale", "Any", "BodyDiversityCommonStand", F + "PlayerCommon/HF@PlayerCommon_Stand.fbx"),
     ("PlayerFemale", "Any", "ChairSit", F + "PlayerCommon/_Sit/HF@PlayerCommon_ChairSitting02_Loop.fbx"),
     ("PlayerFemale", "Any", "AlertStand", F + "PlayerCommon/HF@PlayerCommon_Stand_Offensive.fbx"),
-    ("PlayerFemale", "CombatJob:Warrior", "AlertStand", F + "Warrior/HF@NoviceWarrior_Alert_Stand.fbx"),
+    ("PlayerFemale", "CombatJob:Warrior", "AlertStand", F + "NoviceWarrior/HF@NoviceWarrior_Alert_Stand.fbx"),
+    ("PlayerFemale", "CombatJob:HighWarrior", "AlertStand", F + "NoviceWarrior/HF@NoviceWarrior_Alert_Stand.fbx"),
+    ("PlayerFemale", "CombatJob:Archer", "AlertStand", F + "NoviceArcher/HF@NoviceArcher_Alert_Stand.fbx"),
+    ("PlayerFemale", "CombatJob:Archer, BodyType:Fat", "AlertStand", F + "NoviceArcher/HF@NoviceArcher_Alert_Stand_Fat.fbx"),
+    ("PlayerFemale", "CombatJob:Mage", "AlertStand", F + "NoviceMage/HF@NoviceMage_Alert_Stand.fbx"),   # 파일 없음
+    ("PlayerFemale", "Additional:SwordMaster_SwiftPosture, CombatJob:SwordMaster", "AlertStand",
+     F + "NoviceWarrior/HF@NoviceWarrior_Combat_Stand.fbx"),                                            # 덧붙은 갈래는 뺀다
+    ("PlayerFemale", "Any", "CombatStand", F + "PlayerCommon/HF@PlayerCommon_Stand_Offensive.fbx"),
+    ("PlayerFemale", "CombatJob:Warrior", "CombatStand", F + "NoviceWarrior/HF@NoviceWarrior_Combat_Stand.fbx"),
+    ("PlayerFemale", "Any", "InventoryPose", F + "PlayerCommon/HF@PlayerCommon_Stand_Offensive.fbx"),
+    ("PlayerFemale", "CombatJob:Warrior", "InventoryPose", F + "NoviceWarrior/HF@NoviceWarrior_Alert_Stand.fbx"),
+    ("PlayerFemale", "Any", "GroggyHit", F + "PlayerCommon/HF@PlayerCommon_Run.fbx"),
+    ("PlayerFemale", "CombatJob:GreatSwordWarrior", "GroggyHit", C.ANIM + "Male/GreatSword/HM@GreatSword_Groggy_Start.fbx"),
     ("PlayerFemale", "Gender:Female, BodyType:Thin", "PeaceStand", F + "Stand/Thin/HF@Stand_Thin_01.fbx"),
     ("PlayerFemale", "Gender:Female, BodyType:Fat", "PeaceRun", F + "PlayerCommon/HF@PlayerCommon_Run_Fat_Fixed.fbx"),
     ("PlayerMale", "Any", "PeaceWalk", C.ANIM + "Male/PlayerCommon/HM@PlayerCommon_Walk.fbx"),
@@ -74,6 +89,7 @@ class NameTest(unittest.TestCase):
         idx = M.index(PATHS)
         self.assertIn("HF@PlayerCommon_Walk", idx["Female"])
         self.assertNotIn("HF@Attack", idx["Female"])          # 동작 폴더 밖
+        self.assertIn("HF@Attack", M.index(PATHS, every=True)["Female"])   # 직업 갈래용 — 사람 동작 전부
         self.assertIn("HM@Customize_Stand_Default", idx["Male"])
         self.assertEqual(idx["Infant"], {})
 
@@ -89,12 +105,19 @@ class GroupTest(unittest.TestCase):
         self.clips = M.Clips(M.index(PATHS)["Female"])
 
     def test_common(self):
-        out = M.common(ROWS, "Female", self.clips)
+        out = M.common(ROWS, "Female", self.clips, M.index(PATHS, every=True)["Female"])
         by = {e["id"]: e for e in out}
-        self.assertEqual([e["name"] for e in out], ["서 있기", "기본 자세", "경계 자세", "걷기", "달리기"])   # STATES 순서, 의자 없음
+        # STATES 순서, 의자 없음. 경계 걷기는 걷기와 같은 파일에 직업 갈래도 없어 뺀다. 가방 자세는 기본 파일이
+        # 경계 자세와 같아도 직업 갈래가 달라 따로. 비틀거리기는 직업 파일이 다른 체형 폴더에 있어 이 폴더 것만으론 달리기와 같다
+        self.assertEqual([e["name"] for e in out], ["서 있기", "기본 자세", "경계 자세", "전투 자세", "가방 자세", "걷기", "달리기"])
         # 직업별 갈래가 있는 상태만 무기를 꺼내 든다
-        self.assertEqual([e["id"] for e in out if e.get("drawn")], ["s:AlertStand"])
+        self.assertEqual([e["id"] for e in out if e.get("drawn")], ["s:AlertStand", "s:CombatStand", "s:InventoryPose"])
         self.assertEqual(by["s:AlertStand"]["steps"], {"": ["HF@PlayerCommon_Stand_Offensive"]})
+        # 직업별 동작 — 셰이프 갈래, 파일 없는 직업·덧붙은 갈래는 뺀다
+        self.assertEqual(by["s:AlertStand"]["jobs"], {
+            "Archer": {"": ["HF@NoviceArcher_Alert_Stand"], "Fat": ["HF@NoviceArcher_Alert_Stand_Fat"]},
+            "HighWarrior": {"": ["HF@NoviceWarrior_Alert_Stand"]}, "Warrior": {"": ["HF@NoviceWarrior_Alert_Stand"]}})
+        self.assertEqual(by["s:CombatStand"]["jobs"], {"Warrior": {"": ["HF@NoviceWarrior_Combat_Stand"]}})
         self.assertEqual(by["s:PeaceStand"]["steps"], {"": ["HF@Stand_Default_01"], "Thin": ["HF@Stand_Thin_01"]})
         self.assertEqual(by["s:PeaceRun"]["steps"], {"": ["HF@PlayerCommon_Run"], "Fat": ["HF@PlayerCommon_Run_Fat_Fixed"]})
         self.assertEqual(by["s:BodyDiversityCommonStand"]["steps"]["Fat"], ["HF@PlayerCommon_Stand_Fat"])
@@ -139,7 +162,15 @@ class BuildTest(unittest.TestCase):
         self.assertNotIn("e:Rest", ids)
         stand = next(e for e in t["list"] if e["id"] == "c:Stand")
         self.assertEqual(set(stand["steps"]), {"Female", "Male"})
-        self.assertEqual([e["id"] for e in t["list"] if e.get("drawn")], ["s:AlertStand"])   # 체형 폴더를 합쳐도 남는다
+        self.assertEqual([e["id"] for e in t["list"] if e.get("drawn")],
+                         ["s:AlertStand", "s:CombatStand", "s:InventoryPose", "s:GroggyHit"])   # 체형 폴더를 합쳐도 남는다
+        alert = next(e for e in t["list"] if e["id"] == "s:AlertStand")
+        self.assertEqual(alert["jobs"]["Warrior"], {"Female": {"": ["HF@NoviceWarrior_Alert_Stand"]}})
+        # 직업 갈래가 다른 체형 폴더 파일을 써도 (대검전사 비틀거리기 — 여성이 남성 클립) 클립 목록에 든다
+        groggy = next(e for e in t["list"] if e["id"] == "s:GroggyHit")
+        self.assertEqual(groggy["jobs"]["GreatSwordWarrior"]["Female"], {"": ["HM@GreatSword_Groggy_Start"]})
+        self.assertIn("HM@GreatSword_Groggy_Start", t["clips"])
+        self.assertIn("HF@NoviceArcher_Alert_Stand_Fat", t["clips"])
         self.assertEqual(t["facial"], {"HF@PlayerCommon_Walk": "HF@PlayerCommon_Walk_Facial",
                                        "HF@PlayerCommon_Emotion_Bye_01": "HF@PlayerCommon_Emotion_Bye_01_Facial",
                                        "HF@Customize_Pose_01_Default": "HF@Customize_Pose_01_Default_Facial"})

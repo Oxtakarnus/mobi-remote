@@ -1,7 +1,9 @@
 """드레스룸 동작 목록 — 공통·꾸미기·감정 표현 (게임 시트 + 동작 파일 목차).
 
   공통      동작 상태 시트(AnimationStateSet)의 Player<체형 폴더> 상태 중 STATES 에 이름을 단 것.
-            셰이프별 파일은 같은 시트의 'Gender:…, BodyType:<셰이프>' 줄.
+            셰이프별 파일은 같은 시트의 'Gender:…, BodyType:<셰이프>' 줄. 직업 갈래('CombatJob:<직업>'·
+            'CombatJob:<직업>, BodyType:<셰이프>')가 있는 상태는 무기를 든 동작이고 직업마다 파일이 다르다 (jobs —
+            화면이 입은 패션 무기의 직업으로 고른다. 직업 폴더 파일이라 동작 폴더 밖이고, 다른 체형 폴더 파일도 있다).
   꾸미기    Customize 폴더 — <이름>_<셰이프>[_Start|_Loop] (시트 없이 파일 이름으로).
   감정 표현 SocialAction 시트(한글 이름·키) → PlayerCommon 아래 그 키의 파일. 시작(_Start)이 있으면 시작 → 반복.
             두 사람 동작은 Host 쪽만, 실패 동작(_Fail)은 뺀다.
@@ -10,6 +12,7 @@
 
 표 (motions.json, 시트·동작 목차가 그대로면 다시 쓴다):
   {"list": [{"id", "cat", "name", "steps": {체형 폴더: {셰이프: [줄기…]}}}],   마지막 줄기를 반복한다
+            공통 중 무기를 든 동작은 "drawn": true, "jobs": {직업: {체형 폴더: {셰이프: [줄기]}}} 도 둔다
    "clips": {줄기: 자산 경로}, "facial": {몸 줄기: 표정 줄기}}
 줄기 = 파일 이름에서 .fbx 를 뺀 것 (HF@PlayerCommon_Walk) — 모델 id 'clip:<줄기>'. 셰이프 '' 는 기본,
 다른 셰이프는 기본과 다를 때만 둔다.
@@ -27,7 +30,7 @@ from . import names as NM
 
 log = logging.getLogger("mabi")
 
-FORMAT = 3   # 2: 표정(face) 갈래, 3: 무기를 꺼내 드는 공통 동작 drawn
+FORMAT = 4   # 2: 표정(face) 갈래, 3: 무기를 꺼내 드는 공통 동작 drawn, 4: 직업별 동작 jobs·전투 자세·경계 걷기 등
 CATS = (("common", "공통"), ("customize", "꾸미기"), ("emotion", "감정 표현"), ("face", "표정"))
 FOLDERS = tuple(sorted({v[1] for v in C.BODIES.values()}))    # Female · Infant · Male
 SHAPES = tuple(C.STAND)   # 뷰어 셰이프 이름 ('' 기본·Thin·Fat·Muscular)
@@ -35,13 +38,18 @@ _SHAPE_TOKEN = {"default": "", "thin": "Thin", "fat": "Fat", "muscle": "Muscular
 
 # 공통 — 상태 이름 → 보여 줄 이름 (이 순서로, 같은 파일은 앞 것만). 의자 앉기는 의자가 없어 뺀다
 STATES = (("PeaceStand", "서 있기"), ("BodyDiversityCommonStand", "기본 자세"), ("AlertStand", "경계 자세"),
-          ("PeaceWalk", "걷기"), ("PeaceWalkBackward", "뒤로 걷기"), ("PeaceWalkWallPushing", "제자리 걷기"),
-          ("PeaceRun", "달리기"), ("PeaceRunWallPushing", "제자리 달리기"), ("PeaceRunUpHill", "오르막 달리기"),
+          ("CombatStand", "전투 자세"), ("InventoryPose", "가방 자세"),
+          ("PeaceWalk", "걷기"), ("AlertWalk", "경계 걷기"), ("CombatWalk", "전투 걷기"),
+          ("PeaceWalkBackward", "뒤로 걷기"), ("PeaceWalkWallPushing", "제자리 걷기"),
+          ("PeaceRun", "달리기"), ("AlertRun", "경계 달리기"), ("CombatRun", "전투 달리기"),
+          ("PeaceRunWallPushing", "제자리 달리기"), ("PeaceRunUpHill", "오르막 달리기"),
           ("PeaceRunUpHillSteep", "가파른 오르막 달리기"), ("PeaceRunDownHill", "내리막 달리기"),
           ("PeaceRunDownHillSteep", "가파른 내리막 달리기"), ("RunToStand", "달리다 멈추기"),
           ("HitBody", "맞기"), ("GroggyHit", "비틀거리기"), ("DownHit", "쓰러졌다 일어나기"))
 # 무기를 꺼내 드는 동작 — 시트에 직업별(CombatJob:) 갈래가 있는 상태는 전투 중 무기를 든 동작이다 (2026-11-17 시트:
-# 경계 자세·맞기·비틀거리기·쓰러졌다 일어나기). 목록 항목에 drawn 을 달고, 나머지 동작·대기는 무기를 넣은 모습 (motion.js)
+# 경계·전투 자세, 경계·전투 걷기·달리기, 가방 자세, 맞기·비틀거리기·쓰러졌다 일어나기 — 서 있기·걷기·달리기(Peace)는
+# 직업 갈래가 없다). 목록 항목에 drawn 을 달고, 나머지 동작·대기는 무기를 넣은 모습 (motion.js).
+# 무기 꺼내기·넣기(ToolDraw·ToolUndraw)는 동작 도중에 무기가 붙는 곳이 바뀌어 뺀다.
 _DRAWN_BRANCH = "CombatJob:"
 # 꾸미기 — 이름 앞부분 → 보여 줄 이름 (번호가 붙으면 뒤에 번호)
 CUSTOM = (("Stand_Start_", "대기 시작"), ("Stand", "대기"), ("Pose_", "포즈"), ("Costume_", "의상 포즈"),
@@ -84,11 +92,12 @@ def norm_of(stem: str) -> tuple[str, str]:
     return f"{pre.lower()}@{'_'.join(keep)}", shape
 
 
-def index(paths) -> dict[str, dict[str, str]]:
-    """자산 경로들 → 체형 폴더 → {줄기: 경로} (동작 폴더 A.ANIM_DIRS 안 fbx 만)."""
+def index(paths, every: bool = False) -> dict[str, dict[str, str]]:
+    """자산 경로들 → 체형 폴더 → {줄기: 경로}. 기본은 목록 갈래가 보는 동작 폴더(A.ANIM_DIRS) 안 fbx 만,
+    every 면 사람 동작 fbx 전부 (직업 폴더 — common 의 jobs)."""
     out: dict[str, dict[str, str]] = {f: {} for f in FOLDERS}
     for p in paths:
-        if not (p.startswith(C.ANIM) and p.endswith(".fbx") and any(d in p for d in A.ANIM_DIRS)):
+        if not (p.startswith(C.ANIM) and p.endswith(".fbx") and (every or any(d in p for d in A.ANIM_DIRS))):
             continue
         folder = p[len(C.ANIM):].split("/", 1)[0]
         if folder in out and "/TestPose/" not in p:
@@ -157,38 +166,58 @@ def _steps(clips: Clips, stems: list[str]) -> dict[str, list[str]]:
     return out
 
 
-def common(rows, folder: str, clips: Clips) -> list[dict]:
+def common(rows, folder: str, clips: Clips, every: dict[str, str] | None = None) -> list[dict]:
+    """공통 동작. every: 줄기 → 경로 (사람 동작 전부 — 직업 갈래 파일을 찾는다, 없으면 clips 것만)."""
     st_name = "Player" + folder
+    every = every if every is not None else clips.path
     base = {state: p for s, b, state, p in rows if s == st_name and b == "Any"}
     by_shape: dict[str, dict[str, str]] = {}
+    jobs: dict[str, dict[str, dict[str, str]]] = {}   # 상태 → 직업 → {셰이프: 경로}
     for s, b, state, p in rows:
-        m = re.search(r"BodyType:(\w+)", b) if s == st_name and b.startswith("Gender:") else None
+        if s != st_name:
+            continue
+        m = re.search(r"BodyType:(\w+)", b) if b.startswith("Gender:") else None
         if m and m.group(1) in SHAPES:
             by_shape.setdefault(m.group(1), {})[state] = p
+        if b.startswith(_DRAWN_BRANCH):
+            kv = dict(x.split(":", 1) for x in b.split(", ") if ":" in x)
+            if set(kv) <= {"CombatJob", "BodyType"} and kv.get("BodyType", "") in SHAPES:
+                jobs.setdefault(state, {}).setdefault(kv["CombatJob"], {}).setdefault(kv.get("BodyType", ""), p)
     drawn = {state for s, b, state, p in rows if s == st_name and b.startswith(_DRAWN_BRANCH)}
     out, seen = [], set()
     for state, label in STATES:
         stem = _stem(base.get(state), clips)
-        if not stem or stem in seen:
+        if not stem:
             continue
-        seen.add(stem)
         steps = _steps(clips, [stem])
         for sh, table in by_shape.items():   # 시트가 셰이프 파일을 따로 정해 두었으면 그것
             alt = _stem(table.get(state), clips)
             if alt and alt != steps[""][0]:
                 steps[sh] = [alt]
+        by_job = {}
+        for job, shaped in sorted(jobs.get(state, {}).items()):
+            st = {sh: [x] for sh, x in ((sh, _stem(p, every)) for sh, p in shaped.items()) if x}
+            if "" in st:
+                by_job[job] = {sh: v for sh, v in st.items() if sh == "" or v != st[""]}
+        key = (stem, tuple(sorted((j, v[""][0]) for j, v in by_job.items())))   # 같은 동작이 이름만 다른 상태는 앞 것만
+        if key in seen:
+            continue
+        seen.add(key)
         e = {"id": "s:" + state, "cat": "common", "name": label, "steps": steps}
         if state in drawn:
             e["drawn"] = True
+        if by_job:
+            e["jobs"] = by_job
         out.append(e)
     return out
 
 
-def _stem(path: str | None, clips: Clips) -> str | None:
+def _stem(path: str | None, clips) -> str | None:
+    """자산 경로 → 줄기 (clips 에 있을 때만 — Clips 나 {줄기: 경로})."""
     if not path:
         return None
     stem = path.rsplit("/", 1)[-1][:-4]
-    return stem if stem in clips.path else None
+    return stem if stem in (clips.path if isinstance(clips, Clips) else clips) else None
 
 
 def customize(clips: Clips) -> list[dict]:
@@ -280,19 +309,24 @@ def match_social(key: str, clips: Clips) -> list[str] | None:
 def build(sh: G.Sheets | None, paths) -> dict:
     """시트(없으면 꾸미기만)·자산 경로 → 표."""
     idx = index(paths)
+    full = index(paths, every=True)
+    every = {s: p for f in FOLDERS for s, p in full[f].items()}   # 직업 갈래는 다른 체형 폴더 파일도 쓴다
     rows = state_rows(sh) if sh is not None else []
     social = social_rows(sh) if sh is not None else []
     face = face_rows(sh) if sh is not None else []
     merged: dict[str, dict] = {}
     for folder in FOLDERS:
         clips = Clips(idx[folder])
-        for e in common(rows, folder, clips) + customize(clips) + emotion(social, clips) + faces(face, clips):
+        for e in common(rows, folder, clips, every) + customize(clips) + emotion(social, clips) + faces(face, clips):
             m = merged.setdefault(e["id"], {"id": e["id"], "cat": e["cat"], "name": e["name"], "steps": {}})
             m["steps"][folder] = e["steps"]
             if e.get("drawn"):
                 m["drawn"] = True
+            for job, st in (e.get("jobs") or {}).items():
+                m.setdefault("jobs", {}).setdefault(job, {})[folder] = st
     used = {s for e in merged.values() for f in e["steps"].values() for seq in f.values() for s in seq}
-    every = {s: p for f in FOLDERS for s, p in idx[f].items()}
+    used |= {s for e in merged.values() for j in (e.get("jobs") or {}).values() for f in j.values()
+             for seq in f.values() for s in seq}
     facial = {s: s + "_Facial" for s in used if s + "_Facial" in every}
     clip_paths = {s: every[s] for s in used | set(facial.values())}
     order = {c: i for i, (c, _) in enumerate(CATS)}

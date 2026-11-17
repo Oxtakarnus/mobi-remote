@@ -55,12 +55,19 @@ export class MotionTable {
     return e && e.drawn ? 'Drawn' : 'Undrawn';
   }
 
-  /** 동작 id → 단계 [{body: 줄기, face: 표정 줄기 | null}] (그 셰이프 것이 없으면 기본). 없거나 표정이면 null. */
-  steps(id, folder, shape) {
+  /** 동작 id → 단계 [{body: 줄기, face: 표정 줄기 | null}] (그 셰이프 것이 없으면 기본). 없거나 표정이면 null.
+   *  job: 입은 패션 무기의 직업 (목록 항목 job) — 그 직업 갈래(표의 jobs)가 이 체형에 있으면 그 동작. */
+  steps(id, folder, shape, job = '') {
     const e = this.byId.get(id);
-    const s = e && e.cat !== 'face' && e.steps[folder];
-    if (!s) return null;
+    if (!e || e.cat === 'face' || !e.steps[folder]) return null;
+    const s = (job && e.jobs && e.jobs[job] && e.jobs[job][folder]) || e.steps[folder];
     return (s[shape] || s['']).map((stem) => ({ body: stem, face: this.t.facial[stem] || null }));
+  }
+
+  /** 무기 직업마다 다른 동작인가 — 무기를 바꾸면 다시 고른다. */
+  byJob(id) {
+    const e = id ? this.byId.get(id) : null;
+    return !!(e && e.jobs);
   }
 }
 

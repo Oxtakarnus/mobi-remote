@@ -75,6 +75,7 @@ class Item:
     extra: tuple[tuple[str, str], ...] = ()   # 같이 그리는 모델 (모델, 자산 경로) — 패션 무기의 방패·화살통 등
     prefab: str = ""               # prefab 자산 경로 (fbx 로 그리는 모델도 — 이펙트 소켓 노드는 prefab 에만 있다)
     colors: tuple = ()             # 게임 시트의 아이템 기본 염색 6칸 (#RRGGBB 또는 None, 시트에 없으면 ())
+    job: str = ""                  # 패션 무기의 직업 (동작 표 직업 갈래 이름 — 무기 든 경계 자세를 고른다, 없으면 "")
 
     def to_dict(self) -> dict:
         d = asdict(self)
@@ -105,7 +106,7 @@ def _item(model: str, folder: str, part: str, src: str, names: dict, extra=(), p
     n = names.get(model) or {}
     return Item(model, folder, part, pretty(model, folder, part), src, kor=n.get("name", ""), alt=tuple(n.get("alt") or ()),
                 slot=n.get("slot", ""), set_name=n.get("set", ""), icon=n.get("icon", ""), extra=tuple(extra), prefab=prefab,
-                colors=tuple(n.get("colors") or ()))
+                colors=tuple(n.get("colors") or ()), job=n.get("job", ""))
 
 
 def build(paths, names: dict | None = None, runtime=None, som=None) -> list[Item]:

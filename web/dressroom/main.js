@@ -115,10 +115,19 @@ function setCover(key, on) {
 }
 
 // ── 동작·표정 ──
-/** 지금 동작 — 동작 탭에서 고른 것이 이 체형에 있으면 그것(셰이프 것), 아니면 꾸미기 화면 대기 동작.
+let animJob = '';   // 지금 동작을 고를 때 본 무기 직업 (무기를 바꾸면 직업별 동작을 다시 고른다 — wornChanged)
+
+/** 입은 패션 무기의 직업 (목록 항목 job, 없으면 ''). */
+function weaponJob() {
+  const w = D.worn.Weapon;
+  return (w && w.item && w.item.job) || '';
+}
+
+/** 지금 동작 — 동작 탭에서 고른 것이 이 체형에 있으면 그것(셰이프 것·무기 직업 것), 아니면 꾸미기 화면 대기 동작.
  *  무기 상태는 Dresser 가 동작에 맞춘다 (play 의 weapon). 고른 동작을 못 불러오면 고른 것을 풀고 대기 동작으로. */
 async function loadAnim() {
-  const steps = S.motion ? MT.steps(S.motion, D.folder(), D.shape) : null;
+  animJob = weaponJob();
+  const steps = S.motion ? MT.steps(S.motion, D.folder(), D.shape, animJob) : null;
   if (steps) busy(1);
   try {
     await D.play(steps, MT.weapon(S.motion));
@@ -221,8 +230,10 @@ function dressChanged(what) {
   else if (what === 'face') { paintColors(); save(); }
 }
 
-/** 입은 것이 바뀐 뒤 — 오른쪽 카드, 목록의 입은 표시 (최근 입은 옷 탭은 순서가 바뀌니 다시 그린다), 머리 색 상자, 기억. */
+/** 입은 것이 바뀐 뒤 — 오른쪽 카드, 목록의 입은 표시 (최근 입은 옷 탭은 순서가 바뀌니 다시 그린다), 머리 색 상자, 기억.
+ *  무기 직업이 바뀌었고 직업마다 다른 동작을 틀고 있으면 그 동작을 다시 고른다. */
 function wornChanged() {
+  if (S.motion && MT.byJob(S.motion) && weaponJob() !== animJob) loadAnim();
   cards.paint();
   if (S.mode === 'wear' && sub() === '__recent') paintList();
   else { list.markWorn($('#list')); paintColors(); }

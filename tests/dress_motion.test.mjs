@@ -89,6 +89,20 @@ t('패션 무기 — 전투 동작(drawn)만 손에, 나머지·고르지 않음
   assert.equal(mt.weapon('없는 것'), 'Undrawn');
 });
 
+t('직업별 동작 — 무기 직업 갈래가 이 체형에 있으면 그것, 없으면 기본', () => {
+  const mt = new MotionTable({ ...TABLE, list: [...TABLE.list,
+    { id: 's:AlertStand', cat: 'common', name: '경계 자세', drawn: true, steps: { Female: { '': ['HF@Alert'] }, Male: { '': ['HM@Alert'] } },
+      jobs: { Archer: { Female: { '': ['HF@Archer_Alert'], Fat: ['HF@Archer_Alert_Fat'] } } } }] });
+  assert.deepEqual(mt.steps('s:AlertStand', 'Female', '', 'Archer'), [{ body: 'HF@Archer_Alert', face: null }]);
+  assert.deepEqual(mt.steps('s:AlertStand', 'Female', 'Fat', 'Archer'), [{ body: 'HF@Archer_Alert_Fat', face: null }]);
+  assert.deepEqual(mt.steps('s:AlertStand', 'Male', '', 'Archer'), [{ body: 'HM@Alert', face: null }]);     // 이 체형엔 없다
+  assert.deepEqual(mt.steps('s:AlertStand', 'Female', '', 'Mage'), [{ body: 'HF@Alert', face: null }]);     // 없는 직업
+  assert.deepEqual(mt.steps('s:AlertStand', 'Female', ''), [{ body: 'HF@Alert', face: null }]);             // 무기 없음
+  assert.equal(mt.byJob('s:AlertStand'), true);
+  assert.equal(mt.byJob('s:PeaceWalk'), false);
+  assert.equal(mt.byJob(null), false);
+});
+
 t('회전 보간 — 길이가 1 보다 조금 큰 키도 작은 각을 건너뛰지 않는다', () => {
   const q = () => { const v = { x: 0, y: 0, z: 0, w: 0, set(x, y, z, w) { Object.assign(this, { x, y, z, w }); return this; },
     normalize() { const l = Math.hypot(this.x, this.y, this.z, this.w); this.x /= l; this.y /= l; this.z /= l; this.w /= l; return this; } }; return v; };
