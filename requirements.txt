@@ -1,0 +1,40 @@
+bottle==0.13.4
+cffi==2.1.1
+clr_loader==0.3.1
+mss==10.2.0
+numpy==2.5.4
+opencv-python==5.0.0.93
+proxy_tools==0.1.0
+pycparser==3.11
+# Qt 6.11 에 둔다 — 6.12.0 WebEngine 은 WebGL 화면(드레스룸)을 띄운 채 목록을 넘기면 화면 합성 쪽 접근 위반으로
+# 프로세스가 꺼졌다 (Qt6WebEngineCore.dll, 시험에서 1~2분 안에 매번 재현, 6.11.3 은 같은 시험을 다 넘김).
+# 6.11 은 WebEngine·Pdf 가 PySide6_Addons 안에 있다 (6.12 부터 따로 나뉜 패키지).
+# 올릴 때는 드레스룸에서 캐릭터를 띄운 채 의상 목록을 2분쯤 빠르게 넘기고 하위 탭을 바꿔 보며 꺼지지 않는지 본다.
+PySide6==6.11.3
+PySide6_Addons==6.11.3
+PySide6_Essentials==6.11.3
+pythonnet==3.2.1
+pywebview==6.2.1
+shiboken6==6.11.3
+tomlkit==0.15.2
+# 게임 패킷 본문 압축 해제 (mabi/packet_monitor.py)
+brotli==1.2.1
+typing_extensions==4.16.0
+winrt-runtime==3.2.1
+winrt-Windows.Foundation==3.2.1
+winrt-Windows.Foundation.Collections==3.2.1
+winrt-Windows.Globalization==3.2.1
+winrt-Windows.Graphics.Imaging==3.2.1
+winrt-Windows.Media.Ocr==3.2.1
+winrt-Windows.Storage.Streams==3.2.1
+# 드레스룸 — 게임 Unity 번들 읽기 (mabi/dress). lz4·texture2ddecoder·etcpak·Pillow 등은 같이 깔린다
+UnityPy==1.25.4
+# 캐릭터 이름 OCR (PP-OCRv5 한국어). rapidocr 는 opencv-python-headless 를 끌어와 opencv-python 과 cv2 를 두고 겹치므로
+# 의존성 없이 따로 설치한다:  pip install --no-deps rapidocr
+onnxruntime>=1.31
+omegaconf
+colorlog
+tqdm
+requests
+shapely
+pyclipper

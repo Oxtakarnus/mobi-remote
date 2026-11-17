@@ -1,0 +1,372 @@
+"""작업 큐의 제작 목표 카드 (gui_app.queue_api.GoalKind) — 가짜 판단 엔진·가짜 명령으로 돌린다."""
+import unittest
+
+from gui_app.queue_api import GoalKind, QueueApi
+from mabi import cutpoint
+
+
+class FakeQ:
+    def __init__(self, other=None):
+        self.stop = None
+        self.notes = []
+        self.other = other  # 가공을 기다리는 동안 비켜 줄 아래 카드 (WorkQueue.yield_to)
+
+    def yield_to(self, it):
+        return self.other
+
+    def note(self, it, text):
+        it["note"] = text
+        self.notes.append(text)
+
+    def patch(self, item_id, fields, quiet=False):
+        self.item.update(fields)
+
+    def set_stop(self, reason, extra=None):
+        self.stop = {"reason": reason, **(extra or {})}
+
+
+class FakeApi(QueueApi):
+    """steps: goal_next 가 차례로 돌려줄 걸음 (have 포함). exec_results: 명령 결과."""
+
+    def __init__(self, steps, exec_results=(), answers=(), base_have=0):
+        self.steps = list(steps)
+        self.exec_results = list(exec_results)
+        self.answers = list(answers)
+        self.base_have = base_have
+        self.calls, self.asks, self.toasts = [], [], []
+
+    def goal_next(self, name, target):
+        if target == 0:
+            return {"have": self.base_have}
+        have, step = self.steps.pop(0)
+        return {"have": have, "step": step}
+
+    def exec(self, command, body=None, origin=None):
+        self.calls.append((command, body))
+        return self.exec_results.pop(0) if self.exec_results else {"ok": True, "wingsSpent": 5}
+
+    def _q_ask(self, q, it, payload):
+        self.asks.append(payload)
+        return self.answers.pop(0) if self.answers else False
+
+    def _q_wait_dialog_closed(self, q, label, limit=120):
+        return True
+
+    def _q_toast(self, title, text="", kind="ok"):
+        self.toasts.append(title)
+
+    def _q_char(self, q, it):  # 캐릭터 맞추기는 게임 화면이 필요하다 — 판단 규칙은 test_queue_char 가 본다
+        return True
+
+
+def card(**kw):
+    return {"id": 1, "name": "못", "label": "못", "target": 10, **kw}
+
+
+class GoalKindTest(unittest.TestCase):
+    def run_goal(self, api, it=None, wait=False, kind=None):
+        q = FakeQ()
+        q.item = it or card()
+        g = kind or GoalKind(api)
+        self.waited = []
+        if wait:  # 실제로 기다리지 않는다
+            g._wait = lambda q, it, st: self.waited.append(st.get("seconds")) or True
+        return g.run(q, q.item), q
+
+    def test_gather_craft_done(self):
+        api = FakeApi([(3, {"kind": "gather", "name": "철광석", "why": "철광석 채집"}),
+                       (3, {"kind": "craft", "name": "못", "batch": 2, "why": "못 제작"}),
+                       (13, {"kind": "done"})], base_have=3)
+        ok, q = self.run_goal(api)
+        self.assertTrue(ok)
+        self.assertEqual([c[0] for c in api.calls], ["execute_gathering", "execute_crafting"])
+        self.assertEqual(api.calls[1][1], {"displayName": "못", "craftCount": 2})
+        self.assertEqual(q.item["base"], 3)
+        self.assertEqual(q.item["made"], 10)
+        self.assertEqual(q.item["spent"], 10)
+        self.assertTrue(q.notes[-1].startswith("달성"))
+
+    def test_blocked_asks_then_continues(self):
+        api = FakeApi([(0, {"kind": "blocked", "name": "마법의 호박", "message": "상점에서만"}),
+                       (10, {"kind": "done"})], answers=[True])
+        ok, q = self.run_goal(api)
+        self.assertTrue(ok)
+        self.assertEqual(api.asks[0]["kind"], "goal_blocked")
+
+    def test_blocked_declined_stops(self):
+        api = FakeApi([(0, {"kind": "blocked", "name": "마법의 호박"})], answers=[False])
+        ok, q = self.run_goal(api)
+        self.assertFalse(ok)
+        self.assertEqual(api.calls, [])
+
+    def test_stuck_repeat_stops(self):
+        # 같은 걸음이 4번 넘게 거푸 나오면 헛도는 것 — 날개를 더 태우지 않는다
+        api = FakeApi([(0, {"kind": "gather", "name": "철광석"})] * 10)
+        ok, q = self.run_goal(api)
+        self.assertFalse(ok)
+        self.assertEqual(len(api.calls), 4)
+        self.assertIn("진전이 없어", q.notes[-1])
+
+    def test_alter_registrations_are_progress(self):
+        # 가공은 한 호출에 1건 — 남은 건수가 줄며 같은 등록이 거푸 나온다 (2026-10-30 강철괴 4건 뒤 '진전 없음' 으로 섰다)
+        steps = [(0, {"kind": "alter", "name": "강철괴", "runs": 1, "wanted": 10 - i, "queued": i}) for i in range(7)]
+        api = FakeApi(steps + [(50, {"kind": "done"})])
+        ok, q = self.run_goal(api)
+        self.assertTrue(ok)
+        self.assertEqual(len(api.calls), 7)
+
+    def test_craft_batches_are_progress(self):
+        # 제작은 한 번에 10회까지 — 같은 묶음이 거푸 나와도 보유량이 늘면 진전 (2026-11-06 여행자 간식 46개에서 섰다)
+        steps = [(i * 10, {"kind": "craft", "name": "여행자 간식", "batch": 10, "runs": 100 - i * 10, "need": 100 - i * 10})
+                 for i in range(8)]
+        api = FakeApi(steps + [(100, {"kind": "done"})])
+        ok, q = self.run_goal(api, card(name="여행자 간식", target=100))
+        self.assertTrue(ok)
+        self.assertEqual(len(api.calls), 8)
+
+    def test_same_craft_without_progress_stops(self):
+        api = FakeApi([(0, {"kind": "craft", "name": "여행자 간식", "batch": 10, "runs": 100})] * 10)
+        ok, q = self.run_goal(api)
+        self.assertFalse(ok)
+        self.assertEqual(len(api.calls), 4)
+
+    def test_same_alter_without_progress_stops(self):
+        api = FakeApi([(0, {"kind": "alter", "name": "강철괴", "runs": 1, "wanted": 10, "queued": 3})] * 10)
+        ok, q = self.run_goal(api)
+        self.assertFalse(ok)
+        self.assertEqual(len(api.calls), 4)
+
+    def test_learn_once(self):
+        api = FakeApi([(0, {"kind": "learn", "name": "못", "via": "제작"})] * 3)
+        ok, q = self.run_goal(api)
+        self.assertEqual(len(api.calls), 1)
+        self.assertEqual(api.calls[0][1]["craftCount"], 1)
+
+    def test_skill_level_stops_queue(self):
+        api = FakeApi([(0, {"kind": "gather", "name": "은 광석"})],
+                      exec_results=[{"ok": False, "error": "insufficient_living_skill_level", "data": {"requiredLevel": 5}}])
+        ok, q = self.run_goal(api)
+        self.assertFalse(ok)
+        self.assertEqual(q.stop, {"reason": "skill", "what": "은 광석", "level": 5})
+
+    def test_transfer_cost_stops_queue(self):
+        # 계획은 장비 부품이 있다고 보고 세운다. 게임이 모자란다고 하면 그 자리에서 큐를 세운다
+        api = FakeApi([(0, {"kind": "craft", "name": "못", "batch": 3})],
+                      exec_results=[{"ok": False, "error": "insufficient_transfer_cost"}])
+        ok, q = self.run_goal(api)
+        self.assertFalse(ok)
+        self.assertEqual(q.stop, {"reason": "transfer", "what": "못"})
+        self.assertEqual(len(api.calls), 1)
+
+    def test_invalid_count_keeps_going(self):
+        api = FakeApi([(0, {"kind": "craft", "name": "못", "batch": 99}), (0, {"kind": "craft", "name": "못", "batch": 10}),
+                       (10, {"kind": "done"})], exec_results=[{"ok": False, "error": "invalid_count"}, {"ok": True}])
+        ok, q = self.run_goal(api)
+        self.assertTrue(ok)
+
+    def test_stop_between_steps(self):
+        api = FakeApi([(0, {"kind": "gather", "name": "철광석"}), (5, {"kind": "gather", "name": "구리"})])
+        q = FakeQ()
+        q.item = card()
+        orig = api.exec
+
+        def exec_then_pause(*a, **k):
+            q.stop = {"reason": "pause"}  # F12
+            return orig(*a, **k)
+        api.exec = exec_then_pause
+        ok = GoalKind(api).run(q, q.item)
+        self.assertFalse(ok)
+        self.assertEqual(len(api.calls), 1)
+
+    def test_timed_card_cuts_in_between_steps(self):
+        # 가공·제작은 걸음 사이가 끊어도 되는 자리 — 시간 정해진 카드가 열리면 다음 걸음 전에 밀려난다
+        api = FakeApi([(0, {"kind": "gather", "name": "철광석"}), (5, {"kind": "gather", "name": "구리"})])
+        q = FakeQ()
+        q.item = card()
+        asked = []
+
+        def hook():  # 작업 큐의 cut_for_timed 처럼: 열렸으면 큐를 세우고 까닭을
+            asked.append(1)
+            if len(asked) < 2:
+                return ""
+            q.set_stop("preempt")
+            return "'필드 보스' 열림"
+        cutpoint.set_hook(hook)
+        try:
+            ok = GoalKind(api).run(q, q.item)
+        finally:
+            cutpoint.set_hook(None)
+        self.assertFalse(ok)
+        self.assertEqual(len(api.calls), 1)
+        self.assertEqual(q.stop["reason"], "preempt")
+
+    def test_timed_card_cuts_in_while_waiting(self):
+        # 가공 완료 대기(몇 분)도 끊어도 되는 자리 — 가공은 시설에서 계속된다
+        q = FakeQ()
+        cutpoint.set_hook(lambda: q.set_stop("preempt") or "'필드 보스' 열림")
+        try:
+            self.assertFalse(GoalKind(FakeApi([]))._wait(q, card(), {"seconds": 300}))
+        finally:
+            cutpoint.set_hook(None)
+
+    def test_long_wait_yields_to_next_card(self):
+        # 가공이 오래 남았고 아래에 돌 카드가 있으면 비켜 주고, 끝날 시각을 적어 둔다 (그때 큐가 데려온다)
+        import time
+        q = FakeQ(other={"label": "숙제"})
+        q.item = card()
+        g = GoalKind(FakeApi([]))
+        self.assertFalse(g._wait(q, q.item, {"seconds": 1200}))
+        self.assertEqual(q.stop["reason"], "yield")
+        at = q.item["resumeAt"]
+        self.assertAlmostEqual(at / 1000, time.time() + 1200, delta=5)
+        self.assertTrue(g.timed(q.item))
+        self.assertIn("가공 완료 대기", g.ready(q.item))
+        q.item["resumeAt"] = int(time.time() * 1000) - 1
+        self.assertEqual(g.ready(q.item), "")  # 끝날 때가 됐다 — 다시 돌 수 있다
+
+    def test_short_wait_or_nothing_below_keeps_waiting(self):
+        g = GoalKind(FakeApi([]))
+        for q, secs in ((FakeQ(other={"label": "숙제"}), 60), (FakeQ(), 1200)):
+            q.item = card()
+            cutpoint.set_hook(lambda: q.set_stop("preempt") or "x")  # 기다리기 시작하면 바로 끊어 끝낸다
+            try:
+                g._wait(q, q.item, {"seconds": secs})
+            finally:
+                cutpoint.set_hook(None)
+            self.assertEqual(q.stop["reason"], "preempt")
+            self.assertNotIn("resumeAt", q.item)
+
+    def test_returning_card_clears_resume_time(self):
+        api = FakeApi([(8, {"kind": "done"})])
+        ok, q = self.run_goal(api, card(base=0, target=5, resumeAt=1))
+        self.assertTrue(ok)
+        self.assertIsNone(q.item["resumeAt"])
+
+    def test_collect_not_ready_waits_and_retries(self):
+        # 조회는 완료인데 수령은 아직 없다고 할 때가 있다 — 실패로 끝내지 않고 기다렸다 다시
+        api = FakeApi([(0, {"kind": "collect", "name": "진액", "facility": "약품"}),
+                       (0, {"kind": "collect", "name": "진액", "facility": "약품"}),
+                       (10, {"kind": "done"})],
+                      exec_results=[{"ok": False, "error": "no_completed_work"}, {"ok": True}])
+        ok, q = self.run_goal(api, wait=True)
+        self.assertTrue(ok)
+        self.assertEqual(self.waited, [GoalKind.COLLECT_RETRY])
+
+    def test_collect_blocked_waits_and_retries(self):
+        # 돌아와 수령하려는데 어비스 결과 연출이 화면을 막음 (2026-11-12 21:32) — 실패로 끝내지 않고 기다렸다 다시
+        blocked = {"ok": False, "error": "blocked", "data": {"kind": "unknown_modal"}}
+        api = FakeApi([(0, {"kind": "collect", "name": "진액", "facility": "약품"}),
+                       (0, {"kind": "collect", "name": "진액", "facility": "약품"}),
+                       (10, {"kind": "done"})],
+                      exec_results=[blocked, blocked, {"ok": True}])
+        ok, q = self.run_goal(api, wait=True)
+        self.assertTrue(ok)
+        self.assertEqual(self.waited, [GoalKind.COLLECT_RETRY])
+
+    def test_unknown_failure_notes_reason(self):
+        api = FakeApi([(0, {"kind": "alter", "name": "진액"})],
+                      exec_results=[{"ok": False, "error": "x", "ko": {"text": "재료가 부족합니다"}}])
+        ok, q = self.run_goal(api)
+        self.assertFalse(ok)
+        self.assertIn("재료가 부족합니다", q.notes[-1])
+
+    def test_collect_never_ready_stops(self):
+        api = FakeApi([(0, {"kind": "collect", "name": "진액"})] * 10,
+                      exec_results=[{"ok": False, "error": "no_completed_work"}] * 10)
+        ok, q = self.run_goal(api, wait=True)
+        self.assertFalse(ok)
+        self.assertEqual(len(api.calls), 4)
+        self.assertIn("진전이 없어", q.notes[-1])
+
+    def test_waits_do_not_count_toward_step_limit(self):
+        steps = []
+        for i in range(4):
+            steps += [(i, {"kind": "wait", "seconds": 300}), (i, {"kind": "alter", "name": f"진액{i}"})]
+        api = FakeApi(steps + [(4, {"kind": "alter", "name": "진액9"})])
+        g = GoalKind(api)
+        g.MAX_STEPS = 4
+        ok, q = self.run_goal(api, wait=True, kind=g)
+        self.assertFalse(ok)
+        self.assertEqual(len(api.calls), 4)  # 기다림 4번은 세지 않았다
+        self.assertIn("걸음 상한", q.notes[-1])
+
+    def test_resume_keeps_base(self):
+        api = FakeApi([(8, {"kind": "done"})], base_have=99)
+        ok, q = self.run_goal(api, card(base=3, target=5))
+        self.assertTrue(ok)
+        self.assertEqual(q.item["base"], 3)  # 이어 갈 때 기준점을 다시 잡지 않는다
+
+
+class AskTest(unittest.TestCase):
+    """돌던 카드가 사람에게 묻고(mm:queue-ask) 답을 기다린다 (QueueApi._q_ask · queue_answer)."""
+
+    def api(self):
+        class A(QueueApi):
+            def __init__(self):
+                self.events = []
+                self._q_pending_ask = None
+
+            def _emit(self, ch, v=None):
+                self.events.append((ch, v))
+        return A()
+
+    def test_answer_yes(self):
+        import threading
+        a, q = self.api(), FakeQ()
+        threading.Timer(0.1, lambda: a.queue_answer(1, True)).start()
+        self.assertTrue(a._q_ask(q, card(), {"kind": "goal_blocked"}))
+        self.assertEqual(a.events[0][0], "mm:queue-ask")
+        self.assertEqual(a.events[-1], ("mm:queue-ask", None))  # 끝나면 창을 닫으라고
+
+    def test_stop_gives_up(self):
+        import threading
+        a, q = self.api(), FakeQ()
+        threading.Timer(0.1, lambda: setattr(q, "stop", {"reason": "pause"})).start()  # F12
+        self.assertFalse(a._q_ask(q, card(), {"kind": "goal_blocked"}))
+        self.assertIsNone(a._q_pending_ask)
+
+    def test_wrong_id_ignored(self):
+        a = self.api()
+        self.assertEqual(a.queue_answer(5, True), {"ok": False})
+
+
+class StepRulesTest(unittest.TestCase):
+    """걸음 → 명령, 거절 → 할 일 은 게임 규칙이라 mabi.craft.execute 에 있다 (GoalKind 는 부르기만)."""
+
+    def test_step_command(self):
+        from mabi.craft.execute import step_command
+        self.assertEqual(step_command({"kind": "collect", "name": "철괴"}),
+                         ("complete_altering_work", {"displayName": "철괴"}, "collect"))
+        self.assertEqual(step_command({"kind": "gather", "name": "광석"}), ("execute_gathering", {"displayName": "광석"}, "craft"))
+        self.assertEqual(step_command({"kind": "learn", "via": "가공", "name": "x"})[0::2], ("execute_altering", "alter"))
+        self.assertEqual(step_command({"kind": "learn", "name": "못", "batch": 7})[1], {"displayName": "못", "craftCount": 1})
+        self.assertEqual(step_command({"kind": "craft", "name": "못", "batch": 7})[1], {"displayName": "못", "craftCount": 7})
+
+    def test_step_failure(self):
+        from mabi.craft import execute as ex
+        self.assertEqual(ex.step_failure("collect", {"error": "no_completed_work"}), ex.STEP_RETRY_LATER)
+        self.assertIsNone(ex.step_failure("collect", {"error": "invalid_count"}))
+        self.assertEqual(ex.step_failure("craft", {"error": "invalid_count"}), ex.STEP_AGAIN)
+        self.assertEqual(ex.step_failure("gather", {"error": "insufficient_living_skill_level"}), ex.STEP_STOP_SKILL)
+        self.assertEqual(ex.step_failure("alter", {"error": "insufficient_transfer_cost"}), ex.STEP_STOP_TRANSFER)
+        self.assertIsNone(ex.step_failure("alter", {"error": "no_completed_work"}))
+        # 연속 사용 제한은 기다려도 안 풀린다 — 수령도 '나중에 다시' 가 아니다 (2026-11-13 '5회 반복' 으로 섰다)
+        limit = {"error": "blocked", "data": {"kind": "continuous_run_limit"}}
+        self.assertIsNone(ex.step_failure("collect", limit))
+        self.assertIsNone(ex.step_failure("alter", limit))
+        self.assertEqual(ex.step_failure("collect", {"error": "blocked", "data": {"kind": "unknown_modal"}}),
+                         ex.STEP_RETRY_LATER)
+
+    def test_agent_limit_words(self):
+        from mabi import errors
+        from mabi.connector import is_agent_limit
+        self.assertTrue(is_agent_limit("blocked", {"kind": "continuous_run_limit"}))
+        self.assertTrue(is_agent_limit("continuous_run_limit", None))
+        self.assertFalse(is_agent_limit("blocked", {"kind": "unknown_modal"}))
+        d = errors.describe("complete_altering_work", "blocked", "", {"kind": "continuous_run_limit"})
+        self.assertIn("연속 사용 제한", d["text"])
+        self.assertIn("확인", d["hint"])
+
+
+if __name__ == "__main__":
+    unittest.main()

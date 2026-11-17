@@ -1,0 +1,983 @@
+"""작업 큐 화면(web/queue.js)이 부르는 파이썬 쪽 (mm.queue.*). Api 가 이 클래스를 섞어 쓴다.
+
+큐의 주인은 mabi.workqueue.WorkQueue 다. 여기는 카드 종류의 실행기와 화면 연결만 둔다.
+  daily · abyss · raid : 숙제·어비스·레이드 (DailyApi 의 _daily_launch · _repeat_launch 를 기다린다)
+  goal          : 제작·채집·가공 목표 (판단 엔진 mabi.craft.goal 의 걸음을 하나씩 실행)
+  action        : 한 번 하는 행동 (버튼 하나 = 명령 하나, 전체 수령)
+  enhance       : 각인 강화 반복 (열어 둔 창에서 성공할 때까지 Space)
+실행 중 사람에게 물어야 하면(재료를 직접 구해 와야 함) 'mm:queue-ask' 로 묻고 queue.answer 를 기다린다.
+화면 설정 맞추기는 큐 한 번에 한 번 (q.session), 큐가 다 끝나면 한 번 되돌린다.
+변화는 'mm:queue' {items, running} 로 화면에 보낸다.
+"""
+import json
+import logging
+import math
+import threading
+import time
+
+from mabi import cutpoint
+from mabi import gamedata as gd
+from mabi import queue_report
+from mabi import restart
+from mabi.craft.execute import (STEP_AGAIN, STEP_RETRY_LATER, STEP_STOP_SKILL, STEP_STOP_TRANSFER, step_command,
+                                step_failure)
+from mabi.runner import RunOptions, load_config
+from mabi.workqueue import STOP_WHY, Kind, WorkQueue
+
+from .daily_api import REPEATS
+
+log = logging.getLogger("mabi")
+
+
+def _num(n) -> str:
+    return f"{int(n or 0):,}"
+
+
+FAILED = ("FAIL", "ERROR", "CHECK", "HEAVY", "SKIP")
+
+
+def daily_progress(p: dict | None, e: dict) -> dict | None:
+    """숙제 실행기 이벤트(runner._emit)로 카드의 진행 기록(it['prog'])을 고친다. 바뀐 게 없으면 None.
+    n: 캐릭터 수 · i: 지금 몇 번째 · tasks: 캐릭터당 숙제 수 · ci: 이 캐릭터에서 몇 번째 숙제
+    done: 끝난 숙제 칸 (이미 끝나 건너뛴 것 포함 — 막대가 끝까지 찬다) · fail: 실패 칸 · seen: 나온 슬롯"""
+    t = e.get("type")
+    if t == "start":
+        return {"n": len(e.get("characters") or []), "tasks": len(e.get("order") or []), "labels": e.get("labels") or {},
+                "i": 0, "name": "", "task": "", "ci": 0, "step": "", "done": 0, "fail": 0, "seen": []}
+    if not p:
+        return None
+    p = {**p, "seen": list(p.get("seen") or [])}
+    slot = e.get("slot")
+    if slot is not None and slot not in p["seen"] and t in ("character", "task_end"):
+        p["seen"].append(slot)
+    if t == "character":
+        p.update(i=len(p["seen"]) if slot is not None else p["i"] + 1, name=e.get("name") or "", task="", ci=0, step="")
+    elif t == "task_start":
+        tid = e.get("task")
+        p.update(task="접속" if tid == "login" else p["labels"].get(tid) or e.get("label") or tid, step="")
+        if tid != "login":
+            p["ci"] += 1
+    elif t == "step":
+        p["step"] = e.get("text") or e.get("step") or ""
+    elif t == "task_end":
+        if e.get("task") == "login":
+            return None if e.get("status") == "OK" else {**p, "fail": p["fail"] + 1}
+        p["done"] += 1
+        if e.get("status") in FAILED:
+            p["fail"] += 1
+    else:
+        return None
+    return p
+
+
+class DailyKind(Kind):
+    own_loot = True  # 캐릭터마다 runner 가 잰다 ('loot' 이벤트)
+
+    def __init__(self, api):
+        self.api = api
+        self._results: list | None = None  # 이번 실행의 숙제별 결과 (결과 창)
+
+    def tasks(self, it):
+        # DONE = 이 큐가 돌기 전에 오늘 이미 끝나 있어 건너뛴 캐릭터 — 이번 큐가 한 일이 아니라 결과 창에서 뺀다
+        r, self._results = self._results, None
+        return [list(x) for x in r if x[1] != "DONE"] if r else None
+
+    @staticmethod
+    def detail(it) -> str:
+        only = it.get("only")
+        n = f"{len(it.get('chars') or [])}명"
+        if only and all(t.startswith("weekend_") for t in only):  # 주말 어비스·레이드 — 고른 것 (화면 weekendAmount 와 같음)
+            w = it.get("weekend") or {}
+            # '모든 어비스' 처럼 이름에 종류가 들어 있으면 앞말을 다시 붙이지 않는다
+            parts = [f"{'' if t in str(w[k].get(place)) else t + ' '}{w[k].get(place)} {w[k].get('difficulty')}" for t, k, place in
+                     (("어비스", "abyss", "dungeon"), ("레이드", "raid", "raid")) if f"weekend_{k}" in only and w.get(k)]
+            return " · ".join([n, *parts])
+        return f"{n} · " + (f"숙제 {len(only)}개" if only else "전체") + (" · 다시" if it.get("force") else "")
+
+    def view(self, it):
+        v = super().view(it)
+        p = it.get("prog")
+        if not p:
+            return v
+        if p.get("name"):
+            v["now"] = f"[{p['i']}/{p['n']}] {p['name']}" + (f" · {p['task']}" if p.get("task") else "") + \
+                (f" ({p['ci']}/{p['tasks']})" if p.get("ci") and p.get("task") != "접속" else "")
+        v["step"] = p.get("step") or ""
+        v["stat"] = f"실패 {p['fail']}" if p.get("fail") else ""
+        if p.get("n") and p.get("tasks"):
+            v["bar"] = [p["done"], p["n"] * p["tasks"]]
+        return v
+
+    def run(self, q, it):
+        api = self.api
+        if not api._q_display(q, it):
+            return False
+        if (err := api._busy_reason()):
+            q.note(it, f"시작 못 함 — {err}")
+            return False
+        fit = api._q_fit()
+        opts = RunOptions(chars=it.get("chars") or None, only=it.get("only") or None, force=bool(it.get("force")),
+                          display=fit, interface_ready=bool(q.session.get("iface")),
+                          restore=False,  # 되돌리기는 큐가 다 끝날 때 한 번 (_q_drained)
+                          extra={"from": "queue"},
+                          cfg=card_cfg(it))
+
+        seen = {}  # 이번 실행에서 오류로 실패한 숙제 (error) · 두 캐릭터 연달아 같은 실패로 멈춤 (streak) — 요약
+
+        def on_event(e):
+            fields = {}
+            if e.get("type") == "task_end":
+                for k in ("error", "streak"):
+                    if e.get(k):
+                        seen.setdefault(k, f"{e.get('label')}: {e.get('summary')}")
+            if (p := daily_progress(it.get("prog"), e)) is not None:
+                fields["prog"] = p
+            if e.get("type") == "start":
+                fields["note"] = ""  # 진행은 카드의 진행 줄(view)로 보인다
+            if e.get("type") == "task_start" and e.get("label"):
+                fields["at"] = e["label"]  # 멈추면 '… 에서 멈춤' 으로 쓴다
+            if fields:
+                q.patch(it["id"], fields)
+            if e.get("type") == "loot" and q.report:
+                q.report.add_loot(it, {k: e.get(k) for k in ("who", "gained", "used", "cur")})
+            if e.get("type") == "interface":  # 실제로 맞췄을 때만 — 다음 카드는 다시 맞추지 않는다
+                q.session["iface"] = True
+        self._results = None
+        t = api._daily_launch(opts, on_event=on_event)
+        t.join()
+        kind, val = api._daily_result
+        self._results = val if kind == "done" else None
+        if kind == "failed":  # 숙제 밖에서 난 예외 (실행기 오류) — 오류로
+            q.note(it, f"실패 — {val}")
+            q.set_stop("error")
+            return False
+        if seen.get("streak"):
+            # 두 캐릭터가 연달아 같은 까닭으로 실패해 멈췄다 — 사람이 멈춘 것이 아니니 일시정지(큐가 섬) 대신 오류로:
+            # 큐가 맨 아래로 내려 남은 카드부터 하고 한 번 더 (사람이 멈췄으면 그 멈춤이 앞선다 — STOP_RANK)
+            q.note(it, f"두 캐릭터 연달아 같은 실패 — {seen['streak']}")
+            q.set_stop("error")
+            return False
+        if any(s == "STOP" for _, s, _ in val or []):  # F12·멈추기 → 일시정지 (F12 나 ▶ 로 이어 함)
+            q.set_stop("stopped")
+            return False
+        wait = [summary for _, s, summary in val or [] if s == "WAIT"]
+        if wait:  # 정해진 시간에만 하는 숙제(필드 보스)가 닫혔다 — 실패가 아니라 다음 열림까지 대기로
+            q.set_stop("later", {"note": f"{len(wait)}명 남음 · {wait[0]}"})
+            return False
+        if q.stop:
+            # 도중에 밀렸거나(게임 다시 켜기 등 먼저 할 카드) 멈춤 요청을 받아 끝까지 돌지 않았다 — 돈 숙제만 결과에 있어
+            # 모두 OK 로 보여도 남은 캐릭터가 있다. 완료로 치우지 않고 큐가 이유대로(밀림 → 대기, 멈춤 → 일시정지) 둔다.
+            # 다시 돌면 오늘 끝낸 숙제는 진행 기록으로 넘긴다 (2026-11-13 06:37 6명 카드가 1번만 하고 완료로 사라짐)
+            return False
+        # 끝까지 돌았어도 끝나지 않은 숙제가 있으면 '완료' 로 치우지 않는다 — 6명 모두 접속에 실패했는데 카드가
+        # 완료로 사라져 다 된 줄 알았다 (2026-10-30). 실패 카드로 남겨 ▶ 로 다시 걸면 오늘 끝난 숙제는 넘기고 남은 것만 한다
+        bad = [label for label, s, _ in val or [] if s in FAILED]
+        if bad:
+            q.note(it, f"끝까지 돌았지만 {len(bad)}건이 끝나지 않음 ({', '.join(bad[:3])}{' …' if len(bad) > 3 else ''})"
+                       " — 결과 창 확인 · ▶ 로 남은 것만 다시")
+            if seen.get("error"):  # 그 가운데 오류가 있었다 → 큐가 맨 아래로 내려 한 번 더 (남은 숙제만)
+                q.set_stop("error")
+            return False
+        return True
+
+    def ready(self, it) -> str:
+        """정해진 시간에만 하는 숙제만 담은 카드(필드 보스)는 그 시간이 아니면 까닭을 돌려준다 — 큐가 비켜 두고 다음 카드를."""
+        from mabi import tasks
+        return tasks.not_ready(it.get("only"))
+
+    def timed(self, it) -> bool:
+        """정해진 시간에만 하는 숙제(tasks.READY)만 담은 카드인가."""
+        from mabi import tasks
+        return tasks.timed(it.get("only"))
+
+    def stop(self, reason):
+        # 카드를 뺐으면 종료, 아니면 일시정지 (진행 기록으로 끊긴 자리부터 이어 한다)
+        self.api.daily_stop(reason in ("remove", "skip"), STOP_WHY.get(reason, ""))
+
+
+# 숙제 카드 칸 → 이번 실행만 덮어쓸 설정 칸 (주간 숙제 탭에서 고른 필드 보스 · 주말 어비스·레이드)
+CARD_CFG = {"fieldBoss": "field_boss", "weekend": "weekend"}
+
+
+def card_cfg(it: dict) -> dict:
+    """숙제 카드가 고른 값 → RunOptions.cfg ({설정 칸: {키: 값}})."""
+    return {sec: it[k] for k, sec in CARD_CFG.items() if it.get(k)}
+
+
+def card_character(it: dict, chars: list[dict]) -> tuple[str, dict | None]:
+    """제작·채집·가공 카드(goal·action)를 어느 캐릭터로 할까. 카드 칸 slot: 0·없음 = 접속 캐릭터, 그 밖 = 그 슬롯 캐릭터.
+    접속 캐릭터 카드는 처음 집을 때의 캐릭터를 pin 에 적어 두고, 밀렸다 돌아오면 그 캐릭터로 돌아간다
+    (필드 보스처럼 여러 캐릭터를 도는 카드가 끼어든 뒤 엉뚱한 캐릭터로 이어 가지 않게 — 2026-11-12 사용자).
+    돌려주는 것: ("any", None) 확인 없이 지금 캐릭터로 · ("remember", None) 지금 캐릭터를 pin 에 적기 ·
+    ("want", 캐릭터) 이 캐릭터인지 확인하고 아니면 접속 · ("missing", None) 고른 슬롯이 캐릭터 목록에 없음."""
+    slot = int(it.get("slot") or 0)
+    if slot:
+        ch = next((c for c in chars if int(c["slot"]) == slot), None)
+        return ("want", ch) if ch else ("missing", None)
+    if it.get("pin"):
+        return "want", it["pin"]
+    if it.get("kind") == "action":
+        return "any", None  # 한 번 하는 행동은 끼어들 틈이 없다 — 지금 캐릭터로 바로
+    return "remember", None
+
+
+class AbyssKind(Kind):
+    own_loot = True  # 반복이 캐릭터 접속 뒤부터 잰다 ('loot' 이벤트 — 일일 숙제와 같은 queue_report.LootMeter)
+    STAGE = {"match": "매칭 중", "play": "진행 중", "clear": "클리어", "repair": "장비 수리"}
+    KIND = "abyss"  # 반복 종류 (DailyApi.REPEATS — 진행 이벤트 type), 장소 칸은 REPEATS 가 정한다
+
+    def __init__(self, api):
+        self.api = api
+
+    @classmethod
+    def place(cls) -> str:
+        """카드의 장소 칸 (어비스 dungeon · 레이드 raid)."""
+        return REPEATS[cls.KIND][1]
+
+    @classmethod
+    def detail(cls, x) -> str:
+        lim = " · ".join(s for s in [
+            (f"{x['runs']}판" + (f" ({x['doneRuns']}판 함)" if x.get("doneRuns") else "")) if x.get("runs") else "",
+            f"{x['minutes']}분" if x.get("minutes") else ""] if s)
+        mode = {"solo": " 혼자하기", "party": " 함께하기"}.get(x.get("mode"), "")
+        return f"{x.get(cls.place())} {x.get('difficulty')}{mode} · {lim or '멈출 때까지'}" + (" · 쓰러지면 나감" if x.get("revive") is False else "")
+
+    def where(self, it) -> str:
+        return f"{it['doneRuns']}판 한 뒤" if it.get("doneRuns") else ""
+
+    def view(self, it):
+        v = super().view(it)
+        p = it.get("prog") or {}
+        clears = int(it.get("doneRuns") or 0) + int(p.get("clears") or 0)
+        secs = float(it.get("doneSecs") or 0) + float(p.get("secs") or 0)
+        runs, minutes = int(it.get("runs") or 0), float(it.get("minutes") or 0)
+        if not p and not clears:
+            return v
+        v["now"] = " · ".join(s for s in [
+            self.STAGE.get(p.get("stage"), ""),
+            f"{clears}/{runs}판" if runs else f"클리어 {clears}",
+            f"{int(secs) // 60}분" + (f"/{minutes:g}분" if minutes else "")] if s)
+        v["stat"] = " · ".join(s for s in [f"부활 {p['revives']}" if p.get("revives") else "",
+                                           f"쓰러져 나감 {p['deaths']}" if p.get("deaths") else ""] if s)
+        v["bar"] = [clears, runs] if runs else [int(secs), int(minutes * 60)] if minutes else None
+        return v
+
+    def run(self, q, it):
+        api = self.api
+        # 멈췄다 다시 돌 때는 이미 돈 판·시간을 빼고 남은 만큼만
+        runs = max(1, int(it["runs"]) - int(it.get("doneRuns") or 0)) if it.get("runs") else 0
+        minutes = max(1, math.ceil(float(it["minutes"]) - float(it.get("doneSecs") or 0) / 60)) if it.get("minutes") else 0
+        fit = api._q_fit()
+        if fit and not api._q_display(q, it):
+            return False
+        if (err := api._busy_reason()):
+            q.note(it, f"시작 못 함 — {err}")
+            return False
+        last = {"clears": 0, "secs": 0}
+
+        q.patch(it["id"], {"prog": {}, "note": ""})  # 이번에 돈 몫만 (앞서 돈 판·시간은 doneRuns·doneSecs)
+
+        def on_event(e):
+            if e.get("type") == "loot" and q.report:
+                q.report.add_loot(it, {k: e.get(k) for k in ("who", "gained", "used", "cur")})
+            if e.get("type") == "interface":
+                q.session["iface"] = True
+            if e.get("clears") is not None:
+                last.update(clears=e["clears"], secs=e.get("seconds") or 0)
+            if e.get("type") == self.KIND:  # 진행은 카드의 진행 줄(view)로 보인다
+                p = dict(it.get("prog") or {})
+                p["stage"] = e.get("stage") or p.get("stage")
+                if e.get("clears") is not None:
+                    p.update(clears=e["clears"], revives=e.get("revives") or 0, deaths=e.get("deaths") or 0,
+                             secs=e.get("seconds") or 0)
+                q.patch(it["id"], {"prog": p})
+        place = self.place()
+        t = api._repeat_launch(self.KIND, {
+            "slot": it.get("slot"), place: it.get(place), "difficulty": it.get("difficulty"), "mode": it.get("mode"),
+            "runs": runs, "minutes": minutes, "revive": it.get("revive") is not False,
+            "interface": fit and not q.session.get("iface")}, on_event)
+        t.join()
+        q.patch(it["id"], {"doneRuns": int(it.get("doneRuns") or 0) + last["clears"],
+                           "doneSecs": float(it.get("doneSecs") or 0) + last["secs"], "prog": {}})
+        r = api._rep(self.KIND).result
+        if r.get("type") == "failed":
+            q.note(it, f"실패 — {r.get('message', '')}")
+            if r.get("error"):  # 오류 → 큐가 맨 아래로 내려 한 번 더 (한 판·시간은 이어서)
+                q.set_stop("error")
+            return False
+        if r.get("stopped"):  # F12·멈추기·게임 꺼짐 등 → 일시정지 (▶ 로 다시)
+            if r.get("message"):
+                q.note(it, r["message"])
+            q.set_stop("stopped")
+            return False
+        return True
+
+    def stop(self, reason):
+        self.api._repeat_stop(self.KIND, STOP_WHY.get(reason, ""))
+
+
+class RaidKind(AbyssKind):
+    """레이드 반복 (혼자하기) — 어비스 카드와 같은 틀, 장소 칸이 raid."""
+    STAGE = {"entry": "입장", "sail": "출항", "play": "진행 중", "clear": "클리어", "repair": "장비 수리"}
+    KIND = "raid"
+
+
+class GoalKind(Kind):
+    """제작·채집·가공 목표 — "이걸 새로 N개" 를 끝까지 민다 (예전 web/queue.js 의 runGoalItem·goalExecute 를 옮김).
+
+    무엇을 할지는 판단 엔진(mabi.craft.goal)이 한 걸음씩 정하고, 여기서는 그 걸음을 실행하고 사람이 개입해야 하는
+    순간만 처리한다. 매 걸음마다 상태를 새로 읽으므로 채집이 예상보다 많이 들어오든, 가공이 늦게 끝나든 따라간다.
+    멈추는 조건은 셋 — 목표 달성, 사람이 멈춤, 그리고 진전이 없을 때. 헛돌면서 날개를 태우는 것이 가장 나쁜 실패다.
+
+    target 은 새로 만들 개수다. 엔진은 "몇 개를 들고 있으면 끝인가" 로 보므로 시작할 때의 보유량(base)을 더해 넘긴다.
+    base 는 큐가 이 카드를 처음 집어 들 때 잡고, 일시정지했다 이어 갈 때는 그대로 둔다 (다시 잡으면 한 일이 없던 것이 된다).
+    """
+    MAX_STEPS = 300  # 실행한 걸음 수 상한. 가공을 기다리는 것은 세지 않는다 (5분짜리 가공 100번이면 기다림만 100번)
+    STUCK_LIMIT = 4  # 같은 걸음이 이만큼 연달아 나오면 헛도는 것으로 본다
+    COLLECT_RETRY = 10  # 수령이 '완료된 게 없다' 로 거절되면 이만큼 기다렸다 다시 판단 (초)
+    # 가공 완료까지 이만큼 넘게 남았고 아래에 돌 카드가 있으면 그 카드에 비켜 주고, 끝날 때쯤 돌아온다 (초).
+    # 캐릭터가 다르면 오가며 두 번 다시 접속하므로(한 번 40초쯤) 너무 짧으면 손해다 (2026-11-12 사용자)
+    YIELD_MIN = 300
+
+    def __init__(self, api):
+        self.api = api
+
+    def ready(self, it) -> str:
+        """비켜 준 카드는 가공이 끝날 때(resumeAt)까지 비켜 둔다 — 큐가 아래 카드를 돌린다."""
+        at = it.get("resumeAt")
+        if not at or time.time() * 1000 >= at:
+            return ""
+        return f"가공 완료 대기 — {time.strftime('%H:%M', time.localtime(at / 1000))}쯤 이어서 (그동안 다른 카드)"
+
+    def timed(self, it) -> bool:
+        """비켜 준 카드는 돌아올 때가 되면 돌던 카드를 끊어도 되는 자리에서 끊고 먼저 한다 (필드 보스와 같은 길)."""
+        return bool(it.get("resumeAt"))
+
+    @staticmethod
+    def detail(x) -> str:
+        return (f"목표 {_num(x.get('target'))}개" + (f" · 만든 {_num(x['made'])}" if x.get("made") else "")
+                + (f" · 날개 {_num(x['spent'])}" if x.get("spent") else "") + (f" · {x['via']}" if x.get("via") else ""))
+
+    def view(self, it):
+        v = super().view(it)
+        if it.get("target"):
+            v["bar"] = [min(int(it.get("made") or 0), int(it["target"])), int(it["target"])]
+        return v
+
+    def run(self, q, it):
+        api, name = self.api, it.get("name")
+        if it.get("resumeAt"):
+            q.patch(it["id"], {"resumeAt": None}, quiet=True)  # 돌아왔다
+        if not api._q_char(q, it):  # 보유량(base)은 그 캐릭터 것이어야 한다 — 먼저 맞춘다
+            return False
+        if it.get("base") is None:
+            try:
+                base = int(api.goal_next(name, 0).get("have") or 0)
+            except Exception:  # noqa: BLE001 — 못 읽으면 0 부터 센다
+                base = 0
+            q.patch(it["id"], {"base": base})
+        spent, done, last_key, repeat, ok = 0, 0, "", 0, False
+        steps = 0
+        while True:
+            if steps >= self.MAX_STEPS:
+                q.note(it, f"걸음 상한({self.MAX_STEPS})에 닿아 멈춤 — 만든 {_num(it.get('made'))}개")
+                break
+            # 걸음 사이는 끊어도 되는 자리 — 시간 정해진 카드(필드 보스)가 열렸으면 밀려났다가 이어 한다
+            if q.stop or cutpoint.cut("가공·제작 걸음 사이"):
+                break
+            r = api.goal_next(name, (it.get("base") or 0) + int(it.get("target") or 0))  # 수량은 도중에 바뀔 수 있다 (✎)
+            if r.get("error"):
+                q.note(it, f"실패 — {r.get('message') or r.get('error')}")
+                break
+            st = r.get("step") or {}
+            have = r.get("have") or 0
+            q.patch(it["id"], {"have": have, "made": max(0, have - (it.get("base") or 0))}, quiet=True)
+            kind = st.get("kind")
+            if kind == "done":
+                q.note(it, f"달성 — 새로 {_num(it.get('made'))}개 (날개 {_num(spent)})")
+                ok = True
+                break
+            if kind == "blocked":
+                q.note(it, f"막힘 — {st.get('message') or st.get('reason') or ''}")
+                # 상점·거래는 커넥터에 명령이 없어 대신 구해 올 수 없다 → 사람에게 묻는다
+                if not api._q_ask(q, it, {"kind": "goal_blocked", "step": st, "label": it.get("label") or name}):
+                    break
+                continue  # 구해 왔다니 다시 판단해 본다
+            # 같은 걸음만 반복되면 헛도는 것이다. 기다림은 원래 반복되므로 제외한다.
+            # 가공은 한 번에 1건이라 같은 등록이 거푸 나오는 게 정상 — 남은 건수(wanted)·시설에 건 수(queued)가 바뀌면 진전이다.
+            # 제작도 한 번에 묶는 상한(10회)이 있어 같은 묶음이 거푸 나온다 — 보유량(have)·남은 횟수(runs)·필요량(need)이 바뀌면 진전
+            # (2026-11-06 여행자 간식 100개: 10회씩 잘 만들며 46개까지 왔는데 '5회 반복' 으로 섰다)
+            key = (f"{kind}:{st.get('name') or ''}:{st.get('batch') or ''}:{st.get('runs') or ''}:{st.get('need') or ''}"
+                   f":{st.get('wanted') or ''}:{st.get('queued') or ''}:{have}")
+            repeat = repeat + 1 if key == last_key and kind != "wait" else 0
+            last_key = key
+            # 학습은 한 번 해 보고 안 되면 더 해도 안 된다
+            if repeat >= (1 if kind == "learn" else self.STUCK_LIMIT):
+                q.note(it, f"진전이 없어 멈춤 — {st.get('name') or kind} {repeat + 1}회 반복")
+                break
+            q.note(it, f"[{done + 1}] {st.get('why') or kind}")
+            if kind == "wait":
+                if not self._wait(q, it, st):
+                    break
+                continue
+            steps += 1
+            got = self._execute(q, it, st, done + 1)
+            if got is None:
+                break  # 실패했고 이어갈 수 없다
+            spent += got
+            done += 1
+            q.patch(it["id"], {"spent": (it.get("spent") or 0) + got, "steps": (it.get("steps") or 0) + 1})
+        return ok
+
+    def stop(self, reason):
+        self.api._q_char_stop(reason)
+
+    def _wait(self, q, it, st) -> bool:
+        """가공이 끝나기를 기다린다. 남은 시간을 카드에 적고, 큐가 서거나 먼저 할 카드가 열리면 그만 (가공은 시설에서 계속된다).
+        오래 남았고 아래에 돌 카드가 있으면 그 카드에 비켜 준다 — 끝날 시각을 적어 두면(resumeAt) 그때 큐가 돌던 카드를
+        끊어도 되는 자리에서 끊고 이 카드로 돌아온다 (ready·timed)."""
+        secs = max(5, float(st.get("seconds") or 0))
+        if secs >= self.YIELD_MIN and (nxt := q.yield_to(it)):
+            at = int((time.time() + secs) * 1000)
+            q.patch(it["id"], {"resumeAt": at}, quiet=True)
+            when = time.strftime("%H:%M", time.localtime(at / 1000))
+            log.info(f"작업 큐: '{it.get('label')}' 가공 완료까지 {int(secs) // 60}분 — 그동안 '{nxt.get('label')}' 먼저, {when}쯤 이어서")
+            q.set_stop("yield", {"note": f"가공 완료 대기 — {when}쯤 이어서 (그동안 다른 카드)"})
+            return False
+        until = time.monotonic() + secs
+        while time.monotonic() < until:
+            if q.stop or cutpoint.cut("가공 완료 대기"):
+                return False
+            left = int(until - time.monotonic())
+            q.note(it, f"가공 완료까지 {left // 60}분 {left % 60}초 대기" if left >= 60 else f"가공 완료까지 {left}초 대기")
+            time.sleep(min(5, max(0.1, until - time.monotonic())))
+        return True
+
+    def _execute(self, q, it, st, n) -> int | None:
+        """한 걸음을 실제로 실행한다 (명령·거절 가르기는 mabi.craft.execute 의 step_command·step_failure).
+        쓴 날개를 돌려주고, 이어갈 수 없으면 None."""
+        api, kind, tag = self.api, st.get("kind"), f"({n}) "
+        cmd, body, act = step_command(st)
+        label = f"{tag}{st.get('facility')} 수령" if kind == "collect" else tag + (st.get("why") or st.get("name") or "")
+        r = api._q_exec(q, cmd, body, {"label": label, "act": act}, st.get("facility") or st.get("name") or "")
+        if r.get("ok"):
+            return int(r.get("wingsSpent") or 0)
+        what = step_failure(kind, r)
+        if what == STEP_RETRY_LATER:  # 계속 이러면 STUCK_LIMIT 에서 멈춘다
+            return 0 if self._wait(q, it, {"seconds": self.COLLECT_RETRY}) else None
+        if what == STEP_AGAIN:
+            return 0
+        if what == STEP_STOP_SKILL:  # 카드를 접고 큐 전체를 세운다. 시작 전 거절이라 날개는 안 나간다
+            data = r.get("data") if isinstance(r.get("data"), dict) else {}
+            q.set_stop("skill", {"what": st.get("name"), "level": r.get("requiredLevel") or data.get("requiredLevel")})
+            api._q_toast("생활 스킬 레벨이 모자랍니다",
+                         f"{st.get('name')} 을(를) 캘 수 없어 작업 큐를 세웠습니다."
+                         + (f" 필요 레벨 {data['requiredLevel']}." if data.get("requiredLevel") else ""), "bad")
+        elif what == STEP_STOP_TRANSFER:
+            # 계획은 보관함 반출 비용이 늘 있다고 보고 세운다. 게임이 모자란다고 하면 여기서 멈춘다
+            q.set_stop("transfer", {"what": st.get("name")})
+            api._q_toast("분해된 장비 부품이 모자랍니다",
+                         f"{st.get('name')} 의 재료를 보관함에서 꺼낼 수 없어 작업 큐를 세웠습니다.", "bad")
+        else:  # 까닭을 카드에 남긴다 — 안 남기면 직전 걸음 메모('수령합니다')만 보여 무엇이 안 됐는지 모른다
+            ko = r.get("ko") or {}
+            q.note(it, f"실패 — {label}: {ko.get('text') or r.get('message') or r.get('error') or '알 수 없음'}")
+        return None
+
+
+class ActionKind(Kind):
+    """한 번 하는 행동 (제작·채집·가공·수령·연주 버튼). 비용 확인은 화면이 카드를 넣기 전에 받았다."""
+
+    def __init__(self, api):
+        self.api = api
+
+    @staticmethod
+    def detail(x) -> str:
+        return x.get("detail") or ""
+
+    def run(self, q, it):
+        if not self.api._q_char(q, it):
+            return False
+        if it.get("act") == "collectAll":
+            return self.api._q_collect_all(q, it)
+        r = self.api.exec(it.get("command"), it.get("body"), origin={"label": it.get("label"), "act": it.get("act")})
+        if not r.get("ok"):
+            ko = r.get("ko") or {}
+            q.note(it, "실패 — " + (ko.get("text") or r.get("message") or r.get("error") or "알 수 없음"))
+        return bool(r.get("ok"))
+
+    def stop(self, reason):
+        self.api._q_char_stop(reason)
+
+
+class EnhanceKind(Kind):
+    """각인 강화 반복 — 열어 둔 각인 강화 창에서 성공할 때까지 Space (mabi.tasks.enhance). 어디로 찾아가지 않는다."""
+
+    def __init__(self, api):
+        self.api = api
+
+    @staticmethod
+    def detail(x) -> str:
+        return "성공할 때까지"
+
+    def view(self, it):
+        v = super().view(it)
+        p = it.get("prog") or {}
+        if p.get("tries"):
+            v["now"] = f"+{p['target']} 실패 {p['tries']}번"
+        return v
+
+    def run(self, q, it):
+        from mabi.tasks import enhance
+        if (err := self.api._busy_reason()):
+            q.note(it, f"시작 못 함 — {err}")
+            return False
+        q.patch(it["id"], {"prog": {}, "note": ""})
+        bot = None
+        try:
+            with self.api._game_bot("enhance") as bot:
+                if not bot.window.find():
+                    q.note(it, "실패 — 게임이 꺼져 있습니다")
+                    return False
+                bot.background = True  # 게임을 앞으로 가져오지 않는다 — 키는 창에 직접
+                r = enhance.repeat(bot, lambda n, t: q.patch(it["id"], {"prog": {"tries": n, "target": t}}))
+                q.note(it, f"+{r['level']} 성공 ({r['tries']}번째)")
+                return True
+        except Exception as e:  # noqa: BLE001 — F12·멈추기는 일시정지 (▶ 로 다시 — 창이 그대로면 이어서 누른다)
+            status, summary = self.api._q_failed(q, bot, e, "enhance", "각인 강화 반복", retry=True)
+            if status != "STOP":
+                q.note(it, f"실패 — {summary}")
+            return False
+
+    def stop(self, reason):
+        self.api._bot_stop("enhance", STOP_WHY.get(reason, ""))
+
+
+class RestartKind(Kind):
+    """게임 다시 켜기 (mabi/restart) — 연속 실행 제한 창을 보면 _q_restart 가 맨 위에 올린다. 시간 정해진 카드처럼(timed)
+    끊어도 되는 자리에서 돌던 카드를 밀어내고 먼저 한 뒤 밀린 카드를 이어 한다. 못 하면 일시정지 (사람이 게임을 켜고 ▶)."""
+    own_loot = True  # 얻는 것이 없다 — 앞뒤로 가방을 재지 않는다 (꺼진 게임에 CLI 를 묻지 않게)
+
+    def __init__(self, api):
+        self.api = api
+
+    @staticmethod
+    def detail(x) -> str:
+        return x.get("why") or "연속 실행 제한"
+
+    def timed(self, it) -> bool:
+        return True
+
+    def run(self, q, it):
+        bot = None
+        try:
+            if (err := self.api._busy_reason()):
+                raise RuntimeError(err)
+            cfg = load_config(self.api.paths)
+            with self.api._game_bot("restart", cfg) as bot:
+                q.note(it, "게임을 다시 켜는 중…")
+                # 끄기 전 캐릭터를 카드에 적어 둔다 — 켜다 실패해 ▶ 로 다시 할 때 같은 캐릭터로 들어가게. 명령(force)은 한 번만
+                # 끈다 (이미 끈 카드를 ▶ 로 이어 하면 사람이 켠 게임을 다시 끄지 않게)
+                q.note(it, restart.run(bot, cfg, it.get("who"), force=bool(it.get("force")) and not it.get("closed"),
+                                       keep=lambda ch: q.patch(it["id"], {"who": ch, "closed": True}, quiet=True)))
+                return True
+        except Exception as e:  # noqa: BLE001 — 가르는 규칙은 다른 카드와 같은 outcome
+            status, summary = self.api._q_failed(q, bot, e, "restart", "게임 다시 켜기")
+            if status != "STOP":
+                # 다음 카드가 꺼진 게임에서 돌지 않게 큐를 세운다 — ▶ 면 이 카드부터 (게임이 켜져 있으면 접속만 확인)
+                q.set_stop("stopped", {"note": f"게임을 다시 켜지 못함 — {summary} · 게임을 켠 뒤 ▶"})
+            return False
+
+    def stop(self, reason):
+        self.api._bot_stop("restart", STOP_WHY.get(reason, ""))
+
+
+class QueueApi:
+    """self.paths, self.cd, self._emit, DailyApi 가 있는 클래스에 섞는다. _init_queue() 를 __init__ 에서 부른다."""
+
+    queue: WorkQueue | None = None
+
+    def _init_queue(self) -> None:
+        emit = lambda ch, v: self._emit(ch, v)  # noqa: E731 — 창은 나중에 붙는다
+        self._q_pending_ask: dict | None = None
+        self.queue = WorkQueue(self.cd.queue_file, self.cd.history_file, emit,
+                               {"daily": DailyKind(self), "abyss": AbyssKind(self), "raid": RaidKind(self), "goal": GoalKind(self),
+                                "action": ActionKind(self), "enhance": EnhanceKind(self), "restart": RestartKind(self)},
+                               on_drained=self._q_drained, pause_note=self._q_pause_note,
+                               snap=self._q_snap, on_report=self._q_report)
+        # 시간 정해진 카드가 열리면 돌던 일을 끊어도 되는 자리에서 끊는다
+        cutpoint.set_hook(self.queue.cut_for_timed, self.queue.timed_due)
+        # 연속 실행 제한 창을 보면 '게임 다시 켜기' 카드를 맨 위에 (같은 끊는 자리로 먼저 한다)
+        restart.set_hook(self._q_restart)
+        # 서버 연결이 끊겨(점검 등) 게임을 끄면 그 까닭을 카드 메모로 남기고 큐를 일시정지 (점검 뒤 게임을 켜고 ▶ 면 이어 함)
+        restart.set_pause_hook(lambda note: self.queue.set_stop("stopped", {"note": note}))
+        threading.Thread(target=self._q_hotkey, name="queue-f12", daemon=True).start()
+
+    def _q_restart(self, why: str, now: bool, force: bool = False) -> bool:
+        """mabi/restart 가 부른다 (연속 실행 제한 창·캐릭터 선택 먹통): 맨 위에 '게임 다시 켜기' 카드를 둔다. now(게임 탓으로
+        일이 실패함)면 돌던 카드를 바로 밀어내고, 아니면 끊어도 되는 자리에서 큐가 밀어낸다 (cut_for_timed). 받았으면 True.
+        force 면 연속 실행 제한 창이 없어도 끈다 (RestartKind → restart.run).
+        큐가 쉬면(사람이 하는 중) 하지 않는다 — 돌던 카드가 그 카드 자신일 때도."""
+        q = self.queue
+        cur = q.current()
+        if not q.running or not cur or cur.get("kind") == "restart":
+            return False
+        if q.put_first({"kind": "restart", "label": "게임 다시 켜기", "why": why, **({"force": True} if force else {})}):
+            log.warning(f"{why} → 작업 큐 맨 위에 '게임 다시 켜기' (하던 일은 끊어도 되는 자리에서 멈추고, 다시 켠 뒤 이어서)")
+        if now:
+            q.preempt("게임을 다시 켠 뒤 이어서")
+        return True
+
+    # ---- 결과 창: 큐가 다 비면 (다 끝남·전체 중단·마지막 카드 뺌) mabi/workqueue 가 보고서를 넘긴다
+    def _q_snap(self):
+        def query(cmd):
+            r = self.cli.run(cmd, timeout=15)
+            return r.data if r.ok else None
+        return queue_report.snapshot(query)
+
+    @property
+    def _q_report_file(self):
+        return self.paths.data / "queue-report.json"
+
+    def _q_report(self, rep: dict) -> None:
+        try:
+            self._q_report_file.write_text(json.dumps(rep, ensure_ascii=False, indent=1), encoding="utf-8")
+        except OSError:
+            log.exception("작업 큐 결과 저장 실패")
+        log.info(f"작업 큐 끝 — 결과 창 ({len(rep['cards'])}건)")
+        self._emit("mm:queue-report", rep)
+        self._bring_front()  # 결과 창이 게임 위로 보이게
+
+    def queue_lastReport(self) -> dict | None:  # noqa: N802
+        """지난 결과 창 다시 보기."""
+        try:
+            return json.loads(self._q_report_file.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return None
+
+    def _q_pause_note(self) -> str:
+        key = str(load_config(self.paths)["game"]["stop_key"]).upper()
+        return f"일시정지 · {key} 나 ▶ 로 재개"
+
+    def _q_stop_key(self) -> None:
+        """일시정지 키를 눌렀다: 돌고 있으면 일시정지, 쉬고 있으면 맨 위 일시정지 카드 이어 하기.
+        Ctrl+키 = 전체 중단 (큐를 비운다 → 결과 창), Shift+키 = 지금 작업만 중단 (빼고 다음 카드로)."""
+        from mabi.inputs import key_pressed
+        q = self.queue
+        if key_pressed(0x11):  # Ctrl
+            if q.items:
+                log.info("Ctrl+F12 → 작업 큐 전체 중단")
+                q.clear()
+                self.cli.cancel()
+            return
+        if key_pressed(0x10):  # Shift
+            if q.current() or q.top_paused():
+                log.info("Shift+F12 → 지금 작업 중단, 다음 카드로")
+                q.skip_current()
+                self.cli.cancel()
+            return
+        if q.running:
+            log.info("F12 → 작업 큐 일시정지")
+            q.request_stop("pause")
+            self.cli.cancel()
+        elif q.can_resume():
+            log.info("F12 → 이어 하기")
+            q.resume_top()
+
+    def _q_hotkey(self) -> None:
+        """앱 단축키를 앱이 켜져 있는 동안 늘 본다 — 일시정지 키(F12)와 염색 도우미 키(F11, _dye_key 가 있을 때).
+        일시정지 키(F12) 하나로 작업 큐 전체를 다룬다.
+          큐가 돌고 있으면 → 무엇이 돌든 일시정지 (지금 명령도 끊는다 — ■ 와 같다)
+          쉬고 있으면     → 맨 위 일시정지 카드를 이어 한다
+        예전에는 숙제·어비스가 저마다 F12 를 봐서 행동·목표 카드는 F12 로 안 멈췄고, 이어 하기 감시는 숙제가
+        멈출 때만 켜져 리모콘을 다시 켜면 안 들었다 (2026-10-24). 숙제·어비스 안의 중단 감시는 그대로 두지만,
+        키 상태를 읽기만 하므로(GetAsyncKeyState 0x8000) 서로 눌림을 빼앗지 않는다."""
+        from mabi.inputs import key_pressed, vk_of
+        keys, checked, down = {}, 0.0, set()
+        while True:
+            try:
+                if time.monotonic() - checked > 3:  # 설정에서 키를 바꿀 수 있다
+                    g = load_config(self.paths)["game"]
+                    keys = {vk_of(g["stop_key"]): self._q_stop_key}
+                    dye = getattr(self, "_dye_key", None)
+                    if dye and g.get("dye_key"):
+                        keys.setdefault(vk_of(g["dye_key"]), dye)  # 같은 키면 일시정지가 먼저
+                    checked = time.monotonic()
+                now = {vk for vk in keys if key_pressed(vk)}
+                for vk in now - down:
+                    keys[vk]()
+                down = now
+            except Exception:  # noqa: BLE001 — 감시가 죽으면 F12 가 영영 안 든다
+                log.exception("단축키 감시 오류")
+                time.sleep(1)
+            time.sleep(0.03)
+
+    def _q_toast(self, title: str, text: str = "", kind: str = "ok") -> None:
+        self._emit("mm:queue-toast", {"title": title, "text": text, "kind": kind})
+
+    def _q_failed(self, q: WorkQueue, bot, e: BaseException, tag: str, label: str, retry: bool = False) -> tuple[str, str]:
+        """큐 카드가 게임 조작 중 예외로 끝났다 → (상태, 요약). 가르는 규칙은 다른 일과 같은 outcome.classify.
+        Bot 을 만들기도 전이면(bot None) '시작 실패' 로 로그를 남기고 ERROR. 멈춤(F12·멈추기)이면 큐를 일시정지한다
+        (▶ 로 다시). 재료가 다 떨어졌으면(OutOfStock) 카드를 큐에서 뺀다. 카드 메모는 부르는 쪽이 상태를 보고 남긴다.
+        retry: 이 실패가 그 카드의 실패다 — 오류면 자리를 정리하고(settle) 큐가 카드를 맨 아래로 내려 한 번 더.
+        (게임 다시 켜기 카드는 실패하면 큐를 세워야 해 쓰지 않는다)"""
+        from mabi import outcome
+        from mabi.exceptions import OutOfStock
+        if bot is None:
+            log.exception(f"{label} 시작 실패")
+            if retry:
+                q.set_stop("error")
+            return "ERROR", str(e)
+        status, summary, messy = outcome.classify(bot, tag, label, e)
+        if status == "STOP":
+            q.set_stop("stopped")
+        elif isinstance(e, OutOfStock):
+            q.set_stop("drop")
+        elif retry and outcome.unexpected(e):
+            outcome.after_failure(bot, e, messy, label, in_game=tag != "login")
+            q.set_stop("error")
+        return status, summary
+
+    def _q_char(self, q: WorkQueue, it: dict) -> bool:
+        """제작·채집·가공 카드를 시작하기 전 캐릭터 맞추기 (card_character). 다른 캐릭터면 그 캐릭터로 접속한다.
+        못 맞추면 카드 메모에 까닭을 적고 False (멈추기·F12 는 일시정지)."""
+        from mabi import profile as prof
+        from mabi.tasks import login
+        chars = prof.chars(self.paths)
+        what, want = card_character(it, chars)
+        if what == "any":
+            return True
+        if what == "missing":
+            q.note(it, f"실패 — 슬롯 {it.get('slot')} 캐릭터가 캐릭터 목록에 없습니다")
+            return False
+        if (err := self._busy_reason()):
+            q.note(it, f"시작 못 함 — {err}")
+            return False
+        bot = None
+        try:
+            cfg = load_config(self.paths)
+            with self._game_bot("char", cfg) as bot:
+                if not bot.window.find():
+                    q.note(it, "실패 — 게임이 꺼져 있습니다")
+                    return False
+                if what == "remember":
+                    now = login.current_character(bot)
+                    if now:  # 모르면 적지 않는다 — 다음에 집을 때 다시 본다
+                        q.patch(it["id"], {"pin": {"slot": now["slot"], "name": now["name"]}})
+                        log.info(f"{it.get('label') or '카드'}: 지금 캐릭터(슬롯 {now['slot']})로 하는 카드로 기억")
+                    else:
+                        log.info(f"{it.get('label') or '카드'}: 지금 캐릭터 이름을 몰라 기억하지 않음 — 다음에 집을 때 다시 봄")
+                    return True
+                name = login.current_name(bot)
+                if name and login.name_matches(name, want["name"]):
+                    return True
+                if not self._q_display(q, it):
+                    return False
+                log.info(f"{it.get('label') or '카드'}: {want['name']} 로 하는 카드 → 접속을 바꿈 (지금 {name or '이름 모름'})")
+                bot.log.info(login.run(bot, cfg, want))
+                return True
+        except Exception as e:  # noqa: BLE001 — 가르는 규칙은 다른 반복과 같은 outcome
+            status, summary = self._q_failed(q, bot, e, "login", "캐릭터 맞추기", retry=True)
+            if status != "STOP":
+                q.note(it, f"{'실패' if bot is None else '캐릭터 맞추기 실패'} — {summary}")
+            return False
+
+    def _q_char_stop(self, reason: str) -> None:
+        """큐가 선다 — 캐릭터를 바꾸는 중이면 멈춘다 (걸음 사이에서 멈추는 것은 q.stop 이 한다)."""
+        self._bot_stop("char", STOP_WHY.get(reason, ""))
+
+    def _q_fit(self) -> bool:
+        """옵션 창 '화면 설정 맞추기' ([run] fit_display) — 숙제·어비스·레이드 카드가 시작할 때 모두 이 값을 따른다
+        (예전엔 탭마다 체크박스가 있어 카드에 담겼다 — 2026-10-28 사용자: 옵션 창으로 완전히 옮김)."""
+        return bool(load_config(self.paths)["run"]["fit_display"])
+
+    def _q_display(self, q: WorkQueue, it: dict) -> bool:
+        """숙제·어비스·레이드를 시작하기 전 게임 화면 설정 확인. 기준과 다르면 묻지 않고 맞춘다 (큐가 다 끝나면 되돌림).
+        큐 한 번에 한 번만 (q.session['screen']). 맞추지 못하면 False."""
+        if not self._q_fit():
+            return True
+        q.session["used"] = True
+        if q.session.get("screen"):
+            return True
+        d = self.daily_displayCheck({"chars": it.get("chars"), "only": it.get("only"), "force": it.get("force"),
+                                     "always": (it.get("kind") or "goal") != "daily"})
+        if d.get("ok"):
+            q.session["screen"] = not d.get("idle")  # 오늘 할 게 없어 안 본 것이면 다음 카드에서 다시 본다
+            return True
+        q.note(it, "화면 설정 맞추는 중")
+        log.info("화면 설정 맞추는 중: " + ", ".join(d.get("problems") or ["확인 실패"]))
+        m = self._display_fix_sync()
+        if not m.get("ok"):
+            self._q_toast("화면 설정을 맞추지 못했습니다", m.get("message", ""), "bad")
+            q.note(it, f"화면 설정 실패 — {m.get('message', '')}")
+            return False
+        self._q_toast("화면 설정을 파일로 맞췄습니다" if m.get("running") is False else "화면 설정을 맞췄습니다", m.get("message", ""))
+        q.session["screen"] = m.get("running") is not False
+        return True
+
+    def _q_ask(self, q: WorkQueue, it: dict, payload: dict) -> bool:
+        """돌던 카드가 사람에게 묻는다 ('mm:queue-ask'). 화면이 queue.answer(True|False) 로 답할 때까지 기다린다.
+        큐가 서면(F12·⏸) 그만 기다리고 False. 화면을 새로 띄우면 queue.state 가 이 질문을 다시 준다."""
+        ask = {"id": it["id"], **payload}
+        ev = threading.Event()
+        self._q_pending_ask = {"ask": ask, "event": ev, "answer": False}
+        self._emit("mm:queue-ask", ask)
+        try:
+            while not ev.wait(0.5):
+                if q.stop:
+                    return False
+            return bool(self._q_pending_ask and self._q_pending_ask["answer"])
+        finally:
+            self._q_pending_ask = None
+            self._emit("mm:queue-ask", None)  # 화면이 띄운 질문 창을 닫는다 (큐가 서서 그만 기다린 경우)
+
+    def _q_wait_dialog_closed(self, q: WorkQueue, label: str, limit: float = 120) -> bool:
+        """게임에 확인 창(대화)이나 어비스 결과 연출이 떠 있으면 닫힐 때까지 기다린다 (처음 한 번 알림). 닫혔으면 True.
+        큐가 서면(q.stop) 그만 기다린다."""
+        end, told = time.monotonic() + limit, False
+        while time.monotonic() < end:
+            if q.stop:
+                return False
+            a = self.query("activity", {})
+            if not (isinstance(a, dict) and (a.get("dialogue") or a.get("abyssResult"))):
+                return True
+            if not told:
+                told = True
+                self._q_toast("게임에서 확인이 필요합니다", f"{label} — 게임 창에서 확인을 눌러 주세요. 닫히면 자동으로 이어갑니다.", "bad")
+            time.sleep(2)
+        return False
+
+    def _q_exec(self, q: WorkQueue, command: str, body: dict, origin: dict, wait_label: str) -> dict:
+        """큐 카드의 게임 명령 하나. 게임 쪽 확인 창에 막혔으면(blocked) 닫히길 기다렸다가 한 번 더 —
+        한 번만 (가공은 막혀도 날개가 이미 나간다, 실측). wait_label: 기다릴 때 알림에 쓰는 이름."""
+        from mabi.connector import is_agent_limit
+        r = self.exec(command, body, origin=origin)
+        if r.get("ok") or r.get("error") != "blocked":
+            return r
+        if is_agent_limit(r.get("error"), r.get("data")):
+            retry = self._q_clear_agent_limit(q)
+        else:
+            retry = self._q_wait_dialog_closed(q, wait_label)
+        if retry:
+            r = self.exec(command, body, origin={**origin, "label": origin["label"] + " (재시도)"})
+        return r
+
+    def _q_clear_agent_limit(self, q: WorkQueue) -> bool:
+        """AI 에이전트 연속 사용 제한 — 게임 안 확인 창을 눌러 푼다. 화면 정리(situation.to_main)가 확인 창을 누른다
+        (2026-11-13 04:46 다음 카드의 화면 정리가 '확인' 을 누른 뒤 어비스가 계속 돌았다). 눌러 봤으면 True."""
+        from mabi import situation
+        if q.stop or self._busy_reason():
+            return False
+        log.warning("CLI 연속 사용 제한 → 게임 안 확인 창을 눌러 보고 한 번 더 함")
+        bot = None
+        try:
+            with self._game_bot("char") as bot:  # 큐가 서면 _q_char_stop 이 이 Bot 을 멈춘다
+                if not bot.window.find():
+                    return False
+                situation.to_main(bot, timeout=30)
+                return not q.stop
+        except Exception as e:  # noqa: BLE001 — 멈춤은 일시정지, 나머지는 실패로 (가르는 규칙은 outcome)
+            self._q_failed(q, bot, e, "login", "확인 창 닫기")
+            return False
+
+    def _q_collect_all(self, q: WorkQueue, it: dict) -> bool:
+        """가공 완료분 전체 수령 — 완료분이 있는 시설마다 complete_altering_work 한 번.
+        수령은 비용이 없고 되돌릴 것도 없어 묻지 않는다. 앞 시설의 보상 창이 남아 있으면 닫히길 기다린다."""
+        w = self.query("alteringWorks", {"refresh": True})
+        targets = [f["completed"][0]["name"] for f in (w.get("facilities") or []) if f.get("completed")]
+        if not targets:
+            q.note(it, "수령할 작업 없음")
+            self._q_toast("수령할 작업 없음")
+            return True
+        done = failed = 0
+        for i, name in enumerate(targets):
+            if q.stop:
+                break
+            label = f"({i + 1}/{len(targets)}) {name} 시설"
+            q.note(it, f"수령 중… {label}")
+            if i > 0 and not self._q_wait_dialog_closed(q, label):
+                q.note(it, "확인 창이 닫히지 않아 멈춤")
+                break
+            r = self._q_exec(q, "complete_altering_work", {"displayName": name}, {"label": f"{label} 수령", "act": "collect"}, label)
+            if r.get("ok"):
+                done += 1
+            else:
+                failed += 1
+        q.note(it, f"완료 {done}곳" + (f" · 실패 {failed}곳" if failed else ""))
+        self._q_toast("전체 수령 종료", f"완료 {done}곳" + (f" · 실패 {failed}곳" if failed else ""), "bad" if failed else "ok")
+        self._emit("mm:exec-done", {"command": "complete_altering_work", "ok": True, "origin": {"act": "collectAll", "quiet": True}})
+        return failed == 0 and not q.stop
+
+    def _q_drained(self, q: WorkQueue) -> None:
+        """할 일이 다 끝났다 (일시정지 카드도 없음) → 이번 큐에서 맞춘 화면 설정을 되돌린다."""
+        if q.session.get("used"):
+            self.daily_displayRestore()
+
+    # ---- 화면 (mm.queue.*) ----
+    def queue_state(self) -> dict:
+        """화면이 처음 뜰 때. 기다리는 질문이 있으면 같이 준다 (다시 띄운다)."""
+        p = self._q_pending_ask
+        return {**self.queue.snapshot(), "labels": gd.labels().get("queue_state", {}), "ask": p["ask"] if p else None}
+
+    def queue_answer(self, item_id, yes) -> dict:
+        """돌던 카드의 질문에 답한다."""
+        p = self._q_pending_ask
+        if not p or str(p["ask"]["id"]) != str(item_id):
+            return {"ok": False}
+        p["answer"] = bool(yes)
+        p["event"].set()
+        return {"ok": True}
+
+    def queue_add(self, spec: dict, where: str = "end", replace_paused: bool = False) -> dict:
+        return self.queue.add(spec if isinstance(spec, dict) else {}, where, bool(replace_paused))
+
+    def queue_remove(self, item_id) -> dict:
+        self.queue.remove(item_id)
+        return {"ok": True}
+
+    def queue_move(self, item_id, delta) -> dict:
+        self.queue.move(item_id, int(delta))
+        return {"ok": True}
+
+    def queue_playOne(self, item_id) -> dict:  # noqa: N802
+        self.queue.play_one(item_id)
+        return {"ok": True}
+
+    def queue_pauseOne(self, item_id) -> dict:  # noqa: N802
+        self.queue.pause_one(item_id)
+        return {"ok": True}
+
+    def queue_pause(self) -> dict:
+        self.queue.pause()
+        return {"ok": True}
+
+    def queue_halt(self) -> dict:
+        """지금 명령까지 끊고 일시정지 (⏸ 는 이번 걸음을 마치고)."""
+        self.queue.pause()
+        self.cli.cancel()
+        return {"ok": True}
+
+    def queue_playAll(self) -> dict:  # noqa: N802
+        self.queue.play_all()
+        return {"ok": True}
+
+    def queue_tidy(self) -> dict:
+        self.queue.tidy()
+        return {"ok": True}
+
+    def queue_clear(self) -> dict:
+        self.queue.clear()
+        return {"ok": True}
+
+    def queue_edit(self, item_id, target) -> dict:
+        self.queue.edit(item_id, int(target))
+        return {"ok": True}
+
+    def queue_chars(self) -> list:
+        """제작·채집·가공 카드의 캐릭터 고르기 목록 [{slot, name}] (카드의 캐릭터 버튼)."""
+        from mabi import profile as prof
+        return [{"slot": c["slot"], "name": c["name"]} for c in prof.chars(self.paths)]
+
+    def queue_patch(self, item_id, fields) -> dict:
+        self.queue.patch(item_id, fields if isinstance(fields, dict) else {})
+        return {"ok": True}
+

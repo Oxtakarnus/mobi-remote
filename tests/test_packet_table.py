@@ -1,0 +1,246 @@
+"""패킷 상태 표(data\\packet-states.bin) 테스트. 본문 바이트는 실제 던전 캡처에서 가져왔다."""
+import json
+import struct
+import tempfile
+import unittest
+from pathlib import Path
+from unittest import mock
+
+from mabi import packet_diag, packet_table, paths
+from mabi.packet_diag import PacketDiag
+from mabi.packet_table import Table, seal, unseal
+
+
+def bundled() -> Table:
+    # 데이터 폴더의 덮어쓰기 판이 아니라 저장소에 든 판을 시험한다
+    return Table(unseal((paths.resource_dir() / "data" / packet_table.FILE_NAME).read_bytes()))
+
+
+# 키는 저장소에 없다 (개발 PC 에만) — 없으면 표를 쓰는 시험은 건너뛴다
+needs_key = unittest.skipUnless(packet_table.key_file().exists(), "packet.key 없음")
+
+
+@needs_key
+class SealTest(unittest.TestCase):
+    def test_round_trip(self):
+        data = {"a": [1, 2, 3], "한글": "값"}
+        self.assertEqual(unseal(seal(data)), data)
+
+    def test_nonce_differs(self):
+        self.assertNotEqual(seal({"a": 1}), seal({"a": 1}))
+
+    def test_tamper_detected(self):
+        blob = bytearray(seal({"a": 1}))
+        blob[30] ^= 1
+        with self.assertRaises(ValueError):
+            unseal(bytes(blob))
+
+    def test_not_a_table(self):
+        with self.assertRaises(ValueError):
+            unseal(b"{}" * 40)
+
+
+@needs_key
+class DecodeTest(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.t = bundled()
+
+    def decode(self, key: str, hexbody: str):
+        ev = self.t.by_key(key)
+        self.assertIsNotNone(ev, key)
+        got = self.t.decode(ev.proto, bytes.fromhex(hexbody))
+        self.assertIsNotNone(got)
+        return got[1]
+
+    def test_server_notices(self):
+        """서버 연결 끊김 단서로 로그에 남기는 서버 알림(system.*)이 표에 있다 — 표를 다시 묶어도 빠지지 않게 (2026-11-12)."""
+        keys = {e.key for e in self.t.events() if e.key.startswith("system.")}
+        self.assertTrue({"system.session_kicked", "system.kicked_by_block", "system.scheduled_block"} <= keys, keys)
+
+    def test_spear_monster_follows_markers(self):
+        """물길 주술사 위치·종류는 표식으로 찾는다 — 앞 내용이 늘거나 줄어 칸이 밀려도 (11-05 패치 64바이트) 같은 값."""
+        pos_mark = bytes.fromhex("0000403f00010000000000000000ffffffff")
+        kind_mark = bytes.fromhex("10000000") + bytes(range(16)) + bytes.fromhex("0000000001")
+        ev = self.t.by_key("spear.monster")
+        for pad in (0, 64, 128):  # 패치 뒤 · 패치 전 · 더 늘어난 경우
+            body = bytearray(1800)
+            struct.pack_into("<Q", body, 0, 777)
+            k = 618 - len(kind_mark) + pad
+            body[k:k + len(kind_mark)] = kind_mark
+            struct.pack_into("<II", body, k + len(kind_mark), 2, 0x662b9106)
+            struct.pack_into("<fff", body, 1072 + pad, -10.0, 151.0, 1.57)
+            body[1072 + pad + 16:1072 + pad + 16 + len(pos_mark)] = pos_mark
+            v = self.t.decode(ev.proto, bytes(body))[1]
+            self.assertEqual((v["actor"], v["x"], v["y"]), (777, -10.0, 151.0), pad)
+            self.assertEqual(v["kind"], 0x662b9106_00000002, pad)
+
+    def test_marker_missing_uses_fixed_offset(self):
+        ev = self.t.by_key("spear.monster")
+        body = bytearray(1800)
+        struct.pack_into("<ff", body, 1072, 3.0, 4.0)
+        v = self.t.decode(ev.proto, bytes(body))[1]
+        self.assertEqual((v["x"], v["y"]), (3.0, 4.0))
+
+    def test_equip_update_reads_from_end(self):
+        """장비 갱신의 각인 단계·강화 경험치는 끝에서부터 — 박힌 보석 수만큼 앞이 늘어도 (298 · 322바이트) 같은 값.
+        고정 위치로 읽을 때는 보석 3개짜리 장비에서 단계가 엉뚱한 수로 읽혀 강화 반복이 첫 번에 멈췄다 (11-09)."""
+        ev = self.t.by_key("equip.update")
+        for size in (298, 322):
+            body = bytearray(size)
+            struct.pack_into("<Q", body, 8, 77)
+            struct.pack_into("<I", body, size - 123, 16)
+            struct.pack_into("<I", body, size - 74, 377304)
+            v = self.t.decode(ev.proto, bytes(body))[1]
+            self.assertEqual((v["id"], v["carving_level"], v["carving_exp"]), (77, 16, 377304), size)
+        self.assertEqual(self.t.decode(ev.proto, bytes(60))[1], {"id": 0})  # 너무 짧으면 그 칸은 빠진다
+
+    def test_dungeon_state(self):
+        self.assertEqual(self.decode("dungeon.state", "02000000")["state_name"], "InProgress")
+        self.assertEqual(self.decode("dungeon.state", "03000000")["state_name"], "Cleared")
+        self.assertEqual(self.decode("dungeon.state", "00000000")["state_name"], "NotInDungeon")
+
+    def test_entering_channel(self):
+        v = self.decode("channel.entering", "ac78730b0040108272")
+        self.assertEqual(v["channel"], 192116908)
+        self.assertEqual(v["channel_type"], "InstanceDungeon")
+        v = self.decode("channel.entering", "7b47393594750000")
+        self.assertEqual(v["channel_type"], "Field")
+
+    def test_unknown_channel_is_empty(self):
+        v = self.decode("dungeon.current", "00000000")
+        self.assertEqual((v["channel"], v["channel_name"], v["channel_type"]), (0, "", ""))
+
+    def test_server_change_address(self):
+        addr = "3.34.137.171:16000".encode("utf-16le")
+        v = self.decode("channel.server_change", len(addr).to_bytes(4, "little").hex() + addr.hex())
+        self.assertEqual(v["address"], "3.34.137.171:16000")
+
+    def test_short_body_skips_field(self):
+        self.assertEqual(self.decode("dungeon.state", "02"), {})
+
+    def test_not_state_event(self):
+        # 0x030d4b 는 게임에 있는 메시지(하트비트)지만 상태 이벤트는 아니다
+        self.assertIn(0x030D4B, self.t.known)
+        self.assertIsNone(self.t.decode(0x030D4B, b""))
+
+    def test_channel_names_only_where_needed(self):
+        self.assertEqual(self.t.channel(192116908)["name"], "북쪽 폐허 심층 던전 4-1 매우 어려움")
+        self.assertTrue(all("name" not in c for c in self.t.channels.values() if c["type"] == "MiniGame"))
+
+    def test_enum_fields_resolve(self):
+        for ev in self.t.events():
+            for f in ev.fields:
+                if f.enum:
+                    self.assertTrue(self.t.enum(f.enum), f"{ev.key}: {f.enum}")
+
+
+@needs_key
+class DiagTest(unittest.TestCase):
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.dir = Path(tmp.name)
+        self.t = bundled()
+        self.t.diag = PacketDiag(self.dir, self.t.meta)
+        quiet = mock.patch.object(packet_diag.log, "warning")
+        quiet.start()
+        self.addCleanup(quiet.stop)
+
+    def lines(self) -> list[dict]:
+        out = []
+        for f in self.dir.glob("packet-*.log"):
+            out += [json.loads(s) for s in f.read_text(encoding="utf-8").splitlines()]
+        return out
+
+    def proto(self, key: str) -> int:
+        return self.t.by_key(key).proto
+
+    def test_problems_logged(self):
+        self.t.decode(self.proto("dungeon.state"), bytes.fromhex("07000000"))   # 표에 없는 상태값
+        self.t.decode(self.proto("dungeon.state"), b"\x02")                     # 본문 짧음
+        self.t.decode(self.proto("channel.entering"), bytes.fromhex("01020304"))  # 처음 보는 맵
+        self.t.decode(0xFFFFFF, b"\x01\x02")                                   # 이름표에 없는 번호
+        kinds = {(r["kind"], r["key"]) for r in self.lines()}
+        self.assertEqual(kinds, {
+            ("unknown_enum", "dungeon.state.state=7"),
+            ("short_body", "dungeon.state"),
+            ("unknown_channel", str(0x04030201)),
+            ("unknown_proto", "0xffffff"),
+        })
+        first = next(r for r in self.lines() if r["kind"] == "unknown_proto")
+        self.assertEqual(first["sample"], "01 02")
+        self.assertEqual(first["table"]["built_at"], self.t.meta["built_at"])
+
+    def test_known_values_not_logged(self):
+        self.t.decode(self.proto("dungeon.state"), bytes.fromhex("03000000"))
+        self.t.decode(self.proto("dungeon.current"), bytes.fromhex("00000000"))  # 0 = 던전 없음
+        self.assertEqual(self.lines(), [])
+
+    def test_repeats_counted_not_written(self):
+        for _ in range(packet_diag.EVERY):
+            self.t.decode(0xFFFFFF, b"")
+        rows = self.lines()
+        self.assertEqual(len(rows), 2)  # 처음 한 번 + 100번째
+        self.assertEqual(rows[-1]["count"], packet_diag.EVERY)
+        self.t.diag.summary()
+        self.assertEqual(self.lines()[-1]["problems"], [{"kind": "unknown_proto", "key": "0xffffff", "count": 100}])
+
+    def test_missing_key_is_table_load_problem(self):
+        packet_table._keys.cache_clear()
+        self.addCleanup(packet_table._keys.cache_clear)
+        with mock.patch.object(packet_table, "key_file", return_value=self.dir / "없음.key"):
+            with self.assertRaises(FileNotFoundError):
+                bundled()
+
+    def test_table_load_failure(self):
+        with mock.patch.object(packet_table, "load", side_effect=ValueError("손상")):
+            table, diag = packet_diag.open_table(self.dir)
+        self.assertIsNone(table)
+        self.assertEqual(self.lines()[0]["kind"], "table_load")
+
+
+class StatesTableTest(unittest.TestCase):
+    """리모콘 상태 판단 표(states)가 감시 상태(PacketState)를 빠짐없이 적고 있나 — 새 상태를 만들면 표에도 적는다."""
+
+    def test_every_packet_state_field_is_documented(self):
+        import dataclasses
+        from mabi.packet_monitor import PacketState
+        try:
+            table = packet_table.load()
+        except (FileNotFoundError, ValueError) as e:  # 키가 없는 곳 (packet.key 는 저장소에 없다)
+            self.skipTest(str(e))
+        self.assertTrue(table.states)
+        written = " ".join(s.get("field", "") for s in table.states)
+        skip = {"extra", "entered_at", "ai", "dead_at", "changed_at", "loading_at", "me_map"}  # 내부용
+        missing = [f.name for f in dataclasses.fields(PacketState) if f.name not in skip and f.name not in written]
+        self.assertEqual(missing, [], "spec/states.json 의 states 에 적을 것")
+
+    def test_states_point_at_real_events(self):
+        try:
+            table = packet_table.load()
+        except (FileNotFoundError, ValueError) as e:
+            self.skipTest(str(e))
+        for s in table.states:
+            for key in s["events"]:
+                self.assertIsNotNone(table.by_key(key), f"{s['key']}: {key}")
+
+
+class SjonTest(unittest.TestCase):
+    def test_value_after_key(self):
+        from mabi.packet_table import _read
+        strs = [b"Dialogue", b"npcName", b"Osla", b"dialogueAction", b"EndDialogue", "안녕".encode()]
+        ends, n = [], 0
+        for x in strs:
+            n += len(x)
+            ends.append(n)
+        sj = b"SJON" + struct.pack("<III", 1, len(strs), 0) + struct.pack(f"<{len(strs)}I", *ends) + b"".join(strs)
+        body = bytes.fromhex("010500000000") + struct.pack("<I", len(sj)) + sj
+        self.assertEqual(_read(body, 0, "sjon", key="dialogueAction"), "EndDialogue")
+        self.assertEqual(_read(body, 0, "sjon", key="npcName"), "Osla")
+        self.assertEqual(_read(body, 0, "sjon", key="없음"), "")
+        self.assertEqual(_read(bytes(10), 0, "sjon", key="dialogueAction"), "")
+
+
+if __name__ == "__main__":
+    unittest.main()

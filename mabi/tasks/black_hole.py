@@ -1,0 +1,130 @@
+"""검은 구멍: '/' 콘텐츠 가이드 → 검은 구멍 카드 '바로 가기' → 자동 이동 후 즉시 입장.
+
+입장하는 순간 횟수가 차감되므로 도중에 나가면 안 되고 클리어할 때까지 머문다.
+입장하면 종류(몬스터, 보스, 낚시 등)와 상관없이 자동으로 진행되므로 아무것도 조작하지 않는다.
+클리어하면 검은 구멍 밖(필드)으로 나온다. 장소는 패킷의 맵 이름(없으면 CLI get_current_environment)으로 판단한다.
+오늘 끝냈으면 콘텐츠 가이드에서 카드가 사라진다.
+
+검은 구멍은 사냥터 안에 30분마다 3개씩 나오고, 다 깨면 30분 동안 못 들어간다.
+그래서 은동전 사냥터에 들어가면 먼저 검은 구멍을 한 번 처리하고 (silver.black_hole_in_field),
+그러면 이 태스크는 오늘 완료로 기록되어 건너뛴다. 일일 숙제로는 하루 한 번만 간다.
+"""
+import time
+
+from ..bot import Bot
+from ..exceptions import NotSeen, StepTimeout
+from ..profile import game_day_start
+from .fight import watch
+from .guide import achieved_mark, daily_achieved, GROWTH, growth_done, open_guide, open_guide_card
+from .space import game_space, inside_space
+
+
+def cleared_today(bot: Bot) -> bool:
+    """패킷: 깬 검은 구멍 목록(맵에 들어갈 때마다 온다)에 오늘(6시 뒤) 나타난 구멍이 있으면 True.
+    목록이 비었거나 어제 나타난 것뿐이면 모른다 → False (화면으로 확인)."""
+    times = bot.packets.state.dimensions_cleared if bot.packets.ok else None
+    start = game_day_start().timestamp() * 1000
+    return any(t >= start for t in times or [])
+
+
+def verify(bot: Bot, cfg: dict) -> bool:
+    if cleared_today(bot):
+        bot.log.debug("패킷: 오늘 나타난 검은 구멍을 깸 → 완료")
+        return True
+    return bool(daily_achieved(bot, cfg["black_hole"]["achieved"]))  # 모르면 끝나지 않은 쪽 (확인 필요로 남는다)
+
+
+def enter(bot: Bot, c: dict) -> None:
+    """'바로 가기' 후 검은 구멍 안에 들어갈 때까지 기다린다. 지역 이동 로딩 중에도 끊기지 않도록
+    이동 상태가 아닌 '장소 이름'으로 도착을 판단한다.
+    가는 길에 선공 몬스터에게 맞아 전투가 시작되면 자동 이동이 끊긴다 → 전투가 끝나면 '바로 가기'를 다시 누른다.
+    전투 없이 이동이 멈춰 버린 경우(stall 초 동안 이동도 전투도 아님)도 다시 누른다.
+    가는 길에 끼어든 창(대화·퀘스트 완료 등)과 쓰러짐은 점검자가 (fight.watch)."""
+    from .. import monitor
+    ctx = monitor.Ctx("black_hole", "검은 구멍으로 이동", revive=True)
+    end = time.monotonic() + c["travel_timeout"]
+    fought = False
+    idle_since = None
+    retries = 0
+    while c["space_keyword"] not in game_space(bot):
+        if time.monotonic() > end:
+            raise StepTimeout(f"{c['travel_timeout']}초 안에 검은 구멍에 들어가지 못함 → {bot.snapshot('black_hole').name}")
+        bot.sleep(3)
+        if bot.is_loading():  # 지역 이동 로딩 중
+            idle_since = None
+            continue
+        if watch(bot, ctx).done:  # 끼어든 창을 넘겼다 — 멈춘 시간은 그 뒤부터 잰다
+            idle_since = None
+            continue
+        if bot.in_combat():
+            if not fought:
+                bot.log.info("검은 구멍 가는 길에 전투 시작 → 끝날 때까지 대기")
+            fought, idle_since = True, None
+            continue
+        if bot.auto_traveling() and not fought:
+            idle_since = None
+            continue
+        idle_since = idle_since or time.monotonic()
+        if fought or time.monotonic() - idle_since >= c["stall"]:
+            if retries >= c["max_retries"]:
+                raise StepTimeout(f"검은 구멍 다시 가기 {retries}회 실패 → {bot.snapshot('black_hole').name}")
+            retries += 1
+            bot.log.warning(f"검은 구멍 이동이 끊김{' (전투 후)' if fought else ''} → 바로 가기 다시 ({retries}회)")
+            fought, idle_since = False, None
+            if not open_guide_card(bot, c["card"]):
+                raise StepTimeout("검은 구멍 카드가 사라짐 (다시 가기 실패)")
+
+
+def run(bot: Bot, cfg: dict) -> str:
+    c = cfg["black_hole"]
+    if not bot.state.available() and bot.map_loading() is None:
+        raise RuntimeError("검은 구멍은 장소 판단에 패킷이나 CLI 가 필요함")
+    # 단계: bh_open(가이드 → 바로 가기) → bh_travel(이동) → bh_inside(안에서 클리어 대기) → bh_done(나와서 정리)
+    # 이미 안에 있으면 (안에서 끊김) 나가지 않고 그대로 클리어를 기다린다 — 나가면 횟수만 날아간다
+    if c["space_keyword"] in game_space(bot):
+        bot.step("bh_inside", f"검은 구멍 안에서 이어 함: {game_space(bot)}")
+    else:
+        # 오늘 남았는지 먼저 본다 — 가이드 한 번 열어 일일 달성 체크, 없으면 같은 가이드에서 일일 탭 카드의 바로 가기.
+        # 다 쓴 날 구멍에 가면 '뛰어들 수 없는 검은 구멍' 창이 떠 있어 메인 화면으로 못 돌아온다 (2026-11-02 사용자).
+        if cleared_today(bot):
+            bot.verified = True
+            return "완료 (패킷: 오늘 깸)"
+        if bot.resumed_at("bh_travel", "bh_inside"):
+            bot.log.info("지난번에 검은 구멍으로 가다(또는 안에서) 끊김 → 바로 가기부터 다시")
+        known = growth_done(bot, GROWTH.get(c["achieved"]))  # CLI 가 알면 가이드의 체크 아이콘은 안 본다
+        if known:
+            bot.verified = True
+            return "완료 (일일 달성 체크)"
+        bot.step("bh_open", "콘텐츠 가이드 → 오늘 남았나 → 검은 구멍 바로 가기")
+        open_guide(bot)
+        if known is None and achieved_mark(bot, c["achieved"]):
+            bot.to_main()
+            bot.verified = True
+            return "완료 (일일 달성 체크)"
+        if not open_guide_card(bot, c["card"], opened=True):
+            if known is False:  # CLI 는 오늘 남았다는데 카드가 안 보임 — 못 알아본 것 (끝났다고 넘기지 않는다)
+                raise NotSeen(f"CLI 성장 가이드는 검은 구멍이 남았다는데 가이드 카드가 안 보임 → {bot.snapshot('guide').name}")
+            return "검은 구멍 카드 없음"
+        bot.step("bh_travel", "검은 구멍으로 이동")
+        enter(bot, c)
+        bot.step("bh_inside", f"검은 구멍 입장: {game_space(bot)}")
+
+    # 안에서는 아무것도 조작하지 않는다 — 쓰러짐('여기서 부활')과 끼어든 창만 점검자가
+    from .. import monitor
+    ctx = monitor.Ctx("black_hole", "검은 구멍 안", revive=True)
+    end = time.monotonic() + c["clear_timeout"]
+    while inside_space(bot, c["space_keyword"]):
+        if time.monotonic() > end:
+            raise StepTimeout(f"{c['clear_timeout']:.0f}s 안에 검은 구멍 클리어 충족 안 됨")
+        watch(bot, ctx)
+        bot.sleep(5)
+    bot.step("bh_done", "검은 구멍 클리어 → 정리")
+    # 클리어로 숙제가 끝났다는 표시는 검은 구멍 숙제일 때만. 은동전 사냥터 안에서 부른 검은 구멍이 표시를 켜서,
+    # 사냥터 뒤 던전 직전에 멈췄는데 은동전 숙제가 완료로 남았다 (2026-11-13 06:37 — 던전 1회가 남음)
+    if bot.task_id == "black_hole":
+        bot.done_at_clear = True
+    bot.sleep(2, 3)
+    monitor.of(bot).settle(monitor.Ctx("black_hole", "검은 구멍 클리어 뒤"))  # 클리어 화면·퀘스트 완료·대화
+    bot.dismiss_popups()
+    bot.to_main()
+    return f"검은 구멍 클리어 → {game_space(bot)}"

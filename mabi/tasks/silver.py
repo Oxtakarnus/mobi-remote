@@ -1,0 +1,239 @@
+"""은동전 소모: 20개(unit) 단위로 사냥터/던전에 배분.
+
+캐릭터별 계획은 config.toml 의 [silver] 기본값을 [silver.by_slot.<슬롯>] 이 덮어쓴다.
+  field_runs        사냥터 최대 횟수 (0 이면 사냥터 안 감)
+  dungeon           남은 은동전으로 돌 던전 (빈 문자열이면 던전 안 감)
+  min_units_for_field  은동전이 이 단위 이상 있을 때만 사냥터를 간다
+                    (기본 2: 20개뿐이면 던전 1회만, 40개 이상이면 사냥터부터)
+예) 어떤 캐릭터 = 사냥터 2회, 남은 건 피오드 던전 → field_runs = 2, dungeon = "피오드 던전"
+"""
+from .. import gamedata as gd
+from ..bot import Bot
+from ..exceptions import CannotProceed, NotSeen, StepTimeout
+from . import black_hole
+from .dungeon import enter_from_dungeon_window, mission_button, play_field, select_zone
+from .ui_text import has_word, read_button
+from .worldmap import go_to_place
+
+
+def verify(bot: Bot, cfg: dict) -> bool:
+    """은동전이 한 단위(20) 미만으로 남았으면 완료."""
+    coins = bot.read_counter("silver")
+    return coins is not None and coins < cfg["silver"]["unit"]
+
+
+def settings(cfg: dict, slot: int | None) -> dict:
+    """[silver] 기본값에 캐릭터별 설정을 덮어쓴 결과."""
+    base = {k: v for k, v in cfg["silver"].items() if k != "by_slot"}
+    if slot is not None:
+        base.update(cfg["silver"].get("by_slot", {}).get(str(slot), {}))
+    return base
+
+
+def plan(coins: int, s: dict) -> tuple[int, int]:
+    """(사냥터 횟수, 던전 횟수)"""
+    units = coins // s["unit"]
+    field = 0
+    if units >= s["min_units_for_field"] or not s["dungeon"]:
+        field = min(s["field_runs"], units)
+    dungeon = units - field if s["dungeon"] else 0
+    return field, dungeon
+
+
+def dungeon_once(bot: Bot, c: dict, again: bool = False, more: bool = False) -> str:
+    """지도로 던전 입구까지 이동 → 난이도/층/구역 선택 → 입장 → 클리어. 반환 'clear' | 'fail' | 'again'.
+    again: 직전 보상 화면에서 '다시 하기'를 눌러 같은 구역의 임무 화면이 이미 열려 있음 (이동·구역 선택 생략).
+    more: 이번 뒤에 던전을 더 돌 예정 → 보상 화면에서 '다시 하기'로 바로 이어간다."""
+    ui = bot.ui
+    retry_btn = ui["dungeon_retry"] if more else None
+    if again:
+        # 임무 화면이 안 열렸을 때만 지도로 간다. 입장 뒤의 시간 초과까지 여기서 잡으면 지도로 가서 한 판 더 들어간다
+        try:
+            bot.wait_any([ui["dungeon_retry_enter"], ui["dungeon_mission_enter_silver"], ui["dungeon_mission_enter"]],
+                         timeout=15)
+        except StepTimeout:
+            bot.log.warning(f"다시 하기 후 임무 화면이 안 보임, 지도로 다시 이동 → {bot.snapshot('dungeon_again').name}")
+            bot.to_main()
+        else:
+            return enter_from_dungeon_window(bot, c["clear_timeout"], expect_cost=c["dungeon_cost"],
+                                             again=retry_btn, retry=True)
+    m = go_to_place(bot, c["dungeon"], arrive=[ui["dungeon_tab_normal"], ui["dungeon_tab_deep"]],
+                    timeout=c["travel_timeout"])
+    bot.sleep(1, 1.5)
+    # 던전 창은 돌 수 있는 가장 어려운 단계로 열린다. 심층 던전이 있는 던전(피오드·룬다 제외)은
+    # '심층 던전' 탭으로 열리므로, 은동전 숙제는 반드시 '던전' 탭으로 바꾼다 (이후 구역 확인·입장 가격 확인으로 한 번 더 막는다)
+    if m.name == ui["dungeon_tab_deep"]:
+        bot.click(ui["dungeon_tab_normal_off"], timeout=5)
+        bot.wait(ui["dungeon_tab_normal"], timeout=5)
+        bot.sleep(0.8, 1.2)
+    select_zone(bot, c["difficulty"], c["floor"], c["zone"])
+    return enter_from_dungeon_window(bot, c["clear_timeout"], expect_cost=c["dungeon_cost"], again=retry_btn)
+
+
+def field_once(bot: Bot, c: dict, again: bool = False, more: bool = False) -> str:
+    """지도로 사냥터 입구까지 이동 → 입장 버튼 가격 확인 → 입장 → 클리어. 반환 'clear' | 'again'.
+    again: 직전 사냥터 보상 화면에서 '새 임무 선택'을 눌러 이미 사냥터 창이 열려 있음 (이동 생략, 버튼은 '임무 시작').
+    more: 이번 뒤에 사냥터를 더 돌 예정 → 보상 화면에서 '새 임무 선택'으로 바로 이어간다."""
+    ui = bot.ui
+
+    def button() -> str:
+        price, win, ko = read_button(bot.frame(), ui["mission_button_region"])
+        return f"{win} | {ko}" if (win or ko) else ""
+    text = ""
+    if again:
+        try:
+            bot.wait(ui["field_mission_start"], timeout=15)
+            bot.sleep(0.8, 1.2)
+            text = button()
+        except StepTimeout:
+            bot.log.warning(f"새 임무 선택 후 사냥터 창이 안 보임, 지도로 다시 이동 → {bot.snapshot('field_again').name}")
+            bot.to_main()
+    for attempt in range(2):
+        if text:
+            break
+        go_to_place(bot, c["field"], arrive=[ui["dungeon_mission_enter_silver"]], timeout=c["travel_timeout"])
+        bot.sleep(1, 1.5)
+        text = button()
+        if not text and not attempt:
+            # 도착 직후 사냥터 창이 잠깐 떴다가 닫히는 경우가 있다 (탈것에서 내리는 중 등) → 한 번 더 이동
+            bot.log.warning(f"사냥터 창이 닫힘, 다시 이동 → {bot.snapshot('field_window').name}")
+    select_recommended(bot)
+    # 처음엔 '20 입장하기', 새 임무 선택으로 돌아오면 '20 임무 시작'. 가격은 Windows OCR, 글자는 둘 중 하나
+    price, win, ko = mission_button(bot, c["dungeon_cost"])
+    if price != c["dungeon_cost"] or not has_word(gd.text("dungeon_enter"), win, ko) and not has_word(gd.text("mission_start"), win, ko):
+        raise CannotProceed(f"사냥터 입장 버튼 '{win}' / '{ko}' — 비용 {c['dungeon_cost']} 이 아님 "
+                            f"→ {bot.snapshot('field_cost').name}")
+    on_enter = black_hole_first if c.get("black_hole_in_field") and "black_hole" not in bot.also_done else None
+    return play_field(bot, c["field"], c["field_timeout"], on_enter=on_enter,
+                      again=ui["field_new_mission"] if more else None)
+
+
+def select_recommended(bot: Bot) -> None:
+    """사냥터 창은 지난번에 들어간 난이도로 열리므로, 추천 표시가 붙은 난이도 버튼을 누른다.
+    추천 표시는 버튼 아래 '✦추천✦' 글자와 버튼 오른쪽 위 엄지 아이콘이 번갈아 나온다."""
+    ui = bot.ui
+    y = bot.cfg["silver"]["field_difficulty_y"]
+    try:
+        m = bot.wait_any([ui["field_recommend"], ui["field_recommend_thumb"]], timeout=5)
+    except StepTimeout:
+        bot.log.warning(f"사냥터 추천 난이도 표시를 못 찾음, 선택된 난이도로 진행 → {bot.snapshot('field_diff').name}")
+        return
+    # 글자는 버튼 바로 아래 가운데, 엄지는 버튼 오른쪽 위 모서리에 붙는다
+    x = m.center[0] if m.name == ui["field_recommend"] else m.center[0] - 45
+    bot.click((x, y))
+    bot.sleep(0.8, 1.2)
+
+
+def black_hole_first(bot: Bot) -> None:
+    """사냥터에 들어간 직후 검은 구멍부터 한 번. 끝나면 밖으로 나와 사냥터 임무가 자동으로 이어진다.
+    실패해도 사냥터는 계속 기다리고, 검은 구멍 태스크가 나중에 다시 시도한다."""
+    try:
+        bot.log.info(f"사냥터 안 검은 구멍: {black_hole.run(bot, bot.cfg)}")
+        bot.also_done.add("black_hole")
+    except (StepTimeout, CannotProceed, RuntimeError) as e:
+        bot.log.warning(f"사냥터 안 검은 구멍 실패, 사냥터는 계속 진행: {e} → {bot.snapshot('field_blackhole').name}")
+
+
+def run(bot: Bot, cfg: dict) -> str:
+    """계획한 만큼 돈 뒤 남은 은동전을 다시 본다. 도는 동안 은동전이 저절로 차서(몇 분에 1개) 한 판 더 할 만큼
+    남을 수 있다 — 59개로 사냥터 1·던전 1 을 계획했는데 12분 사이 1개가 차 20개가 남아 '아직 남음' 으로 끝났다
+    (2026-11-12). 그러면 남은 만큼 한 번 더 계획해 돈다 (사냥터는 오늘 한 횟수를 빼므로 던전만 더 간다)."""
+    note, left = _run_round(bot, cfg)  # 한 판도 못 들어갔으면 여기서 실패로 끝난다 (한 번 더 돌지 않는다)
+    unit = cfg["silver"]["unit"]
+    if left is not None and left >= unit:
+        bot.log.info(f"도는 동안 은동전이 차서 {left}개 남음 → 한 번 더")
+        try:
+            more, left = _run_round(bot, cfg)
+        except (CannotProceed, NotSeen) as e:  # 앞에서 한 판이 있다 — 더 도는 것만 막혔으면 한 만큼으로 끝낸다 (남은 건 완료 확인이 본다)
+            more = f"진행 불가 ({e})"
+        note += f" · 더: {more}"
+    return note
+
+
+def _run_round(bot: Bot, cfg: dict) -> tuple[str, int | None]:
+    """지금 은동전으로 계획해 한 번 돈다 → (결과 글, 남은 은동전)."""
+    c = settings(cfg, bot.character["slot"] if bot.character else None)
+    bot.to_main()
+    coins = bot.read_counter("silver")
+    if coins is None:
+        raise RuntimeError("은동전 개수를 읽을 수 없어 중단")
+
+    # 중간에 끊겼다 다시 실행하는 경우, 오늘 이미 끝낸 사냥터 횟수만큼 뺀다
+    slot = bot.character["slot"] if bot.character else None
+    fields_done = int(bot.daily.get(slot, "silver_fields") or 0) if bot.daily and slot else 0
+    # 사냥터 1판 도중에 끊겼으면: 접속 단계가 그 판을 클리어까지 보고 나왔다 (은동전은 들어갈 때 이미 나감)
+    # → 들어가기 전 은동전보다 줄었으면 그 판은 한 것으로 센다 (그사이 저절로 차는 1~2개는 봐준다)
+    pend = bot.daily.get(slot, "silver_pending") if bot.daily and slot else None
+    if isinstance(pend, dict):
+        if pend.get("kind") == "field" and pend.get("coins") is not None and coins <= pend["coins"] - c["dungeon_cost"] + 2:
+            fields_done += 1
+            bot.daily.set(slot, "silver_fields", fields_done)
+            bot.log.info(f"지난번 끊긴 사냥터 {pend.get('n')}회차는 은동전이 나갔으므로 한 것으로 셈")
+        bot.daily.set(slot, "silver_pending", None)
+    if fields_done:
+        c = dict(c, field_runs=max(0, c["field_runs"] - fields_done))
+    field_runs, dungeon_runs = plan(coins, c)
+    bot.log.info(f"은동전 {coins}개 → 사냥터 {field_runs}회, 던전 {dungeon_runs}회"
+                 + (f" (오늘 사냥터 {fields_done}회 완료)" if fields_done else ""))
+    if not field_runs and not dungeon_runs:
+        return f"은동전 {coins}개, 진행 없음", coins
+
+    notes, blocked, cleared = [], [], 0
+    for label, runs, once in (("사냥터", field_runs, field_once), ("던전", dungeon_runs, dungeon_once)):
+        if not runs:
+            continue
+        results = []
+        again = False
+        for i in range(runs):
+            try:
+                before = bot.state.currency(gd.currency("silver"))
+                kind = "field" if once is field_once else "dungeon"
+                bot.step(f"silver_{kind}", f"{label} {i + 1}/{runs}회 (은동전 {before})", n=i + 1, runs=runs)
+                if bot.daily and slot:
+                    bot.daily.set(slot, "silver_pending", {"kind": kind, "n": i + 1, "coins": before})
+                counted = []
+                last_run = i == runs - 1 and (once is dungeon_once or not dungeon_runs)
+
+                def on_clear(kind=kind):
+                    # 클리어 신호 순간 오늘 기록에 남긴다 — 보상 화면 정리 중 끊겨도 그 판은 한 것
+                    counted.append(True)
+                    if last_run:  # 계획한 마지막 판 — 은동전 숙제는 끝남
+                        bot.done_at_clear = True
+                    if bot.daily and slot:
+                        if kind == "field":
+                            bot.daily.set(slot, "silver_fields", fields_done + 1)
+                        bot.daily.set(slot, "silver_pending", None)
+                bot.on_clear = on_clear
+                try:
+                    r = once(bot, c, again=again, more=i < runs - 1)
+                finally:
+                    bot.on_clear = None
+                if bot.daily and slot:
+                    bot.daily.set(slot, "silver_pending", None)
+                again = r == "again"
+                # 화면(가격 OCR·버튼 템플릿)으로 판단한 입장을 CLI 은동전 변화로 한 번 더 확인한다.
+                # 은동전은 일정 시간마다 1씩 저절로 차므로 한 판 사이에 1~2 덜 줄어드는 건 정상이다
+                after = bot.state.currency(gd.currency("silver"))
+                if before is not None and after is not None and not 0 <= c["dungeon_cost"] - (before - after) <= 2:
+                    bot.log.warning(f"{label} 1회에 은동전 {before} → {after} (예상 -{c['dungeon_cost']})")
+                results.append("clear" if again else r)
+                if once is field_once and (counted or results[-1] == "clear"):
+                    fields_done += 1
+                    if bot.daily and slot:
+                        bot.daily.set(slot, "silver_fields", fields_done)
+            except CannotProceed as e:  # 진행 불가 (미해금, 비용 불일치 등) → 이 종류는 그만두고 다음으로
+                bot.log.warning(f"{label} 진행 불가: {e}")
+                notes.append(f"{label} 진행 불가")
+                blocked.append(f"{label}: {e}")
+                bot.to_main()
+                break
+        notes.append(f"{label} 클리어 {results.count('clear')}/{runs}")
+        cleared += results.count("clear")
+
+    bot.to_main()
+    if blocked and not cleared:
+        # 한 판도 못 들어갔다 (지도에서 장소를 못 고름 등) — '남음' 이 아니라 실패. 까닭을 결과에 그대로 남긴다 (2026-11-14:
+        # 다른 창이 지역 맵 목록을 가려 세 캐릭터가 은동전을 그대로 남겼는데 '확인 결과 아직 남음' 으로만 보였다)
+        raise CannotProceed(f"은동전 {coins}개 그대로 — " + " / ".join(blocked))
+    left = bot.read_counter("silver")
+    return f"은동전 {coins} → {left}, " + ", ".join(notes), left

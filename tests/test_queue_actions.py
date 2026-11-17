@@ -1,0 +1,197 @@
+"""작업 큐의 '한 번 하는 행동' 카드 (gui_app.queue_api.ActionKind) — 가짜 API 로 돌린다."""
+import unittest
+
+from gui_app.queue_api import ActionKind, QueueApi
+
+
+class FakeQ:
+    def __init__(self):
+        self.stop = None
+        self.notes = []
+
+    def note(self, it, text):
+        self.notes.append(text)
+
+
+class FakeApi(QueueApi):
+    def __init__(self, results, facilities=(), dialogue_until=0):
+        self.results = list(results)
+        self.calls = []
+        self.events = []
+        self.facilities = list(facilities)
+        self.dialogue_left = dialogue_until  # activity 를 이만큼 물을 때까지 확인 창이 떠 있다
+
+    def exec(self, command, body=None, origin=None):
+        self.calls.append((command, (body or {}).get("displayName"), origin))
+        return self.results.pop(0) if self.results else {"ok": True}
+
+    def query(self, name, opts=None):
+        if name == "alteringWorks":
+            return {"facilities": [{"facility": f, "completed": [{"name": f + " 물건"}]} for f in self.facilities]}
+        if name == "activity":
+            self.dialogue_left -= 1
+            return {"dialogue": self.dialogue_left >= 0}
+        return {}
+
+    def _emit(self, ch, v=None):
+        self.events.append((ch, v))
+
+    def _q_char(self, q, it):  # 캐릭터 맞추기는 게임 화면이 필요하다 — 판단 규칙은 test_queue_char 가 본다
+        return True
+
+
+class ActionKindTest(unittest.TestCase):
+    def test_single_action_ok(self):
+        api, q = FakeApi([{"ok": True}]), FakeQ()
+        ok = ActionKind(api).run(q, {"id": 1, "act": "play", "command": "play_music_score", "body": {"title": "x"}, "label": "연주: x"})
+        self.assertTrue(ok)
+        self.assertEqual(api.calls[0][2], {"label": "연주: x", "act": "play"})  # 화면이 결과를 알리게 표시
+
+    def test_single_action_fail_note(self):
+        api, q = FakeApi([{"ok": False, "error": "x", "ko": {"text": "재료가 부족합니다"}}]), FakeQ()
+        ok = ActionKind(api).run(q, {"id": 1, "act": "craft", "command": "execute_crafting", "body": {}, "label": "못"})
+        self.assertFalse(ok)
+        self.assertEqual(q.notes[-1], "실패 — 재료가 부족합니다")
+
+    def test_collect_all_with_blocked_retry(self):
+        # 둘째 시설이 'blocked' → 확인 창이 닫히길 기다렸다가 한 번 더
+        api = FakeApi([{"ok": True}, {"ok": False, "error": "blocked"}, {"ok": True}], facilities=["가죽", "금속"])
+        q = FakeQ()
+        ok = ActionKind(api).run(q, {"id": 1, "act": "collectAll", "label": "전체 수령"})
+        self.assertTrue(ok)
+        self.assertEqual([c[1] for c in api.calls], ["가죽 물건", "금속 물건", "금속 물건"])
+        self.assertIn("재시도", api.calls[2][2]["label"])
+        self.assertEqual(q.notes[-1], "완료 2곳")
+
+    def test_blocked_waits_for_abyss_result(self):
+        # 어비스 결과 연출도 화면을 막는다 — 끝날 때까지 기다렸다가 한 번 더
+        api = FakeApi([{"ok": False, "error": "blocked"}, {"ok": True}])
+        seen = iter([{"abyssResult": True}, {"abyssResult": True}, {"abyssResult": False}])
+        api.query = lambda name, opts=None: next(seen)
+        import gui_app.queue_api as qa
+        orig, qa.time.sleep = qa.time.sleep, lambda s: None
+        try:
+            r = api._q_exec(FakeQ(), "complete_altering_work", {"displayName": "진액"}, {"label": "수령"}, "약품")
+        finally:
+            qa.time.sleep = orig
+        self.assertTrue(r["ok"])
+        self.assertEqual(len(api.calls), 2)
+        self.assertRaises(StopIteration, next, seen)  # 끝날 때까지 물었다
+
+    def test_agent_limit_presses_confirm_then_retries(self):
+        # 연속 사용 제한(2026-11-13 04:45) — 대화 창 기다리기가 아니라 확인 창을 누르고 한 번만 더
+        limit = {"ok": False, "error": "blocked", "data": {"error": "blocked", "kind": "continuous_run_limit"}}
+        api = FakeApi([limit, {"ok": True}])
+        pressed = []
+        api._q_clear_agent_limit = lambda q: pressed.append(1) or True
+        api.query = lambda *a, **k: self.fail("대화 창을 기다리면 안 된다")
+        r = api._q_exec(FakeQ(), "complete_altering_work", {"displayName": "쌀"}, {"label": "수령"}, "시설")
+        self.assertTrue(r["ok"])
+        self.assertEqual((len(pressed), len(api.calls)), (1, 2))
+
+    def test_agent_limit_not_cleared_gives_up(self):
+        limit = {"ok": False, "error": "blocked", "data": {"kind": "continuous_run_limit"}}
+        api = FakeApi([limit, {"ok": True}])
+        api._q_clear_agent_limit = lambda q: False
+        r = api._q_exec(FakeQ(), "complete_altering_work", {"displayName": "쌀"}, {"label": "수령"}, "시설")
+        self.assertFalse(r["ok"])
+        self.assertEqual(len(api.calls), 1)
+
+    def test_collect_all_nothing(self):
+        api, q = FakeApi([]), FakeQ()
+        self.assertTrue(ActionKind(api).run(q, {"id": 1, "act": "collectAll"}))
+        self.assertEqual(api.calls, [])
+
+    def test_collect_all_stops_with_queue(self):
+        api, q = FakeApi([], facilities=["가죽", "금속", "목재"]), FakeQ()
+        orig = api.exec
+
+        def exec_then_stop(*a, **k):
+            r = orig(*a, **k)
+            q.stop = {"reason": "pause"}  # 첫 시설을 받는 사이 ⏸
+            return r
+        api.exec = exec_then_stop
+        ok = ActionKind(api).run(q, {"id": 1, "act": "collectAll"})
+        self.assertFalse(ok)  # 다 못 했으니 일시정지로 남는다
+        self.assertEqual(len(api.calls), 1)
+
+
+class StopKeyTest(unittest.TestCase):
+    """F12 하나로 작업 큐 전체 — 돌고 있으면 무엇이든 일시정지, 쉬고 있으면 맨 위 일시정지 카드 이어 하기."""
+
+    def setUp(self):
+        # 진짜 키보드 상태를 읽는다 — 시험 도중 사람이 Shift·Ctrl 을 누르고 있으면 다른 갈래로 간다 (2026-11-12 전체 시험)
+        from unittest import mock
+        p = mock.patch("mabi.inputs.key_pressed", return_value=False)
+        p.start()
+        self.addCleanup(p.stop)
+
+    def api(self, running, paused):
+        class Cli:
+            canceled = 0
+
+            def cancel(self):
+                Cli.canceled += 1
+
+        class Q:
+            def __init__(self):
+                self.running, self.calls = running, []
+
+            def request_stop(self, r):
+                self.calls.append(("stop", r))
+
+            def top_paused(self):
+                return {"id": 1} if paused else None
+
+            def can_resume(self):
+                return paused
+
+            def resume_top(self):
+                self.calls.append(("resume",))
+        a = FakeApi([])
+        a.queue, a.cli = Q(), Cli()
+        return a
+
+    def test_running_pauses_anything(self):
+        a = self.api(running=True, paused=False)
+        a._q_stop_key()
+        self.assertEqual(a.queue.calls, [("stop", "pause")])
+        self.assertEqual(a.cli.canceled, 1)  # 행동·목표의 지금 명령도 끊는다
+
+    def test_idle_resumes_top(self):
+        a = self.api(running=False, paused=True)
+        a._q_stop_key()
+        self.assertEqual(a.queue.calls, [("resume",)])
+
+    def test_idle_nothing(self):
+        a = self.api(running=False, paused=False)
+        a._q_stop_key()
+        self.assertEqual(a.queue.calls, [])
+
+
+class LogChannelTest(unittest.TestCase):
+    """로그 줄이 어느 탭 것인가 (DailyApi._log_channel) — 숙제는 숙제 탭, 어비스는 어비스 탭, 공통은 둘 다."""
+
+    def ch(self, thread, running_kind=None):
+        import logging
+        rec = logging.LogRecord("mabi", logging.INFO, "", 0, "x", None, None)
+        rec.threadName = thread
+
+        class Q:
+            def current(self):
+                return {"kind": running_kind} if running_kind else None
+        from gui_app.daily_api import DailyApi
+        a = DailyApi()
+        a.queue = Q()
+        return a._log_channel(rec)
+
+    def test_channels(self):
+        self.assertEqual(self.ch("daily"), "daily")
+        self.assertEqual(self.ch("abyss"), "abyss")
+        self.assertEqual(self.ch("work-queue", "abyss"), "abyss")  # 어비스 카드의 화면 설정 맞추기
+        self.assertEqual(self.ch("work-queue", "action"), "all")
+        self.assertEqual(self.ch("queue-f12"), "all")
+
+
+if __name__ == "__main__":
+    unittest.main()

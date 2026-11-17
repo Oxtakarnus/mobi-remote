@@ -1,0 +1,661 @@
+"""작업 큐 — 카드를 줄 세워 두고 위에서부터 하나씩 돌린다. 큐의 주인은 여기다 (화면은 보여 주고 버튼만 누른다).
+
+캐릭터는 하나고 게임 조작도 한 번에 하나라 동시에 돌릴 수 없어서 큐다. 예전에는 웹 화면(JS)이 큐를 돌렸는데,
+  - 화면을 다시 띄우면 돌던 카드가 끊기고,
+  - F12 를 받는 곳이 둘(숙제는 파이썬, 큐는 JS)이라 어비스를 멈춘 F12 가 일시정지한 숙제까지 깨웠고 (2026-10-24),
+  - 예약·루틴처럼 화면을 누르지 않고 도는 일을 붙일 수 없었다.
+그래서 상태·순서·멈춤·저장은 모두 이 클래스가 한다.
+
+카드 종류(kind)마다 실행기(Kind)가 있다 (gui_app/queue_api.py — 숙제·어비스·제작 목표·한 번 하는 행동).
+
+멈추는 이유는 하나만 둔다 (stop). 돌고 있는 카드가 끝나면 그 이유를 보고 카드를 어떻게 둘지 정한다.
+  stopped : 작업이 스스로 멈춤 (숙제 F12·어비스 멈추기) → 일시정지
+  preempt : '지금 바로' 에 밀림 → 대기로 돌리고 큐를 곧바로 다시 돌린다
+  pause   : 사람이 멈춤 (⏸·■·취소) → 일시정지
+  remove  : 돌던 카드를 뺐거나 큐를 비움 (전체 중단 Ctrl+F12 도 큐를 비운다)
+  skip    : 지금 카드만 중단 (Shift+F12) → 카드를 빼고 다음 카드로 이어 간다
+  drop    : 재료가 다 떨어지는 등 더 할 수 없음 → 실패로 기록하고 카드를 빼고 다음 카드로 (다시 돌려도 같다)
+  skill   : 생활 스킬 레벨 부족 {what, level} → 실패 (기다려도 안 풀린다)
+  yield   : 가공 완료를 기다리는 동안 아래 카드에 비켜 줌 {note} → 대기 (ready 가 다시 열리면 그 카드를 끊고 돌아온다)
+둘이 겹치면 센 쪽 (뒤로 갈수록 셈). 예: 밀리던 숙제가 STOP 으로 끝나도 '밀림' 그대로.
+
+상태: wait(대기) · run(진행 중) · pause(일시정지) · done(완료 — 바로 빠진다) · fail(실패)
+
+일시정지는 '큐가 거기서 멈춰 있다' 는 뜻이라 맨 위 한 장만 둔다 (_one_pause). 큐는 위에서부터 돌다가 일시정지 카드를
+만나면 선다 — 예전에는 건너뛰고 아래 대기 카드로 넘어가, 숙제를 일시정지한 채 수령 버튼(지금 바로)을 누르면
+수령 뒤에 어비스가 저절로 시작됐다 (2026-10-24 20:04). 이어 하기(▶·F12)는 맨 위 일시정지 카드부터.
+
+결과 보고(mabi/queue_report.py): 카드가 처음 돌 때 보고서를 열고, 남은 카드(대기·진행·일시정지)가 하나도 없게 되면
+— 다 끝났든, 전체 중단으로 비웠든, 마지막 카드를 뺐든 — 닫아서 on_report 로 넘긴다 (화면이 결과 창을 띄운다).
+"""
+import logging
+import threading
+import time
+from pathlib import Path
+from typing import Callable
+
+from .craft import queue as store
+from .queue_report import QueueReport, loot
+
+log = logging.getLogger("mabi")
+
+STOP_RANK = {"stopped": 0, "later": 0, "yield": 0, "preempt": 1, "error": 1.5, "pause": 2, "skip": 3, "drop": 3, "remove": 3,
+             "skill": 4, "transfer": 4}  # error: 오류로 실패 — 밀어내기(게임 다시 켜기)보다 앞서고 사람의 멈춤보다는 뒤
+LIVE = ("wait", "run", "pause")  # 아직 할 일이 남은 카드
+# 사람이 멈춘 게 아닌 까닭 — 돌던 일의 로그에 '사용자 중단' 대신 쓴다 (Kind.stop 이 봇의 멈춤 요청에 싣는다)
+STOP_WHY = {"preempt": "먼저 할 카드에 밀림 (끝나면 이어서)"}
+
+
+class Kind:
+    """카드 종류 하나의 실행기."""
+    # 얻은 것을 스스로 잰다 (일일 숙제 — 캐릭터를 바꿔 가며 해서 카드 앞뒤 비교로는 안 된다). 아니면 큐가 카드 앞뒤로 잰다
+    own_loot = False
+
+    def tasks(self, it: dict) -> list | None:
+        """이번 실행의 세부 결과 [[이름표, 상태, 요약]] (결과 창에 쓴다). 없으면 None."""
+        return None
+
+    def run(self, q: "WorkQueue", it: dict) -> bool:
+        """카드 하나를 끝까지 (막는다). 끝까지 갔으면 True. 멈췄으면 q.set_stop('stopped') 후 False."""
+        raise NotImplementedError
+
+    def ready(self, it: dict) -> str:
+        """지금 돌릴 수 있나 — 안 되면 까닭 (정해진 시간에만 하는 일). 그런 카드는 큐가 비켜 두고 아래 카드를 돌린다."""
+        return ""
+
+    def timed(self, it: dict) -> bool:
+        """정해진 시간에만 하는 카드인가 — 열리면(ready 가 "") 돌던 카드를 끊어도 되는 자리에서 끊고 먼저 한다 (cut_for_timed)."""
+        return False
+
+    def stop(self, reason: str) -> None:
+        """큐가 선다 — 돌고 있는 일을 멈춰 달라."""
+
+    def removed(self, it: dict) -> None:
+        """돌지 않는 이 카드가 큐에서 빠졌다 (일시정지한 숙제의 F12 이어 하기 감시를 끄는 등)."""
+
+    def where(self, it: dict) -> str:
+        """멈춘 카드가 다시 돌 때 어디부터 하나 (카드 메모에 쓴다). 모르면 빈 문자열."""
+        return it.get("at") or ""
+
+    def view(self, it: dict) -> dict:
+        """카드·오버레이에 그릴 진행 상황. 둘이 같은 글을 보이도록 여기서 한 번만 만든다.
+          goal : 무엇을 얼마나 (목표 한 줄)    now  : 지금 하는 일
+          step : 그 안의 단계                  stat : 덧붙일 수치 (실패 수 등)
+          bar  : [한 것, 전체] — 모르면 None"""
+        return {"goal": self.detail(it) if hasattr(self, "detail") else "", "now": "", "step": "", "stat": "", "bar": None}
+
+
+DEFAULT_KIND = "goal"  # kind 칸이 없는 카드 — 화면의 목표·제작 버튼으로 만든 카드는 kind 를 적지 않는다
+
+
+class WorkQueue:
+    def __init__(self, file: Path, history_file: Path, emit: Callable[[str, object], None],
+                 kinds: dict[str, Kind], default_kind: str = DEFAULT_KIND,
+                 on_drained: Callable[["WorkQueue"], None] | None = None, pause_note: Callable[[], str] | None = None,
+                 snap: Callable[[], dict | None] | None = None, on_report: Callable[[dict], None] | None = None):
+        """on_drained(q) 할 일이 다 끝났을 때 (일시정지 카드도 없음) · pause_note() 일시정지 카드 메모 ·
+        snap() 가방·재화 스냅샷 (queue_report.snapshot — 카드 앞뒤로 찍어 얻은 것을 잰다) · on_report(보고서) 결과 창."""
+        self.file, self.history_file, self.emit = file, history_file, emit
+        self.kinds, self.default_kind = kinds, default_kind
+        self.on_drained = on_drained or (lambda q: None)
+        self.pause_note = pause_note or (lambda: "일시정지 · ▶ 로 재개")
+        self.snap = snap or (lambda: None)
+        self.on_report = on_report or (lambda r: None)
+        self.report: QueueReport | None = None
+        self.lock = threading.RLock()
+        self.items: list[dict] = []
+        self.running = False
+        self.stop: dict | None = None
+        self.session: dict = {}  # 큐 한 번 도는 동안 종류들이 같이 쓰는 값 (화면 설정을 맞췄나 등). 다 끝나면 비운다
+        self._thread: threading.Thread | None = None
+        self._wake = threading.Event()  # 열린 시간을 기다리며 쉬는 큐를 깨운다 (카드를 다시 걸거나 담음)
+        self._halt = False  # 다시 해도 오류로 실패한 카드가 있다 — 오류로 미뤄 둔 카드(errors)까지만 하고 큐를 멈춘다
+        self._seq = 1
+        self._saved: str | None = None  # 마지막으로 파일에 쓴 글자 — 같으면 다시 쓰지 않는다 (_changed)
+        self._load()
+
+    # ---------------------------------------------------------------- 저장·알림
+    def _load(self) -> None:
+        items = store.load(self.file)["items"]
+        for x in items:
+            if x.get("status") == "run":  # 앱이 꺼진 동안 진행됐을 리가 없다
+                x["status"] = "wait"
+            elif x.get("status") == "pause":
+                # 일시정지는 '돌던 동작을 잠깐 멈춤' — 껐다 켜면 돌던 동작이 없으니 차례를 기다리는 카드다.
+                # 하던 자리(숙제 진행 기록·어비스 한 판 수·목표 기준점)는 그대로라 ▶ 로 이어 한다 (2026-10-24 사용자 결정)
+                x["status"] = "wait"
+                x["note"] = self._wait_note(x)
+            self._seq = max(self._seq, int(x.get("id") or 0) + 1)
+        self.items = items
+
+    def _one_pause(self) -> None:
+        """일시정지는 맨 위 한 장만. 그 아래 일시정지 카드는 대기로 (하던 자리 기록은 그대로라 이어서 한다)."""
+        seen = False
+        for x in self.items:
+            if x.get("status") != "pause":
+                continue
+            if seen:
+                x["status"] = "wait"
+                x["note"] = self._wait_note(x)
+            seen = True
+
+    def _wait_note(self, it: dict) -> str:
+        where = self.kind_of(it).where(it)
+        return f"{where}부터 이어서" if where else "멈춘 곳부터 이어서"
+
+    def top_paused(self) -> dict | None:
+        return next((x for x in self.items if x.get("status") == "pause"), None)
+
+    def snapshot(self) -> dict:
+        with self.lock:
+            return {"items": [{**x, "view": self._view(x)} for x in self.items], "running": self.running}
+
+    def _view(self, it: dict) -> dict:
+        try:
+            return self.kind_of(it).view(it)
+        except Exception:  # noqa: BLE001 — 표시 하나 때문에 큐 알림이 끊기면 안 된다
+            log.exception(f"작업 큐: '{it.get('label')}' 표시 실패")
+            return {"goal": "", "now": "", "step": "", "stat": "", "bar": None}
+
+    def _changed(self) -> None:
+        """카드가 바뀜 → 저장하고 화면에 알린다. 저장은 파일에 남는 칸(craft.queue.FIELDS)이 바뀌었을 때만 —
+        진행 줄(prog)·지금 캐릭터 같은 화면용 값은 판마다·누를 때마다 바뀌어, 같은 내용을 수없이 다시 썼다.
+        시간으로 미루지 않으므로 바뀐 내용은 그 자리에서 쓰인다 (꺼질 때 따로 쓸 것이 없다)."""
+        with self.lock:
+            self._one_pause()
+            text = store.encode({"items": self.items})
+            if text != self._saved and store.write(self.file, text):
+                self._saved = text
+            snap = self.snapshot()
+        self.emit("mm:queue", snap)
+        self._maybe_report()
+
+    def _maybe_report(self) -> None:
+        """시작 뒤 남은 카드가 없어졌으면 보고서를 닫아 넘긴다 (다 끝남 · 전체 중단 · 마지막 카드 뺌)."""
+        with self.lock:
+            rep = self.report
+            if rep is None or self.running or any(x.get("status") in LIVE for x in self.items):
+                return
+            self.report = None
+        if rep.empty:
+            return
+        data = rep.finish("done" if all(c["result"] == "done" for c in rep.data["cards"]) else "stopped")
+        try:
+            self.on_report(data)
+        except Exception:  # noqa: BLE001
+            log.exception("작업 큐 결과 보고 실패")
+
+    def _snap(self) -> dict | None:
+        try:
+            return self.snap()
+        except Exception:  # noqa: BLE001 — 못 재도 카드는 돈다
+            log.exception("가방·재화 스냅샷 실패")
+            return None
+
+    def _gone(self, it: dict) -> None:
+        """돌지 않는 카드가 빠졌다 — 이번 보고서에 있던 카드(일시정지 등)면 '중단' 으로."""
+        if self.report and any(c["id"] == it.get("id") for c in self.report.data["cards"]):
+            self.report.card(it)["result"] = "stop"
+
+    def _record(self, it: dict, result: str) -> None:
+        k = self.kinds.get(it.get("kind") or self.default_kind)
+        store.record(self.history_file, {
+            "start": it.get("startedAt") or int(time.time() * 1000), "end": int(time.time() * 1000),
+            "kind": it.get("kind") or self.default_kind, "label": it.get("label"), "result": result,
+            "detail": it.get("detail") or (k.detail(it) if hasattr(k, "detail") else ""), "note": it.get("note") or ""})
+
+    def find(self, item_id) -> dict | None:
+        return next((x for x in self.items if str(x.get("id")) == str(item_id)), None)
+
+    def current(self) -> dict | None:
+        return next((x for x in self.items if x.get("status") == "run"), None)
+
+    def kind_of(self, it: dict) -> Kind:
+        return self.kinds.get(it.get("kind") or self.default_kind) or self.kinds[self.default_kind]
+
+    # ---------------------------------------------------------------- 멈춤
+    def set_stop(self, reason: str, extra: dict | None = None) -> None:
+        """세우는 이유를 적어 둔다 (돌고 있는 일에는 알리지 않음 — 일이 스스로 멈췄을 때)."""
+        with self.lock:
+            if not self.stop or STOP_RANK.get(reason, 2) > STOP_RANK.get(self.stop["reason"], 2):
+                self.stop = {"reason": reason, **(extra or {})}
+
+    def request_stop(self, reason: str, extra: dict | None = None) -> None:
+        """큐를 세운다: 이유를 적고 돌고 있는 일에 알린다."""
+        self.set_stop(reason, extra)
+        cur = self.current()
+        if cur:
+            self.kind_of(cur).stop(reason)
+
+    # ---------------------------------------------------------------- 카드 다루기 (화면 버튼)
+    def add(self, spec: dict, where: str = "end", replace_paused: bool = False) -> dict:
+        """카드를 넣는다. where='end' 맨 아래에 담기만, 'now' 맨 위에 넣고 바로 (돌던 일은 밀렸다가 이어서).
+        replace_paused: 같은 종류의 아직 안 돈 카드(일시정지·대기)를 이걸로 바꾼다 (숙제 시작 = 새 숙제.
+        숙제는 진행 기록이 따로 있어 새 카드도 끊긴 자리부터 한다)."""
+        with self.lock:
+            it = {k: v for k, v in (spec or {}).items() if k != "id"}
+            it.update(id=self._seq, status="wait")
+            it.setdefault("note", "")
+            self._seq += 1
+            if replace_paused:
+                for x in [x for x in self.items if x.get("kind") == it.get("kind") and x.get("status") in ("pause", "wait")]:
+                    self.items.remove(x)
+                    self.kind_of(x).removed(x)
+            if where == "now":
+                self.items.insert(0, it)
+            else:
+                self.items.append(it)
+            cur = self.current()
+        self._changed()
+        if where == "now":
+            if cur:
+                self.preempt("뒤로 미루는 중…")
+            else:
+                self.tick()
+        elif self.running:
+            self._wake.set()  # 기다리며 쉬는 중이면 담은 카드를 바로 본다
+        return dict(it)
+
+    def put_first(self, spec: dict) -> bool:
+        """먼저 할 카드를 맨 위에 둔다 (게임 다시 켜기 — gui_app/queue_api._q_restart). 같은 종류가 이미 남아 있으면
+        (대기·진행·일시정지) 그대로. 돌던 카드는 건드리지 않는다 — 그 종류의 Kind.timed 가 참이면 끊어도 되는 자리에서
+        cut_for_timed 가 밀어내고, 아니면 돌던 카드가 끝난 뒤 맨 위라 이것부터 돈다. 넣었으면 True."""
+        with self.lock:
+            if any(x.get("kind") == spec.get("kind") and x.get("status") in LIVE for x in self.items):
+                return False
+            it = {k: v for k, v in spec.items() if k != "id"}
+            it.update(id=self._seq, status="wait")
+            it.setdefault("note", "")
+            self._seq += 1
+            self.items.insert(0, it)
+        self._changed()
+        return True
+
+    def preempt(self, note: str) -> None:
+        """돌던 카드를 대기로 돌리고(note 를 적어) 맨 위 카드부터 다시 돈다 — '지금 바로' 와 같은 밀어내기."""
+        cur = self.current()
+        if cur:
+            self.patch(cur["id"], {"note": note})
+            self.request_stop("preempt")
+
+    def remove(self, item_id) -> None:
+        with self.lock:
+            it = self.find(item_id)
+            if not it:
+                return
+            running = it.get("status") == "run"
+            if running:
+                self.request_stop("remove")
+            self.items.remove(it)
+        if not running:
+            self.kind_of(it).removed(it)
+            self._gone(it)
+        self._changed()
+
+    def skip_current(self) -> None:
+        """지금 카드만 중단 (Shift+F12): 빼고 다음 카드로 이어 간다. 쉬는 중이면 맨 위 일시정지 카드를."""
+        if self.running:
+            if self.current():
+                self.request_stop("skip")
+            return
+        it = self.top_paused()
+        if not it:
+            return
+        it["note"] = "중단"
+        self._record(it, "stop")
+        self.remove(it["id"])
+        if any(x.get("status") == "wait" for x in self.items):
+            self.tick()
+
+    def move(self, item_id, delta: int) -> None:
+        with self.lock:
+            i = next((n for n, x in enumerate(self.items) if str(x.get("id")) == str(item_id)), -1)
+            j = i + int(delta)
+            if i < 0 or not 0 <= j < len(self.items):
+                return
+            self.items[i], self.items[j] = self.items[j], self.items[i]
+        self._changed()
+
+    def play_one(self, item_id) -> None:
+        """이 카드부터. 대기 줄의 맨 앞(돌고 있는 카드 바로 뒤)으로 올리고 큐를 깨운다.
+        끝난 카드를 다시 거는 것이면 진행 기록을 지운다 (일시정지였다면 하던 자리에서 이어 간다)."""
+        with self.lock:
+            it = self.find(item_id)
+            if not it or it.get("status") == "run":
+                return
+            if it.get("status") in ("done", "fail"):
+                for k in ("base", "made", "doneRuns", "doneSecs", "prog"):
+                    it.pop(k, None)
+                it.update(spent=0, steps=0, note="")
+            it.pop("errors", None)
+            it.pop("resumeAt", None)  # 사람이 고른 카드는 기다리던 중이어도 지금 돈다
+            it["status"] = "wait"
+            self.items.remove(it)
+            at = next((n for n, x in enumerate(self.items) if x.get("status") == "run"), -1)
+            self.items.insert(at + 1, it)
+        self._changed()
+        self.tick()
+
+    def _timed_due(self):
+        """(lock 안에서) 돌던 카드를 밀어내고 먼저 할 시간 정해진 카드 (Kind.timed 이고 지금 열림). 없으면 None.
+        돌던 카드가 없거나, 큐가 서는 중이거나, 돌던 카드가 그런 카드면 없다."""
+        cur = self.current()
+        timed = lambda x: getattr(self.kind_of(x), "timed", lambda _: False)(x)  # noqa: E731 — 없는 종류는 아님
+        if not cur or self.stop or timed(cur):
+            return None
+        return next((x for x in self.items if x.get("status") == "wait" and timed(x) and not self.kind_of(x).ready(x)),
+                    None)
+
+    def timed_due(self) -> str:
+        """먼저 할 시간 정해진 카드가 열렸나 — 묻기만 한다 (판 사이에 '다시 하기' 대신 나갈지 정할 때). 열렸으면 까닭, 아니면 ""."""
+        with self.lock:
+            due = self._timed_due()
+        return f"'{due.get('label')}' 열림" if due else ""
+
+    def cut_for_timed(self) -> str:
+        """시간 정해진 카드(Kind.timed)가 지금 열렸으면 그 카드를 맨 위로 올리고 돌던 카드를 밀어낸다 ('지금 바로' 와 같은
+        preempt — 밀린 카드는 대기로 돌아가 그 카드가 끝나면 끊긴 자리부터 이어 한다). 돌던 일이 끊어도 되는 자리에서
+        부른다 (mabi/cutpoint). 밀어냈으면 까닭, 아니면 ""."""
+        with self.lock:
+            due = self._timed_due()
+            if not due:
+                return ""
+            cur = self.current()
+            self.items.remove(due)
+            self.items.insert(0, due)
+            cur["note"] = f"'{due.get('label')}' 먼저 — 끝나면 이어서"
+        self._changed()
+        self.request_stop("preempt")
+        return f"'{due.get('label')}' 열림"
+
+    def pause_one(self, item_id) -> None:
+        """돌고 있는 이 카드에서 일시정지 (이번 걸음을 마치고)."""
+        it = self.find(item_id)
+        if it and it.get("status") == "run":
+            self.patch(item_id, {"note": "이번 걸음을 마치고 멈춥니다…"})
+            self.request_stop("pause")
+
+    def pause(self) -> None:
+        if self.running:
+            self.request_stop("pause")
+
+    def resume_top(self) -> None:
+        """맨 위 일시정지 카드를 이어 한다 (F12). 다른 일이 돌고 있으면 그 F12 는 그 일의 것이다.
+        리모콘을 다시 켜면 일시정지 카드가 대기로 바뀐다(_load) → 그때는 대기 카드를 위에서부터 돌린다
+        (2026-10-26 껐다 켠 뒤 F12 가 아무것도 안 함)."""
+        if self.running:
+            return
+        it = self.top_paused()
+        if it:
+            self.play_one(it["id"])
+        elif self.can_resume():
+            self.tick()
+
+    def can_resume(self) -> bool:
+        """쉬는 중에 F12 로 이어 할 카드가 있나 (일시정지 카드, 없으면 대기 카드)."""
+        return bool(self.top_paused() or any(x.get("status") == "wait" for x in self.items))
+
+    def play_all(self) -> None:
+        """▶ 전체 시작. 일시정지한 카드와 다시 해도 오류로 실패한 카드(errors — 그래서 큐가 섰다)도 대기로 되돌려 위에서부터
+        차례로. 오류 카드는 하던 자리부터 (한 판·시간·숙제 진행은 그대로) 다시 두 번까지. 다른 까닭의 실패 카드는 그대로
+        (스킬 레벨 부족처럼 다시 해도 같은 것 — 카드의 ▶ 로)."""
+        with self.lock:
+            for x in self.items:
+                if x.get("status") == "pause" or (x.get("status") == "fail" and x.get("errors")):
+                    x["status"] = "wait"
+                    x.pop("errors", None)
+        self._changed()
+        self.tick()
+
+    def tidy(self) -> None:
+        with self.lock:
+            self.items = [x for x in self.items if x.get("status") in ("wait", "run", "pause")]
+        self._changed()
+
+    def clear(self) -> None:
+        with self.lock:
+            if self.current():
+                self.request_stop("remove")
+            gone, self.items = self.items, []
+        for x in gone:
+            if x.get("status") != "run":
+                self.kind_of(x).removed(x)
+                self._gone(x)
+        self._changed()
+
+    def edit(self, item_id, target: int) -> None:
+        """목표 수량 바꾸기. 끝난 카드면 다시 대기로."""
+        with self.lock:
+            it = self.find(item_id)
+            if not it:
+                return
+            it["target"] = int(target)
+            if it.get("status") in ("done", "fail"):
+                it["status"] = "wait"
+        self._changed()
+        self.tick()
+
+    def patch(self, item_id, fields: dict, quiet: bool = False) -> None:
+        """카드 값 고치기 (메모·예상 비용·진행 수량). id·status 는 못 바꾼다."""
+        with self.lock:
+            it = self.find(item_id)
+            if not it:
+                return
+            it.update({k: v for k, v in (fields or {}).items() if k not in ("id", "status")})
+        if not quiet:
+            self._changed()
+
+    def note(self, it: dict, text: str) -> None:
+        self.patch(it["id"], {"note": text})
+
+    # ---------------------------------------------------------------- 돌리기
+    def tick(self) -> None:
+        with self.lock:
+            if self.running:
+                self._wake.set()  # 열린 시간을 기다리며 쉬는 중이면 바로 다시 고른다
+                return
+            self.running = True
+            self.stop = None
+            self._thread = threading.Thread(target=self._loop, name="work-queue", daemon=True)
+        self._changed()
+        self._thread.start()
+
+    def _pick(self, skip: dict | None = None) -> tuple[dict | None, list]:
+        """(lock 안에서) 다음에 돌 카드와 비켜 둔 카드 [(카드, 까닭)]. 돌 카드가 없으면 None.
+        위에서부터: 일시정지 카드를 만나면 거기서 선다 (건너뛰고 아래 카드를 돌리지 않는다 — 그 카드를 돌려준다).
+        정해진 시간에만 하는 카드(필드 보스)·가공을 기다리는 카드가 지금 돌 때가 아니면 비켜 두고 아래 카드를 (ready).
+        skip: 이 카드는 없는 것으로 본다 (돌던 카드가 비켜 줄지 정할 때 — yield_to)."""
+        later = []
+        for x in self.items:
+            if x is skip or x.get("status") not in ("wait", "pause"):
+                continue
+            ready = getattr(self.kind_of(x), "ready", None)  # 없는 종류는 늘 준비됨
+            why = x.get("status") == "wait" and ready and ready(x)
+            if why:
+                later.append((x, why))
+                continue
+            return x, later
+        return None, later
+
+    def yield_to(self, it: dict) -> dict | None:
+        """돌던 카드 it 이 한동안 할 일이 없을 때 (가공 완료 대기) 그사이 돌릴 카드. 없거나 일시정지 카드에 막히면 None."""
+        with self.lock:
+            if self.stop:
+                return None
+            nxt, _ = self._pick(skip=it)
+            return nxt if nxt and nxt.get("status") == "wait" else None
+
+    def _errored(self, it: dict) -> None:
+        """카드가 오류(인식 불가·시간 초과·알 수 없는 예외 — outcome.unexpected)로 끝났다. 처음이면 맨 아래로 내려 순서가
+        오면 한 번 더 (자리 정리는 실패한 일이 이미 했다 — outcome.settle). 또 오류면 실패로 두고, 오류로 미뤄 둔 다른 카드까지
+        다 해 본 뒤 큐를 멈춘다 (_halt). 예전엔 실패 카드를 그대로 두고 다음 카드로 넘어가, 실패가 남긴 화면에서 다음 카드들이
+        연달아 실패했다 (2026-11-16 사용자)."""
+        note = (it.get("note") or "").removeprefix("실패 — ") or "오류"
+        with self.lock:
+            self.stop = None
+            it["errors"] = int(it.get("errors") or 0) + 1
+            if it["errors"] == 1:
+                it["status"] = "wait"
+                it["note"] = f"오류로 실패 — 순서가 오면 한 번 더 · {note}"
+                self.items.remove(it)
+                self.items.append(it)
+            else:
+                it["status"] = "fail"
+                it["note"] = f"다시 해도 오류로 실패 · {note}"
+                self._halt = True
+        if it["status"] == "wait":
+            log.warning(f"작업 큐: '{it.get('label')}' 오류로 실패 → 맨 아래로, 순서가 오면 한 번 더 ({note})")
+        else:
+            log.error(f"작업 큐: '{it.get('label')}' 다시 해도 오류로 실패 → 오류로 미뤄 둔 카드까지 하고 큐를 멈춤 ({note})")
+        self._record(it, "fail")
+        self._changed()
+
+    def _loop(self) -> None:
+        drained = restart = False
+        try:
+            while True:
+                with self.lock:
+                    if self.stop and self.stop["reason"] == "preempt":
+                        # 밀어내려던 카드가 멈추기 전에 끝까지 갔다 (끝나서 치움) — 밀어낸 까닭인 맨 위 카드를 그대로 이어 한다.
+                        # 예전엔 여기서 큐가 서서 '게임 다시 켜기' 카드가 대기로 남은 채 아무것도 안 했다 (2026-11-13 06:37)
+                        self.stop = None
+                    if self.stop:
+                        break
+                    self._wake.clear()  # 고른 뒤에 걸린 카드는 아래 기다림을 바로 깨운다
+                    it, later = self._pick()
+                    for x, why in later:
+                        if x.get("note") != why:
+                            x["note"] = why
+                    if self._halt and not (it and it.get("status") == "wait" and it.get("errors")):
+                        # 다시 해도 오류로 실패한 카드가 있다 — 오류로 미뤄 둔 카드까지 다 해 봤으니 큐를 멈춘다
+                        # (남은 대기 카드는 그대로 — ▶ 로). 실패 하나가 뒤 카드들로 번지지 않게 (2026-11-16 사용자)
+                        log.error("작업 큐: 다시 해도 오류로 실패한 카드가 있어 멈춤 — 실패 카드를 확인한 뒤 ▶")
+                        drained = not any(x.get("status") in LIVE for x in self.items)
+                        break
+                    if not it and later:
+                        it = None  # 기다릴 카드만 남음 — 아래에서 열릴 때까지
+                    elif not it or it.get("status") == "pause":
+                        drained = not it
+                        break
+                if it is None:
+                    self._changed()
+                    # 30초마다 다시 본다. 멈추거나 카드를 다시 걸거나 담으면 바로 — 예전엔 30초를 다 기다려
+                    # 다시 건 어비스 카드가 45초 뒤에 시작했다 (2026-11-16 13:02)
+                    for _ in range(30):
+                        if self.stop or self._wake.wait(1):
+                            break
+                    continue
+                with self.lock:
+                    it["status"] = "run"
+                    it["startedAt"] = int(time.time() * 1000)
+                    it["note"] = "시작"
+                    if self.report is None:
+                        self.report = QueueReport()
+                    self.report.card(it)
+                self._changed()
+                kind = self.kind_of(it)
+                before = None if kind.own_loot else self._snap()
+                t0 = time.monotonic()
+                ok = False
+                try:
+                    ok = bool(kind.run(self, it))
+                except Exception as e:  # noqa: BLE001 — 한 카드의 오류로 큐가 죽으면 안 된다
+                    log.exception(f"작업 큐: '{it.get('label')}' 오류")
+                    it["note"] = f"오류 — {e}"
+                    self.set_stop("error")
+                if before is not None:
+                    self.report.add_loot(it, loot(before, self._snap()))
+
+                def report(result):
+                    self.report.card_end(it, result, time.monotonic() - t0, self._view(it),
+                                         self.kind_of(it).detail(it) if hasattr(kind, "detail") else "", kind.tasks(it))
+                with self.lock:
+                    if it not in self.items:  # 도중에 지워졌다
+                        gone = True
+                    else:
+                        gone = False
+                if gone:
+                    self._record(it, "removed")
+                    report("stop")
+                    continue
+                if ok:
+                    # 다 한 카드는 치운다. 남겨 두면 다음에 뭘 할 차례인지가 안 보인다. 기록은 작업 기록 창에
+                    self._record(it, "done")
+                    report("done")
+                    with self.lock:
+                        self.items.remove(it)
+                    self.emit("mm:queue-done", {"item": dict(it)})
+                    self._changed()
+                    continue
+                why = self.stop and self.stop["reason"]
+                if why == "yield":  # 기다리는 동안 아래 카드에 비켜 줌 — 끝난 게 아니라 기록하지 않는다 (ready 가 다시 열어 준다)
+                    it["status"] = "wait"
+                    it["note"] = self.stop.get("note") or "기다리는 동안 다른 카드 먼저"
+                    report("preempt")
+                    with self.lock:
+                        self.stop = None
+                    self._changed()
+                    continue
+                if why == "later":  # 정해진 시간이 지났다 — 남은 몫은 다음 열림 때 (실패 아님)
+                    it["status"] = "wait"
+                    it["note"] = self.stop.get("note") or "다음에 이어서"
+                    self._record(it, "stop")
+                    report("stop")
+                    with self.lock:
+                        self.stop = None
+                    self._changed()
+                    continue
+                if why in ("skip", "drop"):  # 이 카드만 중단 · 더 할 수 없음 → 빼고 다음 카드로
+                    result = "fail" if why == "drop" else "stop"
+                    if why == "skip":
+                        it["note"] = "중단"
+                    self._record(it, result)
+                    report(result)
+                    with self.lock:
+                        self.items.remove(it)
+                        self.stop = None
+                    self._changed()
+                    continue
+                if why == "error":
+                    self._errored(it)
+                    report("fail")
+                    continue
+                if not why:
+                    it["status"] = "fail"
+                elif why == "preempt":
+                    it["status"] = "wait"
+                    restart = True
+                    it["note"] = "뒤로 밀림 — 앞 작업이 끝나면 이어서"
+                elif why == "skill":
+                    # 스킬 레벨은 시간이 지난다고 오르지 않는다. 대기로 되돌리면 재생을 누를 때마다 같은 거절을 받는다
+                    s = self.stop
+                    it["status"] = "fail"
+                    it["note"] = (f"생활 스킬 레벨 부족 — {s.get('what')}" + (f" (필요 Lv.{s['level']})" if s.get("level") else "")
+                                  + " · 날개는 쓰이지 않았습니다.")
+                elif why == "transfer":
+                    # 장비 부품은 사람이 장비를 분해하면 채워진다. 실패가 아니라 일시정지로 두어 ▶ 로 이어 가게 한다
+                    it["status"] = "pause"
+                    it["note"] = (f"분해된 장비 부품 부족 — {self.stop.get('what')} 의 재료를 보관함에서 못 꺼냄. "
+                                  "장비를 분해하거나 재료를 가방으로 옮긴 뒤 ▶")
+                else:  # 사람이 멈춘 것(⏸·■·F12)은 실패가 아니다 — 일시정지로 두고 ▶ 로 하던 자리에서 이어 간다
+                    it["status"] = "pause"
+                    where = self.kind_of(it).where(it)
+                    # 카드가 스스로 멈추며 까닭을 남겼으면 그것 (게임을 다시 켜지 못함 등 — set_stop 의 note)
+                    it["note"] = self.stop.get("note") or ((f"{where}에서 멈춤 · " if where else "") + self.pause_note())
+                self._record(it, {"fail": "fail", "pause": "pause"}.get(it["status"], "stop"))
+                report({"fail": "fail", "pause": "pause", "wait": "preempt"}.get(it["status"], "stop"))
+                self._changed()
+        finally:
+            with self.lock:
+                self.running = False
+                self.stop = None
+                self._halt = False
+            self._changed()
+            if restart:
+                self.tick()  # 지금 바로 시작한 작업으로
+            elif drained:
+                try:
+                    self.on_drained(self)
+                except Exception:  # noqa: BLE001
+                    log.exception("작업 큐 끝 처리 실패")
+                self.session = {}

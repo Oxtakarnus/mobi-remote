@@ -1,0 +1,419 @@
+"""작업 큐(mabi.workqueue) 상태 기계 — 가짜 카드 종류로 돌린다."""
+import tempfile
+import threading
+import time
+import unittest
+from pathlib import Path
+from unittest import mock
+
+from mabi.craft import queue as store
+from mabi.workqueue import Kind, WorkQueue
+
+
+class FakeLong(Kind):
+    """숙제 흉내: stop() 이 오면 스스로 멈춘다 (STOP). finish() 로 끝까지 간 것으로."""
+
+    def __init__(self):
+        self.started = []
+        self.stops = []
+        self.removed_items = []
+        self._ev = threading.Event()
+        self._ok = False
+
+    def run(self, q, it):
+        self.started.append(it["id"])
+        self._ev.clear()
+        self._ev.wait(5)
+        if self._ok:
+            self._ok = False
+            return True
+        q.set_stop("stopped")
+        return False
+
+    def stop(self, reason):
+        self.stops.append(reason)
+        self._ev.set()
+
+    def finish(self):
+        self._ok = True
+        self._ev.set()
+
+    def f12(self):  # 숙제가 스스로 멈춤
+        self._ev.set()
+
+    def removed(self, it):
+        self.removed_items.append(it["id"])
+
+
+class FakeQuick(Kind):
+    def __init__(self):
+        self.ran = []
+
+    def run(self, q, it):
+        self.ran.append(it["label"])
+        time.sleep(0.02)
+        return True
+
+
+class FakeAlter(Kind):
+    """가공 목표 흉내: 처음엔 아래 카드에 비켜 주고(resumeAt), 돌아오면 끝난다 (GoalKind 의 ready·timed 와 같은 규칙)."""
+
+    def __init__(self):
+        self.runs = 0
+
+    def ready(self, it):
+        at = it.get("resumeAt")
+        return "가공 완료 대기" if at and time.time() * 1000 < at else ""
+
+    def timed(self, it):
+        return bool(it.get("resumeAt"))
+
+    def run(self, q, it):
+        self.runs += 1
+        it["resumeAt"] = None
+        if self.runs == 1 and q.yield_to(it):
+            q.patch(it["id"], {"resumeAt": int(time.time() * 1000) + 300})
+            q.set_stop("yield", {"note": "비켜 줌"})
+            return False
+        return True
+
+
+class FakeBorrower(Kind):
+    """비켜 받은 긴 카드: 끊어도 되는 자리마다 cut_for_timed 를 부르고, 밀리면 멈춘다. 두 번째 돌 때 끝난다."""
+
+    def __init__(self):
+        self.started = []
+        self.stops = []
+
+    def run(self, q, it):
+        self.started.append(it["label"])
+        if len(self.started) > 1:
+            return True
+        end = time.monotonic() + 3
+        while time.monotonic() < end:
+            if q.stop or q.cut_for_timed():
+                q.set_stop("stopped")
+                return False
+            time.sleep(0.02)
+        return True
+
+    def stop(self, reason):
+        self.stops.append(reason)
+
+
+class Flaky(Kind):
+    """오류 흉내: 카드 이름마다 앞의 몇 번은 오류로 실패 (outcome.unexpected 인 실패 — 종류가 set_stop('error'))."""
+
+    def __init__(self, fails):
+        self.fails, self.ran = fails, []
+
+    def run(self, q, it):
+        self.ran.append(it["label"])
+        if self.ran.count(it["label"]) <= self.fails.get(it["label"], 0):
+            q.note(it, "실패 — 화면을 못 읽음")
+            q.set_stop("error")
+            return False
+        return True
+
+
+class Closed(Kind):
+    """열린 시간이 아닌 카드 (필드 보스 흉내)."""
+
+    def ready(self, it):
+        return "열린 시간이 아님"
+
+    def run(self, q, it):
+        return True
+
+
+def wait_for(cond, timeout=3):
+    end = time.monotonic() + timeout
+    while time.monotonic() < end:
+        if cond():
+            return True
+        time.sleep(0.01)
+    return False
+
+
+class WorkQueueTest(unittest.TestCase):
+    def setUp(self):
+        d = tempfile.TemporaryDirectory()
+        self.addCleanup(d.cleanup)
+        self.dir = Path(d.name)
+        self.events = []
+        self.long, self.quick = FakeLong(), FakeQuick()
+        self.drained = 0
+        self.q = self.make()
+
+    def make(self):
+        def drained(q):
+            self.drained += 1
+        return WorkQueue(self.dir / "queue.json", self.dir / "history.jsonl", lambda ch, v: self.events.append((ch, v)),
+                         {"daily": self.long, "action": self.quick, "goal": self.quick}, on_drained=drained)
+
+    def status(self):
+        return [(x["label"], x["status"]) for x in self.q.items]
+
+    def test_waiting_queue_wakes_on_play_or_add(self):
+        """열린 시간을 기다리는 카드만 남아 쉬는 큐도, 실패 카드를 다시 걸거나 카드를 담으면 바로 돈다 (예전엔 30초마다만 봤다)."""
+        q = WorkQueue(self.dir / "q2.json", self.dir / "h2.jsonl", lambda ch, v: None, {"boss": Closed(), "action": self.quick})
+
+        def stop():
+            q.pause()
+            wait_for(lambda: not q.running)
+        self.addCleanup(stop)
+        failed = q.add({"kind": "action", "label": "다시"})
+        failed = q.find(failed["id"])
+        failed["status"] = "fail"
+        q.add({"kind": "boss", "label": "보스"})
+        q.tick()
+        self.assertTrue(wait_for(lambda: q.items[-1].get("note") == "열린 시간이 아님"))
+        q.play_one(failed["id"])
+        self.assertTrue(wait_for(lambda: self.quick.ran == ["다시"]))
+        q.add({"kind": "action", "label": "담음"})
+        self.assertTrue(wait_for(lambda: self.quick.ran == ["다시", "담음"]))
+        self.assertTrue(q.running)   # 보스 카드를 계속 기다린다
+
+    def flaky_queue(self, fails):
+        k = Flaky(fails)
+        q = WorkQueue(self.dir / "q3.json", self.dir / "h3.jsonl", lambda ch, v: None, {"goal": k, "boss": Closed()})
+
+        def stop():
+            q.pause()
+            wait_for(lambda: not q.running)
+        self.addCleanup(stop)
+        return q, k
+
+    def test_error_card_retried_at_bottom(self):
+        """오류로 실패한 카드는 맨 아래로 내려 순서가 오면 한 번 더 — 그사이 다음 카드는 그대로 돈다."""
+        q, k = self.flaky_queue({"가": 1})
+        for name in ("가", "나"):
+            q.add({"kind": "goal", "label": name})
+        q.tick()
+        self.assertTrue(wait_for(lambda: not q.running))
+        self.assertEqual(k.ran, ["가", "나", "가"])
+        self.assertEqual(q.items, [])  # 다시 해서 끝났다
+
+    def test_second_error_stops_after_other_retries(self):
+        """또 오류면 실패로 두고, 오류로 미뤄 둔 다른 카드까지 해 본 뒤 큐를 멈춘다 (열린 시간을 기다리지 않는다)."""
+        q, k = self.flaky_queue({"가": 9, "나": 1})
+        q.add({"kind": "boss", "label": "보스"})
+        for name in ("가", "나", "다"):
+            q.add({"kind": "goal", "label": name})
+        q.tick()
+        self.assertTrue(wait_for(lambda: not q.running))
+        self.assertEqual(k.ran, ["가", "나", "다", "가", "나"])
+        st = {x["label"]: (x["status"], x.get("errors")) for x in q.items}
+        self.assertEqual(st, {"보스": ("wait", None), "가": ("fail", 2)})
+        self.assertIn("다시 해도 오류로 실패", q.items[-1]["note"])
+        q.play_all()  # ▶ 전체: 오류 카드도 다시 (두 번까지)
+        self.assertTrue(wait_for(lambda: not q.running and k.ran.count("가") == 4))
+        self.assertEqual(q.items[-1]["status"], "fail")
+
+    def test_kind_exception_is_error(self):
+        """종류가 예외로 끝나면(알 수 없는 오류) 그것도 오류 — 맨 아래로 한 번 더."""
+        class Boom(Kind):
+            n = 0
+
+            def run(self, q, it):
+                Boom.n += 1
+                if Boom.n == 1:
+                    raise RuntimeError("터짐")
+                return True
+        q = WorkQueue(self.dir / "q4.json", self.dir / "h4.jsonl", lambda ch, v: None, {"goal": Boom()})
+        q.add({"kind": "goal", "label": "가"})
+        q.tick()
+        self.assertTrue(wait_for(lambda: not q.running))
+        self.assertEqual((Boom.n, q.items), (2, []))
+
+    def test_now_preempts_and_resumes(self):
+        # 지금 바로: 돌던 숙제는 대기로, 행동 먼저, 그다음 숙제를 이어서
+        self.q.add({"kind": "daily", "label": "숙제"}, "now")
+        self.assertTrue(wait_for(lambda: self.long.started == [1]))
+        self.q.add({"kind": "action", "label": "채집"}, "now")
+        self.assertTrue(wait_for(lambda: self.quick.ran == ["채집"]))
+        self.assertEqual(self.long.stops, ["preempt"])
+        self.assertTrue(wait_for(lambda: self.long.started == [1, 1]))  # 숙제 다시
+        self.long.finish()
+        self.assertTrue(wait_for(lambda: not self.q.running and not self.q.items))
+        # 끝 처리(on_drained)는 running 을 내린 바로 뒤에 불린다 — 바로 재면 부하가 클 때 그 사이에 걸린다
+        self.assertTrue(wait_for(lambda: self.drained == 1))
+        self.assertEqual(self.drained, 1)
+
+    def test_self_stop_pauses_queue(self):
+        # F12 로 숙제가 스스로 멈춤 → 일시정지, 뒤 카드는 안 돈다, 큐가 끝난 것도 아니다 (화면 설정 안 되돌림)
+        self.q.add({"kind": "daily", "label": "숙제"})
+        self.q.add({"kind": "action", "label": "채집"})
+        self.q.tick()
+        self.assertTrue(wait_for(lambda: self.long.started == [1]))
+        self.long.f12()
+        self.assertTrue(wait_for(lambda: not self.q.running))
+        self.assertEqual(self.status(), [("숙제", "pause"), ("채집", "wait")])
+        self.assertEqual(self.quick.ran, [])
+        self.assertEqual(self.drained, 0)
+
+    def test_play_all_resumes_paused_first(self):
+        self.q.add({"kind": "daily", "label": "숙제"})
+        self.q.add({"kind": "action", "label": "채집"})
+        self.q.items[0]["status"] = "pause"
+        self.q.play_all()
+        self.assertTrue(wait_for(lambda: self.long.started == [1]))
+        self.assertEqual(self.quick.ran, [])  # 숙제가 먼저
+        self.long.finish()
+        self.assertTrue(wait_for(lambda: self.quick.ran == ["채집"] and not self.q.running))
+        self.assertEqual(self.q.items, [])
+
+    def test_remove_running_card_stops_queue(self):
+        self.q.add({"kind": "daily", "label": "숙제"})
+        self.q.add({"kind": "action", "label": "채집"})
+        self.q.tick()
+        self.assertTrue(wait_for(lambda: self.long.started == [1]))
+        self.q.remove(1)
+        self.assertTrue(wait_for(lambda: not self.q.running))
+        self.assertEqual(self.long.stops, ["remove"])
+        self.assertEqual(self.quick.ran, [])
+        self.assertIn('"result": "removed"', (self.dir / "history.jsonl").read_text(encoding="utf-8"))
+
+    def test_pause_button(self):
+        self.q.add({"kind": "daily", "label": "숙제"}, "now")
+        self.assertTrue(wait_for(lambda: self.long.started == [1]))
+        self.q.pause()
+        self.assertTrue(wait_for(lambda: not self.q.running))
+        self.assertEqual(self.status(), [("숙제", "pause")])
+
+    def test_preempt_beats_self_stop(self):
+        # 밀리는 숙제는 STOP 으로 끝나도(set_stop('stopped')) 일시정지가 아니라 대기 → 이어서
+        self.q.add({"kind": "daily", "label": "숙제"}, "now")
+        self.assertTrue(wait_for(lambda: self.long.started == [1]))
+        self.q.add({"kind": "action", "label": "수령"}, "now")
+        self.assertTrue(wait_for(lambda: self.long.started == [1, 1]))
+        self.assertEqual(self.q.items[0]["status"], "run")
+
+    def test_preempted_card_that_finishes_still_runs_top(self):
+        # 밀어내기(preempt)를 받은 카드가 멈추지 않고 끝까지 간 경우 — 맨 위에 올린 카드가 이어서 돌아야 한다.
+        # 2026-11-13 06:37 숙제 마지막 단계에서 '게임 다시 켜기' 를 올렸는데 숙제가 완료로 끝나자 큐가 서 버렸다
+        class FinishAnyway(Kind):
+            def run(self, q, it):
+                wait_for(lambda: q.stop)
+                return True
+        q = WorkQueue(self.dir / "q2.json", self.dir / "h2.jsonl", lambda ch, v: None,
+                      {"daily": FinishAnyway(), "restart": self.quick})
+        q.add({"kind": "daily", "label": "숙제"}, "now")
+        self.assertTrue(wait_for(lambda: q.current()))
+        q.put_first({"kind": "restart", "label": "게임 다시 켜기"})
+        q.preempt("먼저 할 카드에 밀림")
+        self.assertTrue(wait_for(lambda: self.quick.ran == ["게임 다시 켜기"] and not q.running))
+        self.assertEqual(q.items, [])
+
+    def test_replace_paused_and_removed_hook(self):
+        self.q.add({"kind": "daily", "label": "옛 숙제"})
+        self.q.items[0]["status"] = "pause"
+        self.q.add({"kind": "daily", "label": "새 숙제"}, "end", replace_paused=True)
+        self.assertEqual([x["label"] for x in self.q.items], ["새 숙제"])
+        self.assertEqual(self.long.removed_items, [1])
+
+    def test_saved_and_reloaded(self):
+        self.q.add({"kind": "action", "label": "채집", "detail": "1회"})
+        self.q.items[0]["status"] = "run"  # 꺼질 때 돌던 것
+        self.q._changed()
+        q2 = self.make()
+        self.assertEqual([(x["label"], x["status"]) for x in q2.items], [("채집", "wait")])
+        self.assertEqual(q2.add({"kind": "action", "label": "또"})["id"], 2)
+
+    def test_paused_card_blocks_queue(self):
+        # 숙제 일시정지 중 수령(지금 바로) → 수령만 하고 숙제 카드에서 선다 (아래 어비스로 넘어가지 않는다)
+        self.q.add({"kind": "daily", "label": "숙제"})
+        self.q.add({"kind": "action", "label": "어비스"})
+        self.q.items[0]["status"] = "pause"
+        self.q.add({"kind": "action", "label": "수령"}, "now")
+        self.assertTrue(wait_for(lambda: not self.q.running and self.quick.ran == ["수령"]))
+        self.assertEqual(self.status(), [("숙제", "pause"), ("어비스", "wait")])
+        self.assertEqual(self.drained, 0)
+
+    def test_only_top_card_paused(self):
+        # 어비스가 위로 올라가 돌다가 멈추면, 그 아래 일시정지였던 숙제는 대기로
+        self.q.add({"kind": "action", "label": "아래"})
+        self.q.add({"kind": "daily", "label": "숙제"})
+        self.q.items[1]["status"] = "pause"
+        self.q.add({"kind": "daily", "label": "새로"}, "now")
+        self.assertTrue(wait_for(lambda: self.long.started == [3]))
+        self.long.f12()
+        self.assertTrue(wait_for(lambda: not self.q.running))
+        self.assertEqual(self.status(), [("새로", "pause"), ("아래", "wait"), ("숙제", "wait")])
+
+    def test_resume_top(self):
+        self.q.add({"kind": "action", "label": "a"})
+        self.q.add({"kind": "daily", "label": "숙제"})
+        self.q.items[1]["status"] = "pause"
+        self.q.resume_top()  # F12
+        self.assertTrue(wait_for(lambda: self.long.started == [2]))
+        self.assertEqual(self.q.items[0]["label"], "숙제")  # 이어 하는 카드가 맨 앞으로
+        self.long.finish()
+        self.assertTrue(wait_for(lambda: self.quick.ran == ["a"] and not self.q.running))
+
+    def test_paused_becomes_wait_on_restart(self):
+        # 껐다 켜면 일시정지는 대기로 (돌던 동작이 없다). 하던 자리 값은 그대로
+        self.q.add({"kind": "abyss", "label": "어비스", "doneRuns": 2})
+        self.q.items[0]["status"] = "pause"
+        self.q._changed()
+        q2 = self.make()
+        self.assertEqual(q2.items[0]["status"], "wait")
+        self.assertEqual(q2.items[0]["doneRuns"], 2)
+        self.assertIsNone(q2.top_paused())
+
+
+class YieldTest(unittest.TestCase):
+    """가공 완료를 기다리는 카드가 아래 카드에 비켜 주고, 끝날 때가 되면 그 카드를 끊고 돌아온다."""
+
+    def setUp(self):
+        d = tempfile.TemporaryDirectory()
+        self.addCleanup(d.cleanup)
+        self.alter, self.other = FakeAlter(), FakeBorrower()
+        self.q = WorkQueue(Path(d.name) / "queue.json", Path(d.name) / "history.jsonl", lambda ch, v: None,
+                           {"goal": self.alter, "daily": self.other})
+
+    def test_yield_and_come_back(self):
+        self.q.add({"kind": "goal", "label": "가공"})
+        self.q.add({"kind": "daily", "label": "숙제"})
+        self.q.tick()
+        self.assertTrue(wait_for(lambda: not self.q.running and not self.q.items, timeout=5))
+        self.assertEqual(self.alter.runs, 2)            # 비켜 줬다가 돌아와 끝냄
+        self.assertEqual(self.other.started, ["숙제", "숙제"])  # 숙제는 끊겼다가 이어서
+        self.assertEqual(self.other.stops, ["preempt"])
+
+    def test_paused_card_below_blocks_yield(self):
+        self.q.add({"kind": "goal", "label": "가공"})
+        self.q.add({"kind": "daily", "label": "숙제"})
+        self.q.items[1]["status"] = "pause"
+        self.q.tick()
+        self.assertTrue(wait_for(lambda: not self.q.running))
+        self.assertEqual(self.alter.runs, 1)  # 비켜 줄 카드가 없어 그 자리에서 끝까지
+        self.assertEqual(self.other.started, [])
+
+    def test_play_one_clears_resume_time(self):
+        self.q.add({"kind": "goal", "label": "가공"})
+        self.q.items[0].update(status="pause", resumeAt=int(time.time() * 1000) + 60_000)
+        self.q.play_one(self.q.items[0]["id"])
+        self.assertTrue(wait_for(lambda: not self.q.running and not self.q.items))
+
+
+class SaveTest(unittest.TestCase):
+    """queue.json 은 파일에 남는 칸이 바뀔 때만 쓴다 — 진행 줄(prog) 같은 화면용 값으로는 다시 쓰지 않는다."""
+    def test_writes_only_kept_changes(self):
+        d = Path(tempfile.mkdtemp())
+        q = WorkQueue(d / "queue.json", d / "history.jsonl", lambda ch, v: None, {"goal": FakeQuick()})
+        with q.lock:
+            q.items.append({"id": 1, "kind": "goal", "label": "a", "status": "pause"})
+        writes = []
+        real = store.write
+        with mock.patch.object(store, "write", side_effect=lambda f, s: writes.append(s) or real(f, s)):
+            q.patch(1, {"note": "x"})
+            q.patch(1, {"prog": {"n": 1}})   # 화면용 — 파일 내용은 그대로
+            q.patch(1, {"prog": {"n": 2}})
+            q.patch(1, {"note": "y"})
+        self.assertEqual(len(writes), 2)
+        self.assertEqual(store.load(d / "queue.json")["items"][0]["note"], "y")
+
+
+if __name__ == "__main__":
+    unittest.main()

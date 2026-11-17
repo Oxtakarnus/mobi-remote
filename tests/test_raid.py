@@ -1,0 +1,128 @@
+"""레이드 반복 (mabi.tasks.raid) — 패킷 상태로 어디인지 가르기, 원격 명령, 큐 카드 표시."""
+import time
+import unittest
+from types import SimpleNamespace
+
+from mabi.session import GameSession
+from mabi.packet_monitor import PacketMonitor
+from mabi.tasks import raid
+
+
+class FakeBot:
+    """패킷만 진짜 (PacketMonitor). 화면·CLI 는 없다고 본다."""
+    map_loading = GameSession.map_loading
+
+    def __init__(self, quests=None):
+        self.packets = PacketMonitor(None)
+        self.packets.status = "running"
+        self.packets.last_rx = time.monotonic()  # 방금 받음 (ok)
+        self.state = SimpleNamespace(available=lambda: quests is not None, query=lambda cmd: quests)
+
+    def enter(self, kind):
+        self.packets.apply("channel.leaving", {})
+        self.packets.apply("channel.entering", {"channel": 1, "channel_type": kind, "channel_name": ""})
+
+
+class PacketStateTest(unittest.TestCase):
+    """caps/raid1 순서: 배 진입 → 출항 → 레이드 맵 → 보스전 → 결과 → 출항선."""
+
+    def test_flow(self):
+        bot = FakeBot()
+        bot.enter(raid.RAID_LOBBY)
+        bot.packets.apply("raid.state", {"state_name": "Lobby"})
+        self.assertEqual(raid.where(bot, "카브락"), "ship")
+        bot.packets.apply("raid.depart", {})
+        bot.packets.apply("raid.state", {"state_name": "InProgress"})
+        bot.packets.apply("channel.leaving", {})
+        self.assertEqual(raid.where(bot, "카브락"), "loading")
+        bot.packets.apply("channel.entering", {"channel": 2, "channel_type": raid.RAID, "channel_name": ""})
+        self.assertEqual(raid.where(bot, "카브락"), "play")
+        bot.packets.apply("raid.boss_begin", {})
+        self.assertTrue(bot.packets.state.raid_boss)
+        bot.packets.apply("raid.state", {"state_name": "Cleared"})
+        bot.packets.apply("raid.result", {"raid": 1093425028})
+        self.assertEqual(raid.where(bot, "카브락"), "cleared")
+        bot.enter(raid.RAID_LOBBY)  # 출항선으로 — 결과는 지운다
+        self.assertEqual(bot.packets.state.raid_result, 0)
+        self.assertFalse(bot.packets.state.raid_boss)
+        self.assertEqual(raid.where(bot, "카브락"), "ship")
+
+    def test_result_cleared_on_new_raid_map(self):
+        """지난 판 결과가 다음 판 레이드 맵에서 클리어로 보이면 안 된다."""
+        bot = FakeBot()
+        bot.enter(raid.RAID)
+        bot.packets.apply("raid.result", {"raid": 7})
+        self.assertTrue(raid.cleared(bot))
+        bot.enter(raid.RAID)
+        bot.packets.apply("raid.state", {"state_name": "InProgress"})
+        self.assertFalse(raid.cleared(bot))
+
+
+class QuestTitleTest(unittest.TestCase):
+    def test_strips_color_tag(self):
+        bot = FakeBot([{"QuestTitle": "<color=orange>카브락</color> 토벌 완료", "Source": "shortcut"}])
+        self.assertEqual(raid._quest_title(bot), "카브락 토벌 완료")
+
+    def test_only_shortcut(self):
+        bot = FakeBot([{"QuestTitle": "출항하기", "Source": "main"}])
+        self.assertEqual(raid._quest_title(bot), "")
+
+
+class CommandTest(unittest.TestCase):
+    def test_raid_command(self):
+        from gui_app.web_main import _command
+        self.assertEqual(_command(["gui.py", "--raid", "3", "카브락", "5", "어려움"]), "raid:3:카브락:5:어려움".encode())
+        self.assertEqual(_command(["gui.py", "--abyss", "1", "광기의 동굴"]), "abyss:1:광기의 동굴".encode())
+        self.assertEqual(_command(["gui.py", "--enhance", "--no-elevate"]), b"enhance")
+
+
+class CardTest(unittest.TestCase):
+    def test_detail(self):
+        from gui_app.queue_api import RaidKind
+        self.assertEqual(RaidKind.detail({"raid": "카브락", "difficulty": "어려움", "runs": 3}), "카브락 어려움 · 3판")
+
+    def test_saved_card_keeps_raid(self):
+        """queue.json 에 저장했다 다시 읽어도 레이드 이름이 남아야 한다 (빠지면 재시작 뒤 '레이드 None')."""
+        import tempfile
+        from pathlib import Path
+        from mabi.craft import queue as store
+        with tempfile.TemporaryDirectory() as d:
+            f = Path(d) / "queue.json"
+            store.save(f, {"items": [{"id": 1, "kind": "raid", "raid": "에이렐", "difficulty": "어려움"}]})
+            self.assertEqual(store.load(f)["items"][0]["raid"], "에이렐")
+
+    def test_raids_have_difficulties(self):
+        self.assertTrue(raid.raids())
+        self.assertTrue(all(raid.raids().values()))
+
+
+WEEK_1112 = __import__("datetime").datetime(2026, 11, 12, 12)  # 아래 화면을 찍은 주 (11-05 화면과 같은 레이드)
+
+
+class ScreenTest(unittest.TestCase):
+    """11-05 새 레이드(적월의 스카스)가 목록 맨 앞에 들어온 화면 — 이름은 그대로 글자로 찾는다."""
+
+    @staticmethod
+    def texts(name, *regions):
+        from pathlib import Path
+        import cv2
+        import numpy as np
+        from mabi import gamedata as gd, ocr
+        f = cv2.imdecode(np.fromfile(str(Path(__file__).parent / "fixtures" / name), np.uint8), cv2.IMREAD_COLOR)
+        return [[t for t, *_ in ocr.find_texts(f, gd.region(r))] for r in regions]
+
+    def test_list_has_all_raids(self):
+        (names,) = self.texts("raid_list_1105.png", "raid_list")
+        self.assertEqual(names, list(raid.raids(WEEK_1112)))
+
+    def test_new_raid_entry_window(self):
+        title, diff, top, right = self.texts("raid_entry_scas.png", "raid_entry_title", "raid_difficulty",
+                                             "abyss_entry_top", "abyss_entry_right")
+        self.assertEqual(title, ["적월의 스카스"])
+        self.assertEqual(diff, raid.raids(WEEK_1112)["적월의 스카스"])
+        self.assertEqual(top, ["혼자하기", "함께하기"])
+        self.assertIn("출항하기", right)
+
+
+if __name__ == "__main__":
+    unittest.main()

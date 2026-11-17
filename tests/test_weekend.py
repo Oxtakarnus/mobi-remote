@@ -1,0 +1,264 @@
+"""주말 퀘스트 (mabi.tasks.weekend) — 주말 판정, 퀘스트 창 진행도로 판 수 정하기, 판 수를 채우면 깸, 카드 설정 덮기."""
+import datetime as dt
+import unittest
+from unittest import mock
+
+from gui_app.queue_api import DailyKind, card_cfg
+from mabi import runner, tasks
+from mabi.exceptions import CannotProceed
+from mabi.tasks import weekend
+from mabi.tasks.weekend import Quest
+
+CFG = {
+    "abyss": {"dungeon": "가", "difficulty": "어려움", "mode": "solo", "runs": 0, "minutes": 0, "slot": 0,
+              "run_timeout": 1200, "match_timeout": 600},
+    "raid": {"raid": "나", "difficulty": "어려움", "mode": "solo", "runs": 0, "minutes": 0, "slot": 0},
+    "weekend": {"task_timeout_min": 90,
+                "abyss": {"dungeon": "허상의 정박지", "difficulty": "매우 어려움2", "mode": "party", "runs": 3},
+                "raid": {"raid": "화이트 서큐버스", "difficulty": "매우 어려움", "mode": "party", "runs": 1}},
+    "run": {"task_timeout_min": 45},
+}
+
+
+class NotNowTest(unittest.TestCase):
+    def test_game_day_weekend(self):
+        sat = dt.datetime(2026, 11, 14, 7)  # 토요일
+        self.assertEqual(weekend.not_now(sat), "")
+        self.assertTrue(weekend.not_now(sat.replace(hour=5)))  # 오전 6시 전은 아직 금요일
+        self.assertEqual(weekend.not_now(dt.datetime(2026, 11, 16, 5)), "")  # 월요일 새벽은 아직 일요일
+        self.assertTrue(weekend.not_now(dt.datetime(2026, 11, 16, 7)))
+
+    def test_card_waits_but_does_not_cut_in(self):
+        order = ["weekend_abyss", "weekend_raid"]
+        with mock.patch.object(weekend, "not_now", return_value="주말 아님"), \
+                mock.patch.dict(tasks.SEASON, {t: weekend.not_now for t in order}):
+            self.assertEqual(tasks.not_ready(order), "주말 아님")
+            self.assertEqual(DailyKind(None).ready({"only": order}), "주말 아님")
+        self.assertFalse(tasks.timed(order))  # 주말이 와도 돌던 카드를 끊지 않는다
+        self.assertFalse(DailyKind(None).timed({"only": order}))
+        self.assertEqual(tasks.not_ready(order + ["silver"]), "")  # 섞이면 다른 숙제는 한다
+
+    def test_no_weekday_limit(self):  # 요일 제한은 두지 않는다 (2026-11-16 사용자) — 평일에도 카드가 바로 돈다
+        self.assertEqual(tasks.not_ready(["weekend_abyss", "weekend_raid"]), "")
+
+
+class ProgressTest(unittest.TestCase):
+    def test_reads_progress_under_title(self):
+        items = [("주말에는 어비스!", 1500, 300), ("어비스 클리어 1/3", 1500, 360), ("다른 퀘스트 0/5", 1500, 700)]
+        self.assertEqual(weekend._progress(items, 300), (1, 3))
+        self.assertEqual(Quest(True, 1, 3).left(3), 2)
+        self.assertEqual(Quest(True).left(3), 3)
+
+    def test_ignores_far_or_odd_numbers(self):
+        self.assertEqual(weekend._progress([("0/5", 1500, 750)], 300), (None, None))
+        self.assertEqual(weekend._progress([("5/3", 1500, 330)], 300), (None, None))
+
+
+# 2026-11-14 이벤트 탭 화면을 OCR 한 그대로 (위 카드는 고른 카드라 목표 줄·답례까지 펼쳐져 있다)
+EVENT_TAB = [('주말에는 레이드!', 1425, 193), ('이1일 10시간 남음', 1413, 228), ('* 매주 토요일~일요일 진행 가능', 1389, 304),
+             ('• 레이드클리어', 1335, 347), ('답례', 1269, 412), ('진행하기', 1756, 469), ('주말에는 어비스!', 1427, 587),
+             ('1일 10시간 남음', 1413, 623), ('* 매주 토요일~일요일 진행 가능', 1388, 698), ('진행하기', 1757, 775)]
+
+
+class QuestCheckTest(unittest.TestCase):
+    def test_card_button_belongs_to_its_card(self):
+        self.assertTrue(weekend._card_go(EVENT_TAB, 193))   # 펼친 카드: 제목 → 버튼 276
+        self.assertTrue(weekend._card_go(EVENT_TAB, 587))   # 접힌 카드: 188
+        without = [i for i in EVENT_TAB if i[2] != 775]     # 어비스 카드에 버튼이 없으면 = 깸
+        self.assertFalse(weekend._card_go(without, 587))
+        self.assertEqual(weekend._progress(EVENT_TAB, 193), (None, None))  # '토요일~일요일' 을 진행도로 읽지 않는다
+
+    def test_tracker_gives_progress(self):
+        bot = mock.Mock()
+        bot.state.query.return_value = [
+            {"QuestTitle": "[주간 목표] 모험가 길드의 정기 의뢰 (3)", "Objectives": []},
+            {"QuestTitle": "<color=#fff>주말에는 어비스!</color>", "Objectives": [{"Description": "어비스 클리어 1/3"}]}]
+        self.assertEqual(weekend._from_tracker(bot, "주말에는어비스"), Quest(True, 1, 3))
+        self.assertEqual(weekend._from_tracker(bot, "주말에는레이드"), Quest(None))  # 추적 칸에 없다고 깬 것은 아니다
+        bot.state.query.return_value = []
+        self.assertEqual(weekend._from_tracker(bot, "주말에는어비스"), Quest(None))
+
+    def test_no_event_tab_means_done(self):
+        # 주말 두 퀘스트를 다 깬 캐릭터: 퀘스트 창 탭 줄이 지도·퀘스트·아르바이트뿐 (2026-11-14 실기)
+        bot = mock.Mock()
+        tabs = [('지도', 1401, 1030), ('퀘스트', 1543, 1030), ('아르바이트', 1685, 1030)]
+        with (mock.patch.object(weekend.ui_text, "wait", return_value=None),
+              mock.patch("mabi.ocr.find_texts", return_value=tabs)):
+            self.assertIs(weekend._from_window(bot, "주말에는레이드").open, False)
+        with (mock.patch.object(weekend.ui_text, "wait", return_value=None),
+              mock.patch("mabi.ocr.find_texts", return_value=[])):  # 창이 안 열렸으면 모른다
+            self.assertIsNone(weekend._from_window(bot, "주말에는레이드").open)
+
+    def test_tracker_first_then_window(self):
+        bot = mock.Mock()
+        with mock.patch.object(weekend, "_from_tracker", return_value=Quest(True)), \
+                mock.patch.object(weekend, "_from_window") as win:
+            self.assertTrue(weekend.quest_state(bot, "abyss").open)
+        win.assert_not_called()
+        with mock.patch.object(weekend, "_from_tracker", return_value=Quest(None)), \
+                mock.patch.object(weekend, "_from_window", return_value=Quest(False)):
+            self.assertIs(weekend.quest_state(bot, "raid").open, False)
+
+    def test_window_retried_once(self):
+        # 창을 보는 사이 NPC(로나 등)가 말을 걸어 창이 닫히면 한 번 더 본다
+        bot = mock.Mock()
+        with (mock.patch.object(weekend, "_from_tracker", return_value=Quest(None)),
+              mock.patch.object(weekend, "_from_window", side_effect=[Quest(None), Quest(False)]) as win):
+            self.assertIs(weekend.quest_state(bot, "abyss").open, False)
+        self.assertEqual(win.call_count, 2)
+        with (mock.patch.object(weekend, "_from_tracker", return_value=Quest(None)),
+              mock.patch.object(weekend, "_from_window", return_value=Quest(None)) as win):
+            self.assertIsNone(weekend.quest_state(bot, "abyss").open)
+        self.assertEqual(win.call_count, 2)
+
+
+class RunTest(unittest.TestCase):
+    def setUp(self):
+        self.bot = mock.Mock()
+        self.runs, self.places = [], []
+        for p in (mock.patch.object(weekend, "not_now", return_value=""),
+                  mock.patch.object(weekend, "_repeat", side_effect=self._repeat)):
+            p.start()
+            self.addCleanup(p.stop)
+
+    def _repeat(self, bot, cfg, kind, runs, place):
+        self.runs.append((kind, runs))
+        self.places.append(place)
+        return {"clears": runs - self.short}
+
+    short = 0
+
+    def quests(self, *states):
+        p = mock.patch.object(weekend, "quest_state", side_effect=list(states))
+        self.quest = p.start()
+        self.addCleanup(p.stop)
+
+    def test_skips_when_quest_gone(self):
+        self.quests(Quest(False))
+        self.assertIn("이미 깸", weekend.run(self.bot, CFG, "abyss"))
+        self.assertEqual(self.runs, [])
+
+    def test_runs_only_what_is_left(self):
+        self.quests(Quest(True, 1, 3))
+        r = weekend.run(self.bot, CFG, "abyss")
+        self.assertEqual(self.runs, [("abyss", 2)])
+        self.assertIn("클리어 2판", r)
+        self.assertTrue(self.bot.verified)  # 판 수를 채우면 깬 것 — 실행기도 다시 확인하지 않는다
+
+    def test_runs_config_count_without_progress(self):
+        self.quests(Quest(True))
+        weekend.run(self.bot, CFG, "abyss")
+        self.assertEqual(self.runs, [("abyss", 3)])
+
+    def test_quest_window_only_before(self):
+        # 다 돈 뒤에는 퀘스트 창을 다시 열지 않는다 (2026-11-14 사용자)
+        self.quests(Quest(True))
+        weekend.run(self.bot, CFG, "raid")
+        self.assertEqual(self.quest.call_count, 1)
+
+    def test_fails_when_short(self):
+        self.quests(Quest(True))
+        self.short = 1
+        with self.assertRaises(CannotProceed):
+            weekend.run(self.bot, CFG, "abyss")
+
+    def test_all_abyss_one_each(self):
+        """'모든 어비스' 면 이번 주 어비스를 한 판씩 (2026-11-16 사용자: 3판이면 어비스마다 1판)."""
+        cfg = {**CFG, "weekend": {**CFG["weekend"], "abyss": {**CFG["weekend"]["abyss"], "dungeon": weekend.ALL_ABYSS}}}
+        week = {"허상의 정박지": ["어려움"], "광기의 동굴": ["어려움"], "흩어진 물길": ["어려움"]}
+        with mock.patch.object(weekend.gd, "abysses", return_value=week):
+            self.quests(Quest(True))
+            self.assertIn("클리어 3판", weekend.run(self.bot, cfg, "abyss"))
+            self.assertEqual((self.places, self.runs), (list(week), [("abyss", 1)] * 3))
+            self.runs, self.places = [], []
+            self.quests(Quest(True, 1, 3))  # 남은 2판 — 앞에서부터
+            weekend.run(self.bot, cfg, "abyss")
+            self.assertEqual(self.places, ["허상의 정박지", "광기의 동굴"])
+            self.assertEqual(weekend.plan({"dungeon": weekend.ALL_ABYSS}, "abyss", 4),
+                             [("허상의 정박지", 2), ("광기의 동굴", 1), ("흩어진 물길", 1)])
+
+    def test_not_weekend_runs_without_quest(self):  # 퀘스트가 없는 날 — 확인 없이 정한 판 수만큼
+        self.quests()
+        with mock.patch.object(weekend, "not_now", return_value="주말 아님"):
+            self.assertIn("클리어 3판", weekend.run(self.bot, CFG, "abyss"))
+        self.assertEqual(self.runs, [("abyss", 3)])
+        self.quest.assert_not_called()
+
+
+class ConfigTest(unittest.TestCase):
+    def test_choices_all_abyss(self):  # 맨 끝에 '모든 어비스' — 난이도는 모든 어비스에 열린 것만
+        week = {"허상의 정박지": ["어려움", "지옥1"], "광기의 동굴": ["어려움"]}
+        with mock.patch.object(weekend.gd, "abysses", return_value=week), mock.patch.object(weekend.raid, "raids", return_value={}):
+            c = weekend.choices(CFG)["abyss"]["party"]
+        self.assertEqual(list(c)[-1], weekend.ALL_ABYSS)
+        self.assertEqual(c[weekend.ALL_ABYSS], ["어려움"])
+
+    def test_picked_overrides_repeat_section(self):
+        a = weekend.picked(CFG, "abyss")
+        self.assertEqual((a["dungeon"], a["difficulty"], a["mode"], a["runs"]), ("허상의 정박지", "매우 어려움2", "party", 3))
+        self.assertEqual(a["run_timeout"], 1200)  # 매칭·시간 상한 등은 [abyss] 그대로
+        self.assertEqual((a["slot"], a["minutes"]), (0, 0))  # 캐릭터는 실행기가 바꾼다
+
+    def test_card_line(self):  # 큐 카드 줄 — '모든 어비스' 앞에 '어비스' 를 또 붙이지 않는다
+        card = {"kind": "daily", "only": ["weekend_abyss"], "chars": [1, 2],
+                "weekend": {"abyss": {"dungeon": weekend.ALL_ABYSS, "difficulty": "어려움", "mode": "party"}}}
+        self.assertEqual(DailyKind.detail(card), "2명 · 모든 어비스 어려움")
+        card["weekend"]["abyss"]["dungeon"] = "광기의 동굴"
+        self.assertEqual(DailyKind.detail(card), "2명 · 어비스 광기의 동굴 어려움")
+
+    def test_card_pick_keeps_runs(self):
+        card = {"kind": "daily", "only": ["weekend_abyss", "weekend_raid"], "chars": [1, 2],
+                "weekend": {"abyss": {"dungeon": "광기의 동굴", "difficulty": "어려움", "mode": "solo"},
+                            "raid": {"raid": "에이렐", "difficulty": "어려움", "mode": "party"}}}
+        cfg = runner._merged(CFG, card_cfg(card))
+        self.assertEqual(cfg["weekend"]["abyss"], {"dungeon": "광기의 동굴", "difficulty": "어려움", "mode": "solo", "runs": 3})
+        self.assertEqual(cfg["weekend"]["task_timeout_min"], 90)
+        self.assertEqual(card_cfg({"fieldBoss": {"boss": "페리"}}), {"field_boss": {"boss": "페리"}})
+        self.assertIn("광기의 동굴", DailyKind.detail(card))
+        self.assertIn("에이렐", DailyKind.detail(card))
+
+    def test_task_timeout(self):
+        self.assertEqual(tasks.timeout_min("weekend_abyss", CFG), 90)
+        self.assertEqual(tasks.timeout_min("silver", CFG), 45)
+
+    def test_registered(self):
+        for t in ("weekend_abyss", "weekend_raid"):
+            self.assertIn(t, tasks.TASKS)
+            self.assertNotIn(t, tasks.VERIFY)  # 판 수를 채우면 깬 것 (run 이 bot.verified 를 둔다)
+
+    def test_default_config_has_section(self):
+        import tomllib
+        from pathlib import Path
+        cfg = tomllib.loads((Path(__file__).resolve().parent.parent / "config.default.toml").read_text(encoding="utf-8"))
+        self.assertEqual(cfg["weekend"]["abyss"]["runs"], 3)
+        self.assertEqual(cfg["weekend"]["raid"]["runs"], 1)
+
+
+class QuestUnreadTest(unittest.TestCase):
+    """퀘스트 창 이벤트 탭 글자를 못 읽었다고 '깸' 으로 넘기지 않는다 (2026-11-16 점검)."""
+
+    def from_window(self, items, title="주말에는 어비스!"):
+        bot = mock.Mock()
+        bot.cfg = {"tribute": {"list_scroll_at": [0, 0]}}
+        with mock.patch.object(weekend.ui_text, "wait", return_value=(10, 10)), \
+                mock.patch.object(weekend, "list_views", return_value=[None]), \
+                mock.patch("mabi.ocr.find_texts", return_value=items):
+            return weekend._from_window(bot, title)
+
+    def test_button_read_loosely(self):  # OCR 이 글자를 덧붙여도 '진행하기'
+        odd = [(t + "》" if t == "진행하기" else t, x, y) for t, x, y in EVENT_TAB]
+        self.assertTrue(weekend._card_go(odd, 587))
+
+    def test_nothing_read_is_unknown(self):
+        self.assertIsNone(self.from_window([]).open)
+
+    def test_other_card_read_means_done(self):  # 레이드 카드는 읽히는데 어비스 카드만 없다 → 깸
+        raid_only = [i for i in EVENT_TAB if i[2] < 500]
+        self.assertIs(self.from_window(raid_only).open, False)
+
+    def test_card_with_button_is_open(self):
+        self.assertIs(self.from_window(EVENT_TAB).open, True)
+
+
+if __name__ == "__main__":
+    unittest.main()

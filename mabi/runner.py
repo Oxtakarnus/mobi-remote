@@ -1,0 +1,546 @@
+"""일일 숙제 실행부. 콘솔(run.py)과 GUI 가 같이 쓴다.
+
+Runner.run() 은 캐릭터마다 접속 → 숙제 순서대로 실행하고, 진행 상황을 on_event 콜백으로 알린다.
+이벤트는 dict 하나이고 type 으로 구분한다 (GUI 는 이것만 보고 화면을 그린다):
+  start      {"characters": [{"slot", "name"}], "order": [tid], "labels": {tid: 이름}}
+  character  {"slot", "name"}
+  task_start {"slot", "task", "label"}
+  task_end   {"slot", "task", "label", "status", "summary", "seconds"}
+  done       {"results": [(label, status, summary)], "report": 리포트 파일 경로}
+status: OK / CHECK(했지만 확인 결과 남음) / MANUAL(할 수 있는 건 다 함, 남은 건 사람이 — 다시 시작해도 넘김) / FAIL / ERROR / SKIP / HEAVY(가방 무게) / STOP / DONE(오늘 완료)
+"""
+import ctypes
+import logging
+import re
+import sys
+import time
+import tomllib
+from dataclasses import dataclass, field
+from datetime import datetime
+from typing import Callable
+
+from . import profile as prof
+from . import queue_report, tasks
+from .bot import Bot
+from .session import GameSession
+from .exceptions import CannotProceed, MissingTemplate, StepTimeout, StopRequested
+from .paths import Paths
+from .report import RunReport
+from .tasks import display, login
+from . import outcome
+
+log = logging.getLogger("mabi")
+
+
+def setup_logging(paths: Paths, console: bool = True, name: str = "") -> logging.Logger:
+    """mabi 로거에 날짜별 파일(DEBUG)과 콘솔(INFO)을 붙인다. 여러 번 불러도 중복으로 붙지 않는다.
+    name: 따로 도는 프로세스(드레스룸 등)는 파일을 나눈다 (YYYYMMDD-<name>.log) — 두 프로세스가 한 파일에 쓰면 줄이 섞인다."""
+    paths.logs.mkdir(parents=True, exist_ok=True)
+    fmt = logging.Formatter("%(asctime)s %(levelname)-7s %(message)s", "%H:%M:%S")
+    log.setLevel(logging.DEBUG)
+    for h in [h for h in log.handlers if getattr(h, "_mabi_base", False)]:
+        log.removeHandler(h)
+    file = logging.FileHandler(paths.logs / f"{datetime.now():%Y%m%d}{'-' + name if name else ''}.log", encoding="utf-8")
+    file.setFormatter(fmt)
+    file._mabi_base = True
+    log.addHandler(file)
+    if console and sys.stdout:
+        con = logging.StreamHandler(sys.stdout)
+        con.setLevel(logging.INFO)
+        con.setFormatter(fmt)
+        con._mabi_base = True
+        log.addHandler(con)
+    return log
+
+
+def _merged(base: dict, over: dict) -> dict:
+    out = dict(base)
+    for k, v in over.items():
+        out[k] = _merged(base[k], v) if isinstance(v, dict) and isinstance(base.get(k), dict) else v
+    return out
+
+
+def _stamp(p) -> tuple | None:
+    try:
+        st = p.stat()
+    except OSError:
+        return None
+    return st.st_mtime_ns, st.st_size
+
+
+def load_config(paths: Paths) -> dict:
+    """사용자 설정(config.toml — 기본값과 다른 값만, mabi.userconfig) 아래에 배포 기본값(config.default.toml)을 깐다.
+    옛 판처럼 통째로 복사해 둔 config.toml 이면 처음 한 번 '다른 값만' 으로 옮긴다.
+    상단바·단축키 감시가 몇 초마다 부르므로 두 파일이 그대로면(수정 시각·크기) 지난번 읽은 것을 쓴다.
+    부르는 쪽이 고쳐도 다음 사람에게 새지 않게 늘 사본을 준다."""
+    import copy
+    from . import userconfig
+    default = paths.resources / "config.default.toml"
+    key = (str(paths.config), _stamp(paths.config), _stamp(default))
+    hit = userconfig.loaded.get(key[0])
+    if hit and hit[0] == key:
+        return copy.deepcopy(hit[1])
+    try:
+        userconfig.migrate(paths, log)
+    except Exception as e:  # noqa: BLE001 — 옮기지 못해도 읽기는 된다
+        log.warning(f"설정 파일을 옮기지 못함 — 그대로 씀: {e}")
+    key = (key[0], _stamp(paths.config), key[2])  # 옮겼으면 파일이 바뀌었다
+    user = tomllib.loads(paths.config.read_text(encoding="utf-8"))
+    cfg = _merged(tomllib.loads(default.read_text(encoding="utf-8")), user) if default.exists() else user
+    userconfig.loaded[key[0]] = (key, cfg)
+    return copy.deepcopy(cfg)
+
+
+def tasks_by_slot(cfg) -> dict[int, list[str]]:
+    """캐릭터마다 따로 정한 숙제 순서 {슬롯: [숙제 id]} ([run] tasks_by_slot)."""
+    return {int(k): v for k, v in cfg["run"].get("tasks_by_slot", {}).items()}
+
+
+def task_order(cfg, ch: dict | None, only: list[str] | None = None, by_slot: dict | None = None) -> list[str]:
+    """이 캐릭터가 할 숙제 순서 — 숙제 실행기와 화면(캐릭터 탭 '오늘 클리어', 결과 보기)이 같이 쓴다.
+    캐릭터 탭에서 끈 숙제는 빼고, 아르바이트는 켠 캐릭터만. only: 일부 숙제만 (카드가 고른 것).
+    by_slot: tasks_by_slot(cfg) — 여러 번 부를 때 미리 만들어 넘긴다. cfg 는 load_config 결과나 userconfig.doc()."""
+    by_slot = tasks_by_slot(cfg) if by_slot is None else by_slot
+    slot = ch["slot"] if ch else None
+    order = only or (by_slot.get(slot) if ch else None) or cfg["run"]["order"]
+    if ch:  # 캐릭터 탭에서 끈 숙제 (검은 구멍 등)
+        off = cfg["run"].get("skip_by_slot", {}).get(str(slot), [])
+        order = [t for t in order if t not in off]
+        # 아르바이트는 거꾸로 켠 캐릭터만 (새 기능이라 기본은 안 함)
+        if slot not in [int(s) for s in cfg["arbeit"]["slots"]]:
+            order = [t for t in order if t != "arbeit"]
+    return order
+
+
+@dataclass
+class RunOptions:
+    chars: list[int] | None = None      # None = profile 의 전원
+    only: list[str] | None = None       # 일부 숙제만
+    current: bool = False               # 캐릭터 전환 없이 지금 캐릭터로
+    force: bool = False                 # 오늘 끝낸 숙제도 다시
+    dry_run: bool = False
+    # 인터페이스 PC·80% 맞추기. 작업 큐는 한 번 도는 동안 처음 한 번만 맞추고(interface_ready = 이미 맞춤),
+    # 되돌리기는 큐가 다 끝났을 때 한 번 한다 (restore=False — daily_api.daily_displayRestore)
+    display: bool = True
+    interface_ready: bool = False
+    restore: bool = True
+    extra: dict = field(default_factory=dict)  # 리포트에 남길 실행 정보
+    cfg: dict = field(default_factory=dict)    # 이번 실행만 덮어쓸 설정 {칸: {키: 값}} (큐 카드가 고른 필드 보스 등)
+
+
+def _done_view(stored) -> dict:
+    """오늘 끝난 숙제를 화면에 보일 상태. '넘김(조건)' 은 그대로 보여 준다 (다시 하지는 않는다)."""
+    if isinstance(stored, str) and stored.startswith("MANUAL"):
+        return {"status": "MANUAL", "summary": stored.split(":", 1)[-1].strip()}
+    return {"status": "DONE", "summary": "오늘 완료"}
+
+
+class FailStreak:
+    """다른 캐릭터에서 같은 숙제가 같은 이유로 연달아 실패했나. 그러면 원인이 캐릭터가 아니라 리모콘·게임 쪽이라
+    나머지 캐릭터도 같은 자리에서 실패한다 (2026-10-30: 6명 모두 접속 단계에서 3분씩 같은 실패) → 멈추고 사람에게."""
+
+    def __init__(self):
+        self.last: dict[str, tuple[str, int | None]] = {}  # 숙제 → (실패 이유, 캐릭터 슬롯)
+
+    def __call__(self, slot, tid: str, status: str, summary: str, name: str = "") -> bool:
+        """name: 그 캐릭터 이름 — 실패 문구에서 빼고 비교한다 ('<이름>: 선택 테두리 확인 실패' 가 캐릭터마다 달라 보여
+        다섯 명이 같은 자리에서 실패해도 멈추지 않았다, 2026-11-16 12:07)."""
+        if status not in ("FAIL", "ERROR"):
+            self.last.pop(tid, None)
+            return False
+        why = summary.split("→")[0]
+        if name:
+            why = why.replace(name, "")
+        why = re.sub(r"\d+", "#", why).strip()  # 스크린샷 이름·숫자는 빼고 비교
+        prev = self.last.get(tid)
+        self.last[tid] = (why, slot)
+        return bool(prev and prev[0] == why and prev[1] != slot)
+
+
+class Runner:
+
+    def __init__(self, paths: Paths, on_event: Callable[[dict], None] | None = None, force_exit: bool = True,
+                 session: Callable[[dict], GameSession] | None = None):
+        """session: 설정 → 게임 연결 (gui 가 작업들과 같이 쓰는 것, DailyApi._game_session). 없으면 Bot 이 새로 만든다."""
+        self.paths = paths
+        self.session = session
+        self.on_event = on_event or (lambda e: None)
+        self.force_exit = force_exit
+        self.bot: Bot | None = None
+        self._stop_requested = False
+        self._stop_why = ""
+        # 캐릭터마다 얻은 것 (작업 큐 결과 창) — 숙제를 시작할 때와 그 캐릭터를 끝낼 때 가방·재화를 찍어 뺀다
+        self._loot = queue_report.LootMeter(lambda x: self._emit("loot", **x))
+
+    def stop(self, why: str = "") -> None:
+        """GUI 의 중단 버튼 (why: 사람이 아닌 까닭 — 작업 큐가 밀어냄 등). 봇은 다음 대기/캡처 시점에 멈춘다."""
+        self._stop_requested, self._stop_why = True, why
+        if self.bot:
+            self.bot.stopper.request(why)
+
+
+    def _emit(self, type_: str, **kw) -> None:
+        try:
+            self.on_event({"type": type_, **kw})
+        except Exception:  # 화면 쪽 오류가 숙제를 멈추지 않도록
+            log.exception("이벤트 처리 실패")
+
+    def characters(self, cfg: dict, opts: RunOptions) -> list[dict | None]:
+        if opts.current:
+            return [None]
+        profile = prof.load_profile(self.paths.profile)
+        if profile is None:
+            raise ValueError("숙제할 캐릭터(슬롯)가 설정되지 않았습니다")
+        chars = prof.characters(profile)
+        if opts.chars:
+            chars = [ch for ch in chars if ch["slot"] in set(opts.chars)]
+        return chars
+
+    def run(self, opts: RunOptions) -> list[tuple[str, str, str]]:
+        paths = self.paths
+        cfg = load_config(paths)
+        cfg = _merged(cfg, opts.cfg)  # 카드가 고른 값만 덮는다 ([weekend.abyss] 처럼 칸 안의 칸도 고른 키만)
+        registry = tasks.build(cfg)
+        by_slot = tasks_by_slot(cfg)
+        referenced = (opts.only or []) + cfg["run"]["order"] + [t for v in by_slot.values() for t in v]
+        unknown = sorted({t for t in referenced if t not in registry})
+        if unknown:
+            raise ValueError(f"알 수 없는 숙제: {unknown}")
+        characters = self.characters(cfg, opts)
+        state = prof.DailyState(paths.state)
+
+        if not ctypes.windll.shell32.IsUserAnAdmin():
+            log.warning("관리자 권한이 아닙니다. 게임이 관리자 권한으로 실행 중이면 입력이 무시됩니다.")
+
+        session = self.session(cfg) if self.session and not opts.dry_run else None  # 연습(dry_run)은 따로
+        bot = self.bot = Bot(cfg, paths, dry_run=opts.dry_run, force_exit=self.force_exit, session=session)
+        bot.auto_clear = True  # 기다리는 화면이 오래 안 나오면 대화·퀘스트 클리어 창 등을 넘겨 본다
+        if self._stop_requested:
+            bot.stopper.request(self._stop_why)
+        bot.daily = state
+        bot.on_step = lambda s, t: self._emit("step", slot=(bot.character or {}).get("slot"), task=bot.task_id, step=s, text=t or s)
+        results: list[tuple[str, str, str]] = []
+        report = None
+        try:
+            if not bot.window.find():
+                raise ValueError("게임이 꺼져 있습니다. 게임을 켠 뒤 시작하세요")
+            # 다 끝난 날엔 게임을 건드리지 않는다 — 앞으로 가져오지도, 화면 설정을 따지지도 않고 '오늘 완료' 만 알린다
+            if self._has_work(cfg, opts, by_slot, characters, state):
+                # 앞으로 가져온 뒤에 크기를 본다 — '전체화면' 이면 내려가 있는 동안 크기 0·레지스트리 창모드다 (2026-10-23)
+                bot.window.focus()
+                bot.sleep(2)
+                r = bot.window.client_rect()
+                from .screen import exclusive_fullscreen
+                from .tasks.display import size_problem
+                # 화면은 시작 전에 묻고 맞춘다. 콘솔 실행 등을 위한 마지막 방어
+                if (bad := size_problem(r.width, r.height)):
+                    raise ValueError(bad)
+                if exclusive_fullscreen():  # 화면이 멈춰 보여 아무것도 알아보지 못한다
+                    raise ValueError("화면 모드가 '전체화면' 이면 화면을 볼 수 없습니다 — '테두리 없는 전체화면' 으로 바꾼 뒤 시작하세요")
+            report = RunReport(paths.runs, cfg, bot, {**opts.extra, "chars": opts.chars, "only": opts.only,
+                                                      "force": opts.force, "current": opts.current})
+            self._emit("start", characters=[{"slot": c["slot"], "name": c["name"]} if c else
+                                            {"slot": None, "name": "현재 캐릭터"} for c in characters],
+                       order=opts.only or cfg["run"]["order"], labels={t: l for t, (l, _) in registry.items()})
+            log.info(f"시작: 캐릭터 {len(characters)}명, 게임 날짜 {state.date}  (일시정지: {cfg['game']['stop_key'].upper()})")
+            bot.check_in()
+            characters = self._arrange(cfg, opts, by_slot, characters, state)
+            self._iface = display.InterfaceFit(state, enabled=not opts.dry_run and opts.display and not opts.interface_ready,
+                                               on_fit=lambda: self._emit("interface"))
+            try:
+                self._loop(cfg, opts, registry, by_slot, characters, state, bot, report, results)
+            finally:
+                self._loot.close(bot)  # 마지막 캐릭터 (중단으로 끝나도)
+            if not any(s == "STOP" for _, s, _ in results):
+                state.clear_progress()  # 끝까지 돌았다. 중단·충돌이면 남겨 두고 다음에 거기서부터
+                # 모든 캐릭터가 끝났다 → 시작할 때 기억해 둔 인터페이스 설정으로 되돌린다 (일시정지면 이어 할 때까지 둔다)
+                if opts.restore and state.data.get(display.RESTORE_KEY) and not opts.dry_run:
+                    try:
+                        msg = display.restore_interface(bot, state)
+                        if msg:
+                            log.info(msg)
+                    except (display.DisplayFixFailed, StepTimeout, MissingTemplate, RuntimeError) as e:
+                        log.warning(f"인터페이스 설정을 되돌리지 못함 — 다음 숙제가 끝날 때 다시 시도: {e}")
+                # 화면 모드·해상도도 숙제 시작 전 맞추기에서 기억해 둔 값으로. 인터페이스 다음에 한다
+                # ('전체화면' 으로 되돌리면 그 뒤로는 화면을 볼 수 없다)
+                if opts.restore and (paths.data / display.RESTORE_FILE).is_file() and not opts.dry_run:
+                    try:
+                        msg = display.restore_screen(bot, paths.data / display.RESTORE_FILE)
+                        if msg:
+                            log.info(msg)
+                    except (display.DisplayFixFailed, StepTimeout, MissingTemplate, RuntimeError) as e:
+                        log.warning(f"화면 설정을 되돌리지 못함 — 다음 숙제가 끝날 때 다시 시도: {e}")
+        except StopRequested:
+            results.append(("실행", "STOP", bot.stopper.reason()))
+        finally:
+            if report:
+                report.finish(results)
+            log.info("==== 결과 ====")
+            for label, status, summary in results:
+                log.info(f"{status:5} {label}: {summary}")
+            self._emit("done", results=results, report=str(report.path) if report else None)
+            bot.stopper.close()
+        return results
+
+    @classmethod
+    def _has_work(cls, cfg, opts, by_slot, characters, state) -> bool:
+        """오늘 할 숙제가 남은 캐릭터가 있나. 강제·현재 캐릭터면 늘 있다."""
+        if opts.force or opts.current:
+            return True
+        return any(not state.is_done(ch["slot"], t) for ch in characters for t in task_order(cfg, ch, opts.only, by_slot))
+
+    def has_work(self, opts: RunOptions) -> bool:
+        """숙제 시작 전 화면 확인이 쓴다 — 다 끝난 날엔 화면 설정을 보지도 맞추지도 않는다."""
+        cfg = load_config(self.paths)
+        by_slot = tasks_by_slot(cfg)
+        return self._has_work(cfg, opts, by_slot, self.characters(cfg, opts), prof.DailyState(self.paths.state))
+
+    def _recheck_daily(self, bot, cfg, state, slot, results, ended) -> None:
+        """일일 미션이 '아직 남음'(받을 선물이 남음)이었는데 마지막 선물 받기로 다 받았으면 완료로 고친다.
+        일일 미션 중에 배고파 음식을 먹어 '꼬르륵' 이 막 끝나면 선물이 남은 채 확인해 실패로 남았다 (2026-11-03)."""
+        if "daily_mission" not in ended or ended["daily_mission"][1] != "CHECK":
+            return
+        try:
+            if not tasks.VERIFY["daily_mission"](bot, cfg):
+                return
+        except (StepTimeout, CannotProceed, MissingTemplate):
+            return
+        i = ended["daily_mission"][0]
+        label, _, summary = results[i]
+        summary = summary.split(" — ")[0] + " — 남은 선물은 마지막에 받음"
+        results[i] = (label, "OK", summary)
+        if slot is not None:
+            state.set(slot, "daily_mission", "done")
+        log.info(f"  {label}: 남은 선물을 받아 완료로 고침")
+        self._emit("task_end", slot=slot, task="daily_mission", label=label, status="OK", summary=summary, seconds=0)
+
+    def _arrange(self, cfg, opts, by_slot, characters, state) -> list:
+        """다시 시작할 때의 캐릭터 순서.
+        - 지난번에 멈춘 캐릭터(진행 기록)부터 이어 한다 — 앞 캐릭터로 돌아가 접속 전환을 낭비하지 않게.
+        - 해 보고 실패한 숙제만 남은 캐릭터는 맨 뒤로 (공물 퀘스트처럼 접속 직후엔 안 되는 것도 그사이 풀린다)."""
+        if opts.force or opts.current or len(characters) < 2:
+            return characters
+        chars = list(characters)
+
+        def fresh(ch) -> bool:  # 아직 안 해 본 숙제가 있다
+            return any(not state.is_done(ch["slot"], t) and not state.failed(ch["slot"], t)
+                       for t in task_order(cfg, ch, opts.only, by_slot))
+
+        def retry(ch) -> bool:
+            return not fresh(ch) and any(state.failed(ch["slot"], t) for t in task_order(cfg, ch, opts.only, by_slot))
+
+        def todo(ch) -> bool:
+            return any(not state.is_done(ch["slot"], t) for t in task_order(cfg, ch, opts.only, by_slot))
+
+        if not any(todo(ch) for ch in chars):  # 다 끝났다 — 지금 캐릭터 이름을 읽으러 화면을 볼 것도 없다
+            return chars
+        later =[ch for ch in chars if retry(ch)]
+        if later:
+            log.info(f"실패한 숙제만 남은 캐릭터는 맨 뒤로: {', '.join(ch['name'] for ch in later)}")
+        chars = [ch for ch in chars if ch not in later] + later
+
+        # 맨 앞에 둘 캐릭터: ① 지난번에 숙제 도중 끊긴 캐릭터 ② 아니면 지금 접속해 있는 캐릭터 (할 게 남았으면)
+        # — 접속 전환을 아끼고 하던 걸 그 자리에서 잇는다. 접속(login) 도중 끊긴 건 아무것도 안 한 것이라 치지 않는다
+        prog = state.progress()
+        first, why = None, ""
+        if prog and prog.get("task") != "login":
+            first = next((ch for ch in chars if ch["slot"] == prog["slot"] and todo(ch)), None)
+            why = (f"지난 실행이 {prog['at']} '{prog['task']}'"
+                   f"{' · ' + prog['stage'] if prog.get('stage') else ''} 에서 멈춤")
+        if first is None:
+            from .tasks.login import current_name, match_character
+            try:
+                now = match_character(current_name(self.bot), chars)
+            except Exception:
+                now = None
+            first = now if now is not None and todo(now) else None
+            why = "지금 접속 중인 캐릭터"
+        if first and chars[0] is not first:
+            chars = [first, *[ch for ch in chars if ch is not first]]
+        if first:
+            log.info(f"이어 하기: [{first['name']}] 부터 ({why})")
+        return chars
+
+    @staticmethod
+    def _later(bot, cfg, state, slot, tid: str, pending: list, later: set) -> str:
+        """차례가 온 숙제를 이 캐릭터의 다른 숙제 뒤로 미룰 까닭 (tasks.LATER, 아니면 ""). 한 번만, 뒤에 할 숙제가 남았을 때만 —
+        미뤄도 앞에 할 게 없으면 지금 하는 것과 같다."""
+        check = tasks.LATER.get(tid)
+        if not check or tid in later or not any(t not in later and t not in bot.also_done for t in pending):
+            return ""
+        last = state.last_step(slot, tid) if slot is not None else None
+        try:
+            return check(bot, cfg, last)
+        except StopRequested:
+            raise
+        except Exception as e:  # noqa: BLE001 — 묻다 실패하면 미루지 않고 제 차례에 한다
+            log.debug(f"{tid} 미룰지 묻기 실패: {e}")
+            return ""
+
+    def _loop(self, cfg, opts, registry, by_slot, characters, state, bot, report, results) -> None:
+        repeated = FailStreak()
+
+        def step(slot, tid: str, label: str, fn) -> str:
+            """숙제 하나 실행. 상태 문자열 반환."""
+            log.info(f"▶ {label}")
+            bot.task_id, bot.resume, bot.verified = tid, None, False
+            bot.done_at_clear = False
+            if slot is not None:
+                last = state.last_step(slot, tid)
+                # 끝까지 간 기록('end')이 아니면 그 단계에서 끊긴 것 → 숙제가 거기서부터 이어 한다
+                if last and last.get("step") not in (None, "end"):
+                    bot.resume = last
+                    log.info(f"  지난번에 {last.get('at', '')} [{last['step']}] {last.get('text', '')} 에서 끊김"
+                             " → 거기서부터 이어 함")
+                state.set_progress(slot, tid)
+            report.task_start(tid)
+            self._emit("task_start", slot=slot, task=tid, label=label)
+            t0 = time.monotonic()
+            err = None
+            try:
+                bot.check_in()  # 숙제마다 지금 상태부터 — 앞 숙제·캐릭터에서 남은 패킷 상태를 믿고 시작하지 않는다
+                bot.deadline = time.monotonic() + tasks.timeout_min(tid, cfg) * 60
+                try:
+                    summary = fn()
+                finally:
+                    bot.deadline = None
+                status = "OK"
+                check = tasks.VERIFY.get(tid)
+                if check and tid not in bot.also_done and not bot.verified:
+                    try:
+                        if not check(bot, cfg):
+                            if tid in tasks.MANUAL_LEFT:  # 할 수 있는 건 다 함. 남은 건 사람이 직접 (다시 시작해도 넘김)
+                                status, summary = "MANUAL", f"{summary} — 조건이 안 돼 넘긴 일은 직접 처리"
+                            else:
+                                status, summary = "CHECK", f"{summary} — 확인 결과 아직 남음"
+                    except (StepTimeout, CannotProceed, MissingTemplate) as e:
+                        # 확인을 못 했으면 끝났다고 하지 않는다 (예전엔 OK·오늘 완료로 남았다)
+                        log.warning(f"{label} 완료 확인 실패: {e}")
+                        status, summary = "CHECK", f"{summary} — 완료 확인 실패: {e}"
+            except Exception as e:  # noqa: BLE001 — 한 숙제의 실패가 전체를 멈추지 않도록 (가르는 규칙은 outcome)
+                err = e
+                status, summary, messy = outcome.classify(bot, tid, label, e)
+                # 오류면 자리 정리(연출·로딩 기다림 → 나와서 메인 화면, 안 되면 게임 다시 켜기) — 다음 숙제가 연달아 실패하지 않게.
+                # 접속 실패는 게임 밖 화면이라 건드리지 않는다
+                outcome.after_failure(bot, e, messy, label, in_game=tid != "login")
+            # 게임이 꺼졌으면(튕김·사람이 끔) 남은 일마다 실패를 쌓지 않고 일시정지 (연속 실행 제한은 메모만 — outcome.escalate).
+            # 단계 기록은 남아 있어 게임을 켜고 다시 시작(F12)하면 이 자리부터 이어 한다
+            status, summary = outcome.escalate(bot, status, summary, err)
+            halted = status == "STOP"
+            if bot.done_at_clear and status in ("STOP", "FAIL", "ERROR"):
+                # 클리어는 했다 — 보상 화면 정리 중 멈추거나 끊겨도 숙제는 끝난 것 (2026-11-06 사용자). 멈춤은 그대로 멈춘다
+                summary = f"{summary} — 클리어 뒤 {status}, 숙제는 완료"
+                status = "OK"
+            error = status in ("FAIL", "ERROR") and outcome.unexpected(err)  # 오류 — 작업 큐가 카드를 한 번 더 (task_end)
+            streak = False
+            if status in ("FAIL", "ERROR") and repeated(slot, tid, status, summary, (bot.character or {}).get("name", "")):
+                log.error(f"{label}: 앞 캐릭터와 같은 이유로 또 실패 → 남은 캐릭터는 멈춤 (작업 큐면 카드를 맨 아래로 내려 한 번 더)")
+                status, summary = "STOP", f"두 캐릭터 연달아 같은 실패 — 확인 필요: {summary}"
+                streak = True
+            secs = round(time.monotonic() - t0)
+            log.info(f"  {status} {summary} ({secs}s)")
+            # 중단·실패(튕김 등)는 그 단계에서 이어 해야 하므로 단계 기록을 남겨 둔다
+            if slot is not None and status not in ("STOP", "FAIL", "ERROR"):
+                state.set_step(slot, tid, "end", f"끝: {status}")
+            results.append((label, status, summary))
+            report.task_end(status, summary)
+            self._emit("task_end", slot=slot, task=tid, label=label, status=status, summary=summary, seconds=secs,
+                       error=error, streak=streak)
+            return "STOP" if halted else status
+
+        # 끊긴 숙제도 정해진 순서대로 — 앞 숙제가 실패해 남았으면 그것부터. 끊긴 숙제는 제 차례에 끊긴 단계부터 이어 한다.
+        # (예전엔 끊긴 일을 맨 앞으로 당겨 일일 미션보다 아르바이트를 먼저 했다 — 2026-11-02 사용자: 일일 미션 다음에 알바)
+        first = True
+        for n, ch in enumerate(characters):
+            who = ch["name"] if ch else "현재 캐릭터"
+            slot = ch["slot"] if ch else None
+            order = task_order(cfg, ch, opts.only, by_slot)
+            # 정해진 시간에만 하는 숙제(필드 보스)만 남았는데 지금은 그 시간이 아니면 남은 캐릭터는 다음에 (작업 큐가 그때 다시)
+            if (why := tasks.not_ready(order)):
+                log.info(f"{why} → 남은 캐릭터 {len(characters) - n}명은 다음에")
+                for c in characters[n:]:
+                    results.append((f"[{c['name'] if c else '현재 캐릭터'}]", "WAIT", why))
+                break
+            if ch and not opts.force:
+                todo = [t for t in order if not state.is_done(slot, t)]
+                if not todo:
+                    log.info(f"[{who}] 오늘 숙제 완료 기록이 있어 건너뜀")
+                    results.append((f"[{who}]", "DONE", "오늘 완료"))
+                    for t in order:
+                        self._emit("task_end", slot=slot, task=t, label=t, **_done_view(state.get(slot, t)), seconds=0)
+                    continue
+                for t in order:
+                    if t not in todo:
+                        self._emit("task_end", slot=slot, task=t, label=t, **_done_view(state.get(slot, t)), seconds=0)
+                order = todo
+            self._loot.close(bot)  # 앞 캐릭터가 얻은 것 (다른 캐릭터로 바꾸기 전에)
+            bot.character = ch
+            report.character(ch)
+            self._emit("character", slot=slot, name=who)
+            bot.watch_weight = False  # 접속 중에는 이전 캐릭터의 가방 무게를 보지 않는다
+            # 지금 접속한 캐릭터는 메인 화면 왼쪽 위 이름(OCR, login.current_name)으로 알아보고 같으면 다시 고르지 않는다
+            # (예전 '지문' 방식은 자주 틀려서 뺐다 — 2026-10-22). 던전 안·클리어 화면에서 멈췄던 경우는 login.run 이 먼저 정리한다
+            # 인터페이스는 접속 확인(메인 HUD 템플릿)보다 먼저 맞춘다 — PC·80% 가 아니면 HUD 가 안 맞아 접속을 못 알아본다.
+            # 게임 밖(타이틀·캐릭터 선택)이면 접속한 뒤에 맞추고, 그래서 접속 확인이 실패했으면 맞춘 뒤 한 번 더 접속한다
+            self._iface.attempt(bot)
+            status = step(slot, "login", f"[{who}] 접속", lambda: login.run(bot, cfg, ch))
+            if status not in ("OK", "STOP") and self._iface.attempt(bot):
+                status = step(slot, "login", f"[{who}] 접속", lambda: login.run(bot, cfg, ch))
+            if status == "STOP":
+                return
+            if status != "OK":
+                continue  # 접속 실패 시 이 캐릭터의 숙제는 건너뛴다
+            self._iface.attempt(bot, after_login=True)
+            bot.also_done = {t for t in registry if ch and not opts.force and state.is_done(slot, t)}
+            heavy = bot.overweight()
+            if heavy:
+                log.warning(f"[{who}] {heavy} → 이 캐릭터는 건너뜀")
+                results.append((f"[{who}]", "HEAVY", heavy))
+                for t in order:
+                    self._emit("task_end", slot=slot, task=t, label=t, status="HEAVY", summary=heavy, seconds=0)
+                continue
+            bot.watch_weight = True  # 숙제 중에만 가방 무게 감시
+            self._loot.open(bot, who)
+            ended = {}  # 숙제 → (results 자리, 상태)
+            pending, later, seq = list(order), set(), []  # 남은 숙제 · 뒤로 미룬 숙제 · 차례가 온 순서
+            while pending:
+                tid = pending.pop(0)
+                seq.append(tid)
+                label, fn = registry[tid]
+                if tid in bot.also_done:  # 다른 숙제 안에서 이미 끝냄 (사냥터 안 검은 구멍 등)
+                    log.info(f"▷ [{who}] {label}: 완료")
+                    self._emit("task_end", slot=slot, task=tid, label=label, status="DONE", summary="완료", seconds=0)
+                    continue
+                if (why := self._later(bot, cfg, state, slot, tid, pending, later)):
+                    log.info(f"▷ [{who}] {label}: {why} → 이 캐릭터의 다른 숙제 뒤로")
+                    later.add(tid)
+                    pending.append(tid)
+                    continue
+                status = step(slot, tid, f"[{who}] {label}", lambda fn=fn: fn(bot, cfg))
+                ended[tid] = (len(results) - 1, status)
+                if ch:
+                    state.set(slot, tid, "done" if results[-1][1] == "OK" else f"{status}: {results[-1][2]}")
+                    for t in bot.also_done:
+                        state.set(slot, t, "done")
+                if status == "STOP":
+                    if results[-1][1] != "STOP":
+                        # 클리어 뒤에 멈추면 그 숙제는 OK 로 남는다 — 실행이 멈췄다는 것은 따로 남겨, 큐가 카드를 완료로
+                        # 치우지 않고 일시정지로 두고 진행 기록도 지우지 않게 한다 (2026-11-13 F12 를 누르니 3명 카드가
+                        # 1번 공물 클리어 뒤 완료로 사라지고, 다시 F12 를 누르니 다음 카드가 돌았다)
+                        results.append(("실행", "STOP", "클리어 뒤 멈춤 — 이어 하면 다음 숙제부터"))
+                    return
+                if status == "HEAVY":
+                    break
+            else:
+                # 일일 미션 뒤에 한 숙제(아르바이트 → '따뜻한 손길')로 새로 깬 미션의 선물. 받을 게 있을 때만 창을 연다
+                if "daily_mission" in order and seq[-1] != "daily_mission":
+                    try:
+                        got = tasks.daily_mission.claim_leftovers(bot, cfg)
+                        if got:
+                            log.info(f"  [{who}] 마지막에 남은 일일 미션 선물: {got}")
+                            self._recheck_daily(bot, cfg, state, slot, results, ended)
+                    except StopRequested:
+                        log.warning(bot.stopper.reason())
+                        return
+                    except (StepTimeout, CannotProceed, MissingTemplate, RuntimeError) as e:
+                        log.warning(f"[{who}] 마지막 일일 미션 선물 받기 실패: {e}")

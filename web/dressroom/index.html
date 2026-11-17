@@ -1,0 +1,68 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data: blob:; connect-src 'self'; font-src 'self'">
+<title>드레스룸</title>
+<link rel="stylesheet" href="dressroom.css">
+<script src="theme.js"></script>
+<script type="module" src="main.js"></script>
+</head>
+<body>
+<div id="app">
+
+  <aside id="left">
+    <div class="modes" id="modes" role="tablist"></div>
+    <div class="tabs subs" id="subs" role="tablist"></div>
+    <div id="body-box" class="body-box hidden">
+      <div class="seg" id="bodies"></div>
+      <div class="seg seg-sm" id="shapes" title="체형 셰이프 (게임 캐릭터 만들기의 체형 끝값)"></div>
+      <div class="seg seg-sm hidden" id="ages" title="나이 (게임 캐릭터 만들기)"></div>
+      <div class="row hidden" id="height-row" title="키 (게임 캐릭터 만들기) · 두 번 누르면 가운데로">
+        <span class="lbl">키</span>
+        <input id="height" type="range" min="-1" max="1" step="0.01" value="0">
+        <span id="height-cm" class="mute small"></span>
+      </div>
+    </div>
+    <div id="looks-box" class="looks hidden">
+      <div class="row">
+        <input id="look-name" type="text" placeholder="이름" maxlength="40" autocomplete="off" title="저장·내보내기 이름">
+        <button id="look-save" class="btn btn-sm" title="지금 모습(체형·나이·키·얼굴·피부·옷·색)을 이 이름으로 저장 — 같은 이름은 덮어쓴다">저장</button>
+      </div>
+      <div class="row">
+        <button id="look-export" class="btn btn-sm" title="지금 모습을 파일(.json)로">내보내기</button>
+        <button id="look-import" class="btn btn-sm" title="코디 파일을 열어 입히고 저장 목록에 더한다">가져오기</button>
+        <button id="look-game" class="btn btn-sm" title="리모콘이 게임에서 마지막으로 본 내 캐릭터(체형·얼굴·머리·입은 의상)를 입힌다">게임 캐릭터</button>
+      </div>
+    </div>
+    <div id="colors" class="colors hidden"></div>
+    <div class="list-head"><b id="sub-title"></b><span id="count" class="mute small"></span></div>
+    <input id="search" type="search" placeholder="이름 검색" autocomplete="off">
+    <div id="list" class="list"></div>
+  </aside>
+
+  <main id="stage">
+    <canvas id="view"></canvas>
+    <div id="busy" class="hidden">불러오는 중…</div>
+    <div id="err" class="hidden"></div>
+    <div id="hint" class="mute small">끌기 돌리기 · 휠 확대 · 오른쪽 끌기 옮기기</div>
+    <div id="viewp" class="viewp hidden"></div>
+    <div id="tools">
+      <button id="move" class="btn btn-sm tog" title="동작 재생 (끄면 기본 자세) · 동작은 동작 탭에서, 안 고르면 꾸미기 화면 대기 동작">움직임</button>
+      <button id="gaze" class="btn btn-sm tog">시선</button>
+      <button id="hood" class="btn btn-sm tog hidden" title="후드 쓰기 (후드 달린 옷)">후드</button>
+      <button id="cap" class="btn btn-sm tog hidden" title="투구 덮개 닫기 (얼굴·머리를 덮는 모자)">덮개</button>
+      <button id="weapon" class="btn btn-sm tog hidden" title="패션 무기 보이기 · 전투 동작(경계 자세·맞기 등)에선 손에, 그 밖엔 넣은 모습">무기</button>
+      <button id="front" class="btn btn-sm" title="정면으로">정면</button>
+      <button id="view-open" class="btn btn-sm" title="옵션 (시선·원근·무대·조명·메시 보기·성능)">옵션</button>
+    </div>
+  </main>
+
+  <aside id="right">
+    <div id="worn"></div>
+    <div id="worn-empty" class="mute small" title="의상 탭에서 고르면 입힌다">입은 옷 없음</div>
+  </aside>
+
+</div>
+</body>
+</html>

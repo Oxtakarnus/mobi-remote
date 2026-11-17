@@ -1,0 +1,815 @@
+"""태스크가 사용하는 고수준 조작 API — 작업 하나의 실행 문맥 (Bot).
+
+게임 하나와의 연결(창·캡처·입력·Vision·CLI·패킷)은 GameSession(mabi/session.py)이 쥐고, Bot 은 그것을 들고
+작업마다 다른 것(설정·캐릭터·단계 기록·멈춤 키·시간 상한·뒤에서 돌기·끼어들기 …)과 기다림을 맡는다.
+bot.window · bot.packets · bot.activity() 처럼 연결 쪽 것도 Bot 에서 그대로 부른다 (session 에 넘긴다).
+
+좌표는 모두 게임 클라이언트 기준이며, 클릭 시 화면 좌표로 변환한다.
+F12(설정 game.stop_key)를 누르면 다음 대기/캡처 시점에 StopRequested 가 발생해 전체 실행이 중단된다.
+5초 안에 멈추지 못하면 프로세스를 강제로 끝낸다 (inputs.StopWatcher).
+"""
+import ctypes
+import logging
+import random
+import time
+from contextlib import contextmanager
+from dataclasses import dataclass, field
+from pathlib import Path
+
+import numpy as np
+
+from . import keys
+from .game_state import Activity
+from .inputs import StopWatcher, vk_of
+from . import cutpoint, judge, packet_monitor
+from .session import GameSession
+from .vision import Match
+from .exceptions import AuthBlocked, MissingTemplate, Overweight, StepTimeout, StopRequested
+
+
+@dataclass
+class Marks:
+    """Bot 하나에 걸쳐 다른 모듈(점검자·출석·아르바이트)이 기억하는 시각·값. 예전엔 모듈마다 bot 에 밑줄 속성
+    (bot._skip_seen 등)을 붙이고 getattr 기본값으로 읽어, 이름이 틀려도 조용히 기본값이 나왔다. 이제 칸을 여기 적는다."""
+    # 점검자 (monitor)
+    network_looked: float = 0.0       # '네트워크가 불안정' 창을 마지막으로 글자로 본 때 (detect.look)
+    network_tries: list[float] = field(default_factory=list)  # '다시 시도하기' 를 누른 때들 (handlers.network)
+    skip_seen: float | None = None    # 뒤에서 도는 중 '대화 넘기기' 를 처음 본 때 (handlers.skip)
+    confirm_keyed: float = 0.0        # 뒤에서 '확인' 을 Space 로 보낸 때 (handlers.confirm)
+    attendance_clicked: float = 0.0   # 출석 대사를 누른 때 (situation)
+    # 아르바이트 (tasks.arbeit)
+    gatherable: set[str] | None = None  # 채집으로 구할 수 있는 물품 (한 번 묻고 기억)
+    arb_titles: set[str] | None = None  # 아르바이트 탭에서 본 카드 제목 (None = 아직 안 봄)
+    arb_read: list[list[str]] = field(default_factory=list)  # 카드 버튼을 못 찾았을 때 쪽마다 읽은 글자
+    arb_scrolled: int = 0             # 아르바이트 목록을 내린 쪽 수
+    arb_closed: bool = False          # 구인 마감이고 수락한 일도 없음
+    # 접속 (tasks.login)
+    auth_fails: int = 0               # 접속 오류(계정 인증 실패) 창을 본 횟수 — 두 번째면 AuthBlocked
+
+
+# 음식을 먹은(또는 못 먹은) 뒤 다시 B 를 누르기까지 (초)
+EAT_GAP = 60
+
+
+def _share(frame, name: str, test) -> float:
+    """화면의 ui.json 영역 name 에서 test(픽셀 BGR 줄 → 참거짓)가 참인 픽셀의 비율 (0~1)."""
+    from . import gamedata as gd
+    x, y, w, h = gd.region(name)
+    px = frame[y:y + h, x:x + w].reshape(-1, 3).astype(int)
+    return float(test(px).mean()) if px.size else 0.0
+
+
+def _green(px):
+    """게임의 초록 버튼 색 (초록이 파랑·빨강보다 40 넘게 큼)."""
+    return (px[:, 1] > px[:, 2] + 40) & (px[:, 1] > px[:, 0] + 40)
+
+
+def _dark_panel(px):
+    """창 바탕의 어두운 회색 (서버 연결 끊김 창 — BGR 약 51·39·34)."""
+    return (px.max(axis=1) < 70) & (np.ptp(px, axis=1) < 25)
+
+
+def run_limit_shown(frame) -> bool:
+    """연속 실행 제한 창이 이 화면에 떠 있나. 창의 '종료' 버튼 자리(ui.json regions run_limit_button)가 초록인지 먼저 보고
+    (창이 있으면 97% 초록, 없는 화면은 0% — 2026-11-10 캡처), 초록이면 창 자리 글자로 확인한다 (OCR). 끊는 자리마다
+    부르므로(mabi/restart.watch) 평소엔 색만 본다."""
+    from . import gamedata as gd, ocr
+    if _share(frame, "run_limit_button", _green) < 0.6:
+        return False
+    texts = "".join(ocr.nospace(t) for t, _, _ in ocr.find_texts(frame, gd.region("run_limit_popup")))
+    return any(ocr.nospace(w) in texts for w in gd.words("run_limit"))
+
+
+def server_down_shown(frame) -> bool:
+    """게임 서버와 연결이 끊긴 창('게임 서버와 연결이 끊어졌습니다. 잠시 후 다시 접속해주세요. (ERROR 83)' + 넓은 초록
+    '확인')이 이 화면에 떠 있나. 목요일 정기 점검·임시 점검으로 서버가 내려가면 뜨고 게임을 끌 때까지 남는다
+    (2026-11-12 06:00 — 리모콘은 어비스 보스방에서 13분을 그대로 있었다). 창 아래 넓은 초록 버튼(server_down_button)과
+    그 위 어두운 창 바탕(server_down_panel)을 색으로 먼저 보고 (이 창 97%·100% — 녹화·실패 화면 262장 중 둘 다 맞는 다른
+    화면 없음, 2026-11-12), 맞으면 창 글자로 확인한다 (OCR). 점검자가 상황을 볼 때마다 부르므로 평소엔 색만 본다.
+    보다가 터지면(OCR 오류 등) 아니라고 본다 — 이 확인 하나 때문에 상황 판단(monitor.detect.look)이 막히면 안 된다."""
+    from . import gamedata as gd, ocr
+    try:
+        if _share(frame, "server_down_button", _green) < 0.6 or _share(frame, "server_down_panel", _dark_panel) < 0.6:
+            return False
+        texts = "".join(ocr.nospace(t) for t, _, _ in ocr.find_texts(frame, gd.region("server_down_popup")))
+    except Exception:  # noqa: BLE001
+        logging.getLogger("mabi").debug("서버 연결 끊김 창을 확인하지 못함", exc_info=True)
+        return False
+    return any(w in texts for w in gd.words("server_down"))
+
+
+class Bot:
+    def __init__(self, cfg: dict, paths, dry_run: bool = False, force_exit: bool = True, cli=None,
+                 session: GameSession | None = None):
+        """session: 이미 있는 게임 연결을 같이 쓴다 (gui 의 DailyApi._game_session). 없으면 이 작업만의 연결을 만든다."""
+        self.cfg = cfg
+        self.paths = paths
+        self.log = logging.getLogger("mabi")
+        self.session = session if session is not None else GameSession(cfg, paths, dry_run=dry_run, cli=cli)
+        i = cfg["input"]
+        self.delay = (i["delay_min"], i["delay_max"])
+        self.stopper = StopWatcher(vk_of(cfg["game"]["stop_key"]), log=self.log, force_exit=force_exit)
+        self.ui = cfg["ui"]
+        self.counters = cfg["counters"]
+        self.input_mark: int | None = None  # 마지막으로 누르기 직전의 패킷 번호 (아직 누른 적 없으면 None — 지금 상태만 본다)
+        self.character: dict | None = None  # 지금 숙제 중인 캐릭터 ({"slot", "name"}), runner 가 설정
+        self.watch_weight = False  # 가방이 꽉 찼는지 감시 (숙제 중에만), runner 가 설정
+        self._weight_at = 0.0
+        self.daily = None  # 오늘 진행 기록 (profile.DailyState), runner 가 설정
+        self.also_done: set[str] = set()  # 다른 태스크 안에서 함께 끝낸 태스크 id (runner 가 완료로 기록)
+        self.on_clear = None  # 클리어 신호가 온 순간 부를 함수 (clear.cleared_now) — 숙제가 그 자리에서 횟수를 기록
+        self.done_at_clear = False  # 이 숙제의 클리어를 이미 함 — 뒤 정리 중 멈춰도 오늘 완료로 기록 (runner)
+        self.verified = False  # 지금 숙제가 스스로 완료를 확인했다 (runner 가 다시 확인하지 않는다 — 가이드를 두 번 열던 것)
+        self.task_id: str | None = None  # 지금 하는 숙제 id, runner 가 설정
+        # 이 숙제를 지난번에 어디까지 했나 ({"stage", "at", ...}) — 도중에 끊겼으면 있다. 숙제가 보고 이어 한다
+        self.resume: dict | None = None
+        self.deadline: float | None = None  # 지금 숙제의 시간 상한 (monotonic, runner 가 정함) — check_stop 이 본다
+        self.on_step = None  # 단계가 바뀔 때 (step, text) — runner 가 화면(작업 큐 카드·오버레이)에 알리려고 설정
+        self.marks = Marks()  # 다른 모듈이 이 Bot 에 걸쳐 기억하는 것
+        self.monitor = None   # 이 Bot 의 점검자 (monitor.of 가 처음 부를 때 만든다)
+        self._frame: np.ndarray | None = None  # 이 작업이 마지막으로 찍은 화면 (find(fresh=False))
+        # 게임을 앞으로 가져오지 않고 한다 — 화면은 가려져 있어도 찍고(PrintWindow), 키는 창에 직접 보낸다.
+        # 클릭은 그렇게 안 되므로 누를 때만 잠깐 앞으로 가져왔다가 원래 창을 되돌린다 (어비스 반복 중에 쓴다)
+        self.background = False
+        # 봇을 만들 때(게임을 앞으로 가져오기 전) 쓰던 창 — 뒤로 보내 도는 숙제(나이트메어 드릴)가 그 창을 돌려준다
+        self.user_window = ctypes.windll.user32.GetForegroundWindow()
+        # 기다리는 게 오래 안 나오면 막는 화면(대화·연출·퀘스트 클리어 확인·화면 터치)을 넘겨 본다 (tasks.clear.clear_blockers).
+        # 혼자 오래 도는 일(일일 숙제·어비스 반복)만 켠다 — runner·abyss.repeat 가 설정
+        self.auto_clear = False
+        self._clearing = False
+        # 무작위 이벤트 끼어들기 (monitor.interrupts) — 기본은 없다고 보고, 패킷 신호가 있으면 기본 동작(check_stop) 안에서
+        # 화면을 한 번 본다. 화면에 떠 있을 때만 하던 일을 멈추고 넘긴다.
+        # _npc_owned: NPC 대화를 태스크가 다루는 중 (npc_talk) · _interrupting: 끼어들기·점검 중 (다시 끼어들지 않는다)
+        self.interrupts = not dry_run
+        self._npc_owned = 0
+        self._interrupting = False
+        self._interrupt_off: dict[str, float] = {}
+        self._watch = None          # monitor.interrupts.Watch (처음 볼 때 만든다)
+        self.interrupt_spent = 0.0  # 끼어들기에 쓴 시간 합 — 기다리는 쪽이 시간 상한을 그만큼 늘린다
+        self.interrupt_n = 0        # 끼어들기를 넘긴 횟수 — 늘었으면 하던 동작이 막혔을 수 있어 다시 한다 (act·press.until)
+        # 연출의 '장면 넘기기' 를 누르나. 어비스·던전을 도는 동안은 끈다 — 연출은 스스로 끝나고, 누르면 뒤에서 돌던 게임이
+        # 앞으로 튀어나온다 (2026-10-25 사용자: "어비스나 던전 돌 동안은 장면 넘기기를 안해도 될 것 같아")
+        self.scene_skip = True
+        # 출석을 넘긴 게임 날짜 (situation.attendance_due). 시작할 때는 이미 넘긴 것으로 본다 — 접속 단계가 출석을 따로
+        # 넘기고, 이 실행 도중 오전 6시를 넘기면 (어비스 반복 등) 그때부터 출석 대사를 넘길 준비를 한다
+        from .profile import game_date
+        self.attendance_date = game_date()
+
+    def step(self, step: str, text: str = "", **data) -> None:
+        """숙제 안의 단계를 오늘 기록에 남긴다 (끊긴 뒤 다시 시작하면 bot.resume 으로 돌아온다).
+        step 은 단계 키 (숙제마다 정한 고정 이름 — 이어 하기는 이걸로 판단), text 는 로그·화면용 설명."""
+        self.log.info(f"  · [{step}] {text}" if text else f"  · [{step}]")
+        if self.daily is not None and self.character and self.task_id:
+            self.daily.set_step(self.character["slot"], self.task_id, step, text, **data)
+        if self.on_step:
+            self.on_step(step, text)  # runner._emit 이 화면 쪽 오류를 삼킨다
+        # 정해진 시간에만 하는 일이 열렸으면 여기(단계가 바뀌는 때)서 끊고 그 일을 먼저 — 기록한 뒤라 이 단계부터 이어 한다
+        cutpoint.check(self, step)
+
+    def check_in(self) -> None:
+        """작업·숙제를 시작할 때마다 (처음이든 일시정지 뒤 이어 하기든) 지금 상태부터 다시 본다 — 패킷이 기억하는 지난
+        상태를 믿고 시작하지 않는다 (PacketMonitor.reconcile). 캐릭터 선택 화면·로딩이면 CLI 가 답하지 않아 그런 상태는
+        모름으로 둔다. CLI 연결 여부도 여기서 다시 묻는다 — 처음 한 번 정한 값이 실행 내내 남아 있었다.
+        메인 화면이면 배고픔도 본다 — 접속 직후(출석 화면 뒤) 'B' 표시가 늦게 떠 놓치고, 요일 던전은 메인 화면으로
+        돌아오지 않고 바로 출발해 배고픈 채로 갔다 (11-05 사용자)."""
+        try:
+            if self.at_main():
+                self.eat_if_hungry()
+        except Exception as e:  # noqa: BLE001 — 먹기 확인이 작업 시작을 막으면 안 된다
+            self.log.debug(f"시작 점검: 배고픔 확인 실패 {e}")
+        if self.packets.status != "running":
+            return
+        self.state.available(refresh=True)
+        self.session.cli_checked = time.monotonic()
+        act = self.activity(max_age=0)
+        changed = self.packets.reconcile(act)
+        from . import situation
+        situation.check_attendance(self)
+        if changed or not act:
+            self.log.info(f"시작 점검 ({'CLI' if act else 'CLI 응답 없음 → 모름으로'}): "
+                          + (", ".join(changed) if changed else "패킷 상태와 같음"))
+        else:
+            self.log.debug("시작 점검: 패킷 상태와 CLI 가 같음")
+
+    # ---- 게임 연결 (GameSession 에 넘긴다 — 바깥에서는 bot.window · bot.packets · bot.activity() 그대로) ----
+    window = property(lambda self: self.session.window)
+    screen = property(lambda self: self.session.screen)
+    vision = property(lambda self: self.session.vision)
+    input = property(lambda self: self.session.input)
+    digits = property(lambda self: self.session.digits)
+    cli = property(lambda self: self.session.cli)
+    state = property(lambda self: self.session.state)
+    packets = property(lambda self: self.session.packets)
+    box = property(lambda self: self.session.box)
+    shot_dir = property(lambda self: self.session.shot_dir)
+
+    def activity(self, max_age: float = 1.0) -> dict | None:
+        return self.session.activity(max_age)
+
+    def environment(self, max_age: float = 3.0) -> dict | None:
+        return self.session.environment(max_age)
+
+    def _act_state(self, act: dict | None) -> Activity:
+        return self.session._act_state(act)
+
+    def overweight(self) -> str | None:
+        return self.session.overweight()
+
+    def just_arrived(self) -> bool:
+        """패킷: 맵에 들어온 지 설정 timing.after_map 초가 안 됐다 (로딩 화면이 걷힌 직후 HUD·창이 아직 뜨는 중일 수 있다)."""
+        p = self.packets
+        return bool(p.ok and not p.state.loading and p.state.entered_at
+                    and time.monotonic() - p.state.entered_at < self.cfg["timing"]["after_map"])
+
+    def map_loading(self) -> bool | None:
+        return self.session.map_loading()
+
+    def is_loading(self) -> bool:
+        return self.session.is_loading()
+
+    def in_game(self, since: int | None = None) -> bool:
+        return self.session.in_game(since)
+
+    def auto_traveling(self, act: dict | None = None) -> bool:
+        return self.session.auto_traveling(act)
+
+    def fast_travel_ok(self, act: dict | None = None) -> bool:
+        return self.session.fast_travel_ok(act)
+
+    def in_combat(self, act: dict | None = None) -> bool:
+        return self.session.in_combat(act)
+
+    def dialogue_playing(self, act: dict | None = None) -> bool:
+        return self.session.dialogue_playing(act)
+
+    def cutscene_playing(self) -> bool | None:
+        return self.session.cutscene_playing()
+
+    def resumed_at(self, *steps: str) -> dict | None:
+        """지난번에 이 숙제가 steps 중 한 단계에서 끊겼으면 그 기록."""
+        r = self.resume
+        return r if r and r.get("step") in steps else None
+
+    # ---- 기본 ----
+    def check_stop(self) -> None:
+        if self.stopper.stopped.is_set():
+            raise StopRequested()
+        if self.deadline and time.monotonic() > self.deadline:
+            # 숙제 하나의 시간 상한 (runner 가 정함). 안쪽 대기마다 상한이 있어도 그것들이 되풀이되면 끝없이 늘어진다
+            self.deadline = None
+            raise StepTimeout(f"숙제가 시간 상한 안에 끝나지 않음 → {self.snapshot('task_timeout').name}")
+        self.check_weight()
+        self.check_interrupt()
+
+    def check_interrupt(self) -> None:
+        """패킷이 무작위 이벤트(NPC 가 말을 걺·출석)를 알리면 화면을 한 번 보고, 떠 있으면 하던 일을 멈추고 점검자가 넘긴 뒤
+        돌아간다 (monitor.interrupts). 화면에 없으면 아무것도 안 한다 — 신호만으로 기다리지 않는다.
+        뒤에서 도는 중(어비스 반복)은 클릭이 게임을 앞으로 가져오므로 하지 않는다 — 거기선 태스크의 점검자가 본다."""
+        if self._interrupting or not self.interrupts or not self.packets.ok:
+            return
+        from .monitor import interrupts
+        if self._watch is None:
+            self._watch = interrupts.Watch()
+        what = self._watch.due(self)  # 패킷 상태와 시각만 본다 — 0.1초마다 불려도 가볍다
+        if not what or time.monotonic() < self._interrupt_off.get(what, 0) or self.behind():
+            return
+        self._interrupting = True
+        t0 = time.monotonic()
+        try:
+            if interrupts.handle(self, what):
+                self.interrupt_n += 1
+        finally:
+            self._interrupting = False
+            self.interrupt_spent += time.monotonic() - t0
+
+    def interrupt_cooldown(self, what: str, secs: float) -> None:
+        self._interrupt_off[what] = time.monotonic() + secs
+
+    @contextmanager
+    def npc_talk(self):
+        """이 동안 NPC 대화는 태스크 몫 — 끼어들기로 넘기지 않는다 (메뉴가 1~2초 늦게 떠 그 전에 넘기면 놓친다)."""
+        self._npc_owned += 1
+        try:
+            yield
+        finally:
+            self._npc_owned -= 1
+
+    def npc_owned(self) -> bool:
+        return self._npc_owned > 0
+
+    @contextmanager
+    def no_interrupt(self):
+        """끼어들지 않는 구간 (점검자가 화면을 보고 처리하는 중 등)."""
+        prev, self._interrupting = self._interrupting, True
+        try:
+            yield
+        finally:
+            self._interrupting = prev
+
+    def pause_as_key(self) -> None:
+        """멈춤 키(F12)를 누른 것과 같은 일시정지 — 사람이 F12 로 이어 한다. 뒤이어 대기·캡처 때 StopRequested.
+        (pause 는 조작 사이의 기본 대기다)"""
+        self.stopper.pause()
+
+    def check_weight(self, every: float = 20) -> None:
+        """watch_weight 가 켜져 있으면 every 초마다 CLI 로 가방 무게를 보고, 꽉 찼으면 Overweight."""
+        if not self.watch_weight or time.monotonic() - self._weight_at < every:
+            return
+        self._weight_at = time.monotonic()
+        if why := self.overweight():  # 무게를 넘으면 자동 이동·전투가 멈추므로 던전 안이라도 바로 그만둔다
+            raise Overweight(why)
+
+    def wait_packet(self, pred, timeout: float, since: int | None = None) -> bool | None:
+        """패킷 상태(self.packets.state)가 pred 를 만족할 때까지. True 만족 / False 시간 초과 /
+        None 감시가 꺼졌거나 서버 패킷이 끊김 — 부르는 쪽은 CLI·화면으로 넘어간다.
+        since: 이 이벤트 번호(packets.mark · input_mark) 뒤에 한 번이라도 만족했으면 바로 True — 로딩·이동 시작처럼
+        금방 지나가는 상태를 기다릴 때. 누르기 전에 찍은 번호를 넘긴다."""
+        end = time.monotonic() + timeout
+        while True:
+            self.check_stop()
+            if not self.packets.ok:
+                return None
+            if pred(self.packets.state) if since is None else self.packets.saw(pred, since):
+                return True
+            left = end - time.monotonic()
+            if left <= 0:
+                return False
+            self.packets.changed(min(left, 1.0))
+
+    def wait_loaded(self, timeout: float) -> bool | None:
+        """패킷으로 맵 로딩이 끝날 때까지 (로딩 중이 아니면 바로 True). False 시간 초과, None 모름 → 화면·CLI 로."""
+        if self.map_loading() is None:
+            return None
+        return self.wait_packet(lambda s: self.map_loading() is not True, timeout)
+
+    def fast_travel(self, wait: float = 0) -> bool:
+        """빠른 이동(T) — 먼 곳으로 자동 이동 중이면 누른다. 눌렀으면 True. 모든 이동(숙제·아르바이트·어비스·레이드·수리)이 쓴다.
+        wait: 방금 이동을 시켰으면 시작되길 그만큼 기다린 뒤 본다 (패킷 traveling, 패킷이 모르면 2~3초).
+        예전엔 2~3초 쉬고 한 번만 봐서 이동이 늦게 시작되면 T 를 놓치고 걸어갔다."""
+        key = keys.of(self, "fast_travel")
+        if not key:
+            return False
+        if wait:
+            moved = self.wait_packet(lambda s: s.traveling, wait, since=self.input_mark)
+            self.sleep(0.5) if moved else self.sleep(2, 3)
+        if not self.fast_travel_ok():
+            return False
+        self.log.info("빠른 이동")
+        self.key(key)
+        return True
+
+    def skip_button(self, frame=None, skip=()) -> tuple[str, Match] | None:
+        """오른쪽 위 넘기기 버튼과 그 종류 ("scene" 연출 / "dialog" 대화). 없으면 None.
+        두 버튼은 같은 자리에 '넘기기' 글자가 같고 반투명이라 그림만으로는 헷갈린다 — 밝은 보스 출현 연출의
+        '장면 넘기기' 가 '대화 넘기기' 로 잡혀 눌렸다 (2026-10-25 어비스). 그래서 종류는 패킷 → CLI → 그림 순으로 정한다:
+        패킷이 컷신 중이면 연출, 대화 중이면 대화, 둘 다 아니면 (대화로 누를 일이 없으니) 연출로 본다."""
+        frame = self.frame() if frame is None else frame
+        hits = [m for n in (self.ui.get("dialog_skip"), self.ui.get("scene_skip"))
+                if n and n not in skip and self.vision.has(n) and (m := self.vision.find(frame, n))]
+        if not hits:
+            return None
+        m = max(hits, key=lambda h: h.score)
+        cut = self.cutscene_playing()
+        if cut:
+            return "scene", m
+        p = self.packets
+        if cut is not None and p.ok and (p.state.fresh or p.state.in_dialogue):
+            return ("dialog" if p.state.in_dialogue else "scene"), m
+        act = self.activity()
+        if act is not None and "IsDialoguePlaying" in act:
+            return ("dialog" if act["IsDialoguePlaying"] else "scene"), m
+        return ("scene" if m.name == self.ui.get("scene_skip") else "dialog"), m
+
+    def behind(self) -> bool:
+        """뒤에서 도는 중인가 (게임이 앞에 없음) — 클릭하면 게임이 앞으로 튀어나온다."""
+        return bool(self.background) and not self.window.is_foreground() and not self.input.dry_run
+
+    def to_back(self, window: int | None = None) -> None:
+        """게임을 뒤로 보내고 하던 창(window, 기본 user_window)을 돌려준다 — 이 뒤로 background (키는 창에 직접 보내고,
+        클릭할 때만 잠깐 앞으로 가져왔다 되돌린다). 어비스·레이드 반복(Repeat.to_back)·나이트메어 드릴·뱅가드가 같이 쓴다."""
+        self.background = True
+        self.window.give_back(self.user_window if window is None else window)
+
+    @contextmanager
+    def behind_while(self, on: bool = True):
+        """이 구간은 게임을 뒤에 두고 한다 (on 일 때 to_back). 끝나면(예외로 끝나도) background 를 끈다 —
+        들어간 뒤로만 뒤에서 도는 숙제(나이트메어 드릴·뱅가드 브리치)."""
+        try:
+            if on:
+                self.to_back()
+            yield
+        finally:
+            self.background = False
+
+    def may_skip_scene(self) -> bool:
+        """연출의 '장면 넘기기' 를 눌러도 되나 — 어비스·던전 중(scene_skip 꺼짐)이나 뒤에서 도는 중이면 기다린다."""
+        return self.scene_skip and not self.behind()
+
+    def is_dead(self, act: dict | None = None) -> bool:
+        """내 캐릭터가 쓰러졌나. 패킷 상태가 알면 그것 — CLI 를 물을 때마다 CLI 답으로 맞춰지고 (일어난 신호를 놓쳐도
+        CLI 가 살아 있다면 고쳐진다), 패킷이 방금 바꾼 값은 둔다 (부활 창 신호가 CLI IsDead 보다 약 3초 빠르다, death1 실측).
+        모르면 CLI. act 는 이미 받아 둔 get_activity 결과 (없으면 묻는다 — 물으면서 패킷 상태도 맞춰진다)."""
+        p = self.packets
+        if act is None:
+            act = self.activity()
+        st = p.state
+        recent = (p.ok and st.dead is not None
+                  and time.monotonic() - st.changed_at.get("dead", 0.0) < packet_monitor.CLI_LAG)
+        ui = self.ui.get("revive")
+        return bool(judge.decide(self, "쓰러짐", [
+            ("패킷 방금", lambda: st.dead if recent else None),  # 부활 창 신호가 CLI IsDead 보다 약 3초 빠르다
+            ("CLI", lambda: Activity.of(act).dead if act else None),
+            ("패킷", lambda: st.dead if p.ok else None),
+            # 화면은 둘 다 모를 때만 본다 — 부활한 뒤에도 버튼이 잠깐 남는다
+            ("화면 부활 버튼", lambda: True if (not act and not p.ok and ui and self.vision.has(ui)
+                                                and self.vision.find(self.frame(), ui)) else None),
+        ]).value)
+
+    def sleep(self, a: float, b: float | None = None) -> None:
+        end = time.monotonic() + (random.uniform(a, b) if b else a)
+        while True:
+            self.check_stop()
+            left = end - time.monotonic()
+            if left <= 0:
+                return
+            time.sleep(min(0.1, left))
+
+    def pause(self) -> None:
+        """조작 사이의 기본 대기."""
+        self.sleep(*self.delay)
+
+    def frame(self) -> np.ndarray:
+        self.check_stop()
+        if self.background and not self.input.dry_run:
+            img = self.session.capture(behind=True)
+            if img is not None:
+                self._frame = img
+                return img
+        # 화면을 그대로 캡처하므로 다른 창(터미널, 알림 등)이 위에 있으면 인식이 틀어진다
+        self.ensure_focus()
+        self._frame = self.session.capture()
+        return self._frame
+
+    def _require_template(self, name: str) -> None:
+        if not self.vision.has(name):
+            raise MissingTemplate(f"템플릿 '{name}' 이 없습니다. tools/capture.py 로 만들어 주세요.")
+
+    # ---- 인식 ----
+    def find(self, name: str, region=None, threshold=None, fresh: bool = True) -> Match | None:
+        self._require_template(name)
+        frame = self.frame() if fresh or self._frame is None else self._frame
+        return self.vision.find(frame, name, region, threshold)
+
+    def find_all(self, name: str, region=None, threshold=None) -> list[Match]:
+        self._require_template(name)
+        return self.vision.find_all(self.frame(), name, region, threshold)
+
+    def exists(self, name: str, **kw) -> bool:
+        return self.find(name, **kw) is not None
+
+    def wait_any(self, names: list[str], timeout: float = 10, interval: float = 0.4) -> Match:
+        for n in names:
+            self._require_template(n)
+        start = time.monotonic()
+        end, checked, spent = start + timeout, start, self.interrupt_spent
+        while True:
+            frame = self.frame()
+            for n in names:
+                m = self.vision.find(frame, n)
+                if m:
+                    return m
+            now = time.monotonic()
+            end, spent = end + self.interrupt_spent - spent, self.interrupt_spent  # 끼어들기에 쓴 시간만큼 더 기다린다
+            if now > end:
+                raise StepTimeout(f"{timeout:.0f}s 안에 {names} 중 아무것도 나타나지 않음")
+            if self.auto_clear and now - start > 4 and now - checked > 3:
+                checked = now
+                self.clear_blockers(skip=names, ocr=now - start > 8)
+            self.sleep(interval)
+
+    def clear_blockers(self, skip=(), ocr: bool = False) -> str | None:
+        """막는 화면 하나를 넘긴다 (tasks.clear.clear_blockers). 넘겼으면 로그에 남긴다."""
+        if self._clearing:
+            return None
+        from .tasks.clear import clear_blockers
+        self._clearing = True
+        try:
+            what = clear_blockers(self, skip, ocr)
+        finally:
+            self._clearing = False
+        if what:
+            self.log.info(f"막는 화면 넘김: {what}")
+            self.sleep(1.0, 1.4)
+        return what
+
+    def wait(self, name: str, timeout: float = 10, interval: float = 0.4) -> Match:
+        return self.wait_any([name], timeout, interval)
+
+    def read_counter(self, name: str) -> int | None:
+        """재화 현재값 (예: 'silver', 'tribute'). CLI 조회가 안 되면 HUD 숫자를 판독한다."""
+        if self.state.available():
+            value = self.state.currency(self.counters["cli_names"][name])
+            if value is not None:
+                return value
+        value = self.digits.read_stable(self.screen.grab, self.counters[name])
+        if value is None:
+            path = self.snapshot(f"counter_{name}_unreadable")
+            self.log.warning(f"{name} 숫자 판독 실패 → {path.name}")
+        return value
+
+    # ---- 조작 ----
+    def ensure_focus(self) -> None:
+        """게임 창이 앞에 없으면 가져온다. 포커스를 옮긴 직후 첫 키 입력은 게임이 무시하므로
+        효과 없는 키(Shift)를 한 번 먼저 보낸다."""
+        if self.input.dry_run or (self.window.is_foreground() and not GameSession.posted):
+            return
+        if GameSession.posted:  # 앞에 있어도 — 비활성인 줄 아는 채로 앞에 있을 수 있다
+            # 뒤에서 키를 보낸 뒤(post_key) 처음 앞으로 가져오면 게임이 그 활성화를 놓쳐 키·클릭을 무시했다
+            # (2026-10-23). 앞으로 → 다른 창(작업 표시줄) → 다시 앞으로, 두 번째 활성화부터 받는다
+            self.window.focus()
+            self.sleep(1.0)
+            self.window.give_back(ctypes.windll.user32.FindWindowW("Shell_TrayWnd", None))
+            self.sleep(1.0)
+            GameSession.posted = False
+        self.window.focus()
+        self.sleep(0.8)
+        self.session.send_key("shift")
+        self.sleep(0.3)
+
+    def click_xy(self, x: int, y: int) -> bool:
+        """기준(1920x1080) 좌표를 누른다. 게임 해상도가 달라도 비율대로 실제 자리를 누른다 (Screen.to_screen).
+        눌렀으면 True. 게임 창을 앞으로 못 가져오면 누르지 않고 False — 그대로 누르면 다른 창을 누른다. 조용히 넘기면
+        부른 쪽은 눌렀다고 믿으므로, 연달아 SKIP_LIMIT 번 못 누르면 StepTimeout 으로 알린다 (구조 점검 2026-10-30, 뒤에서 도는 반복은 빼고)."""
+        self.input_mark = self.session.mark_input(f"클릭 ({x}, {y})")  # 누르기 직전 패킷 번호 — wait_packet(since=) 로 '누른 뒤' 를 본다
+        if self.background and not self.window.is_foreground() and not self.input.dry_run:
+            prev = ctypes.windll.user32.GetForegroundWindow()
+            self.ensure_focus()
+            if not self.window.is_foreground():
+                # 사람이 다른 창에서 입력 중이면 Windows 가 앞으로 가져오기를 막는다 — 그대로 누르면 그 창을 누른다
+                # (2026-10-28 레이드 나가기 4번 헛클릭). 이번 클릭은 건너뛰고 부른 쪽이 다시 시도하게 둔다
+                return self._click_skipped(x, y)
+            self.session.click_at(x, y)
+            self.sleep(0.3)
+            self.window.give_back(prev)
+            self.pause()
+            self._skipped_clicks = 0
+            return True
+        self.ensure_focus()
+        if not self.window.is_foreground() and not self.input.dry_run:
+            return self._click_skipped(x, y)
+        self.session.click_at(x, y)
+        self.pause()
+        self._skipped_clicks = 0
+        return True
+
+    SKIP_LIMIT = 5
+
+    def _click_skipped(self, x: int, y: int) -> bool:
+        n = self._skipped_clicks = getattr(self, "_skipped_clicks", 0) + 1
+        self.log.warning(f"게임 창을 앞으로 가져오지 못해 ({x}, {y}) 클릭을 건너뜀 ({n}/{self.SKIP_LIMIT})")
+        # 뒤에서 도는 반복(어비스·레이드)은 사람이 다른 창을 쓰는 게 정상이라 기다렸다 다시 누르게 둔다
+        if n >= self.SKIP_LIMIT and not self.background:
+            self._skipped_clicks = 0
+            raise StepTimeout(f"게임 창을 앞으로 가져오지 못해 {n}번 연달아 누르지 못함 (다른 창이 입력을 잡고 있음?)"
+                              f" → {self.snapshot('click_skipped').name}")
+        self.sleep(2.0)
+        return False
+
+    def long_press(self, x: int, y: int, seconds: float) -> bool:
+        """기준 좌표를 seconds 초 동안 누르고 있는다 (나이트메어 드릴 입장 컷신은 화면을 길게 눌러야 넘어간다).
+        게임을 앞으로 가져와 누른다. 못 가져왔으면 누르지 않고 False."""
+        self.input_mark = self.session.mark_input(f"길게 누름 ({x}, {y}) {seconds:.1f}초")
+        self.ensure_focus()
+        if not self.window.is_foreground() and not self.input.dry_run:
+            return self._click_skipped(x, y)
+        self.session.press_at(x, y, seconds)
+        self.pause()
+        return True
+
+    def hover_off(self, x: int = 300, y: int = 540) -> None:
+        """커서를 버튼이 없는 자리(왼쪽 가운데)로 치운다. 누른 버튼 위에 커서가 남아 있으면 마우스를 올린 효과로
+        그림이 커져 템플릿이 안 맞는다 (2026-10-24 퀘스트 창 아르바이트 탭 0.85)."""
+        self.session.move_to(x, y)
+
+    def scroll(self, x: int, y: int, notches: int) -> None:
+        """기준 좌표 (x, y) 에서 휠. notches > 0 위로, < 0 아래로."""
+        self.ensure_focus()
+        self.session.scroll_at(x, y, notches)
+
+    def drag(self, x1: int, y1: int, x2: int, y2: int, steps: int = 20) -> None:
+        """기준 좌표 (x1, y1) → (x2, y2) 로 끈다 (지도 이동 등)."""
+        self.ensure_focus()
+        self.session.drag_between(x1, y1, x2, y2, steps)
+
+    def click(self, target: str | Match | tuple[int, int], timeout: float = 10) -> Match | None:
+        """템플릿 이름이면 나타날 때까지 기다렸다가 중앙을 클릭."""
+        if isinstance(target, str):
+            m = self.wait(target, timeout)
+            self.log.debug(f"click {m.name} score={m.score:.2f} at {m.center}")
+            self.click_xy(*m.center)
+            return m
+        if isinstance(target, Match):
+            self.click_xy(*target.center)
+            return target
+        self.click_xy(*target)
+        return None
+
+    def click_if(self, name: str, **kw) -> bool:
+        m = self.find(name, **kw)
+        if m:
+            self.click_xy(*m.center)
+        return m is not None
+
+    def click_steps(self, steps: list[str], timeout: float = 10) -> None:
+        for step in steps:
+            self.click(step, timeout)
+
+    def key(self, key: str) -> None:
+        self.input_mark = self.session.mark_input(f"키 {key}")  # 누르기 직전 패킷 번호 (click_xy 와 같음)
+        if self.background and not self.window.is_foreground() and not self.input.dry_run:
+            self.session.post_key(key)
+            self.pause()
+            return
+        self.ensure_focus()
+        if not self.window.is_foreground() and not self.input.dry_run:
+            # 앞으로 못 가져왔으면 SendInput 키는 맨 앞의 다른 창으로 간다 — 창에 직접 보낸다
+            self.log.warning(f"게임 창을 앞으로 가져오지 못함 → 키 {key} 를 창에 직접 보냄")
+            self.session.post_key(key)
+            self.pause()
+            return
+        self.session.send_key(key)
+        self.pause()
+
+    # ---- 복구 ----
+    def dismiss_popups(self, max_n: int = 6) -> int:
+        """남은 창(공지·새 이벤트 창·스텔라 픽·퀘스트 완료 확인 …)을 점검자가 닫는다. NPC 대화는 건드리지 않는다. 닫은 개수."""
+        from . import monitor
+        mon, ctx = monitor.of(self), monitor.Ctx("popups", "남은 창 닫기", talk=False)
+        closed = 0
+        for _ in range(max_n):
+            seen = mon.check(ctx, guard=False)
+            if not seen.done or seen.done in monitor.WAITS:
+                break
+            closed += 1
+            self.sleep(0.4, 0.6)
+        return closed
+
+    def run_limit_popup(self) -> bool:
+        """화면 위 가운데에 '너무 오랫동안 실행되고 있습니다 · 재시작' 창이 떠 있나 (run_limit_shown). 끊어도 되는 자리마다
+        (mabi/restart.watch)와 실패했을 때(outcome.escalate) 본다. 그 자리는 판단에 쓰지 않는다 (ui.json covers).
+        창의 '종료' 는 누르지 않는다 — 게임을 다시 켤 때는 창 닫기 신호로 끈다 (mabi/restart)."""
+        try:
+            return run_limit_shown(self.frame())
+        except Exception:  # noqa: BLE001 — 확인 실패가 실패 처리를 막으면 안 된다
+            return False
+
+    def server_down_popup(self) -> bool:
+        """게임 서버와 연결이 끊긴 창(점검 등)이 떠 있나 (server_down_shown). 점검자는 상황마다 보고(monitor.detect
+        SERVER_DOWN), 일이 실패했을 때도 본다(outcome.escalate) — 떠 있으면 게임을 끄고 일시정지 (mabi/restart.server_down)."""
+        try:
+            return server_down_shown(self.frame())
+        except Exception:  # noqa: BLE001 — 확인 실패가 실패 처리를 막으면 안 된다
+            return False
+
+    def at_main(self, frame=None) -> bool:
+        """필드 메인 화면인가 — 메인 화면 판정은 모두 여기 하나로 본다 (frame 을 주면 그 화면으로).
+        패킷이 맵 로딩 중이라고 하면 아니다 (로딩 화면 직전·직후 HUD 가 잠깐 보인다).
+        '창이 하나도 안 열림' 은 패킷·CLI 에 없어서 (get_activity MainButtonState 는 창을 열어도 Compass — 2026-11-09)
+        그 다음은 HUD 그림으로 본다: ESC 글자, 애매하면 K·I 키 표시까지 (templates/index.json hud_main assist)."""
+        if self.map_loading() or self.packets.at_charselect():
+            return False
+        if frame is not None:
+            return self.vision.find(frame, self.ui["main_hud"]) is not None
+        return self.exists(self.ui["main_hud"])
+
+    def no_food(self, look: bool = True) -> bool:
+        """이 캐릭터가 오늘 먹을 음식이 없나. 배고픈데 음식이 없으면 좌상단에 빨간 원 + 식기 아이콘이 뜬다.
+        그 상태에서 B 를 누르면 제작 창이 열리므로, 한 번 보이면 오늘 기록해 두고 먹기를 시도하지 않는다.
+        look: 지금 화면도 본다 (메인 화면일 때만 의미가 있다)."""
+        slot = self.character["slot"] if self.character else None
+        if self.daily is not None and slot is not None and self.daily.flag(slot, "no_food"):
+            return True
+        name = self.ui.get("food_none")
+        if not look or not name or not self.vision.has(name) or not self.exists(name):
+            return False
+        self.log.info("음식 없음 표시 → 오늘은 음식 먹기를 하지 않음")
+        if self.daily is not None and slot is not None:
+            self.daily.set_flag(slot, "no_food")
+        return True
+
+    def eat_if_hungry(self) -> bool:
+        """메인 화면으로 돌아올 때마다 본다: 좌상단 음식 아이콘의 'B' 표시가 보이면 (배고픔) B 를 눌러 음식을 먹는다.
+        하루 횟수 제한은 없다 (예전 run.food_max=2 — 드릴에서 2번을 채운 뒤 배고파도 못 먹어 사용자가 없앰, 2026-11-08).
+        음식이 없으면 (no_food) 보지도 누르지도 않는다. 먹은 횟수는 기록만 한다. 일일 미션 쪽에서는 음식을 먹지 않는다."""
+        name = self.ui.get("food_b")
+        if not name or not self.vision.has(name):
+            return False
+        slot = self.character["slot"] if self.character else None
+        tracked = self.daily is not None and slot is not None
+        if time.monotonic() < getattr(self, "_eat_after", 0.0):
+            return False  # 방금 먹었거나 못 먹었다 — 한동안 다시 누르지 않는다
+        if self.no_food(look=False) or not self.exists(name) or self.no_food():
+            return False
+        mark = self.packets.mark()
+        self.key(keys.of(self, "food"))
+        # 패킷: 먹으면 포만감이 온다. 안 오면 못 먹은 것 (어비스 판 안에서 6초마다 3분 넘게 B 만 누른 일 — 2026-10-27).
+        # 먹었어도 'B' 표시가 바로 안 사라질 수 있어 먹은 뒤에도 EAT_GAP 동안은 다시 누르지 않는다
+        got = self.packets.wait("char.satiety", 4, after=mark) if self.packets.ok else None
+        self._eat_after = time.monotonic() + EAT_GAP
+        if self.packets.ok and got is None:
+            self.log.warning(f"배고픔 표시 → B 를 눌렀지만 먹지 못함 (포만감 패킷 없음) → {EAT_GAP:.0f}초 뒤 다시")
+            return False
+        n = self.daily.bump(slot, "food") if tracked else 0
+        full = f" · 포만감 {got.vals.get('satiety')}" if got is not None else ""
+        self.log.info(f"배고픔 표시 → 음식 먹기 (B){f' — 오늘 {n}번째' if tracked else ''}{full}")
+        self.sleep(1.5, 2)
+        return True
+
+    def to_main(self, tries: int = 10) -> None:
+        """ESC 와 팝업 닫기를 반복해서 필드 메인 화면으로 돌아온다. 돌아오면 배고픔도 확인한다."""
+        exit_dialog = self.ui["exit_dialog"]
+        wait_end = time.monotonic() + 120  # 로딩·연출을 기다리는 건 tries 와 따로 (그 동안은 누르는 게 없다)
+        n = 0
+        while n < tries:
+            if self.at_main():
+                self.eat_if_hungry()
+                return
+            # 타이틀·캐릭터 선택 화면에서 ESC 를 누르면 뒤로 가다가 '게임을 종료하시겠습니까?' 가 뜬다
+            if self.packets.at_charselect() or self.exists(self.ui["title_start"]) or self.exists(self.ui["charselect_title"]):
+                raise StepTimeout("게임 밖(타이틀/캐릭터 선택) 화면이라 메인으로 돌아갈 수 없음")
+            waiting = time.monotonic() < wait_end
+            if waiting and self.map_loading():  # 패킷: 맵을 옮기는 중 — ESC 를 누르지 않고 기다린다
+                self.wait_loaded(min(self.cfg["timing"]["loading"], wait_end - time.monotonic()))
+                continue
+            # 출석 대사·대화·연출·퀘스트 완료 '확인'·화면 터치는 점검자가 (상황 판단을 태스크마다 따로 두지 않는다).
+            # 연출은 스스로 끝나길 기다리되, 120초가 넘으면 넘기기를 누른다
+            from . import monitor
+            seen = monitor.of(self).check(monitor.Ctx("to_main"), guard=False)
+            if seen.done == monitor.Did.SCENE and not waiting and (hit := self.skip_button()):
+                self.click(hit[1])
+                n += 1
+                continue
+            if seen.done:
+                n += seen.done not in monitor.WAITS or not waiting  # 기다림도 120초 뒤엔 횟수에 넣는다
+                self.sleep(0.6, 1.0)
+                continue
+            n += 1
+            if self.vision.has(exit_dialog) and self.exists(exit_dialog):
+                self.key("esc")  # '취소' (ESC 배지) — 단축키로
+                continue
+            if self.exists(self.ui["menu_quit"]):  # 메뉴(ESC)가 열려 있음 → ESC 로 닫고 애니메이션 대기
+                self.key("esc")
+                self.sleep(1.2, 1.6)
+                continue
+            # 템플릿이 안 맞는 퀘스트 완료 창 — ESC 로는 안 닫혀 캐릭터 바꾸기 등이 멈췄다 (2026-10-24 사용자) → 글자로도
+            if monitor.of(self).check(monitor.Ctx("to_main"), guard=False, ocr=True).done:
+                continue
+            if self.just_arrived():
+                # 맵에 막 들어와 HUD 가 아직 안 보일 수 있다 — 여기서 ESC 를 누르면 닫을 창이 없어 ESC 메뉴가 열린다
+                # (사냥터 입장 직후 검은 구멍으로 가려다 메뉴를 열고 닫느라 20초씩 썼다, 2026-11-12). 횟수는 센다
+                self.sleep(0.8, 1.2)
+                continue
+            self.key("esc")
+            self.sleep(0.8, 1.3)
+        if not self.at_main():
+            # 화면을 남긴다 — 어비스 수리 가던 길에 이것만 남고 무슨 화면이었는지 몰랐다 (2026-10-28 다른 PC 로그)
+            raise StepTimeout(f"메인 화면으로 돌아오지 못함 → {self.snapshot('to_main').name}")
+
+    def to_charselect(self) -> None:
+        """메인 화면 → 메뉴 → 게임 종료 → '캐릭터 선택 화면으로'."""
+        ui = self.ui
+        self.to_main()
+        # 음식 먹는 동작 직후 등에는 ESC 가 무시되기도 하므로 메뉴가 열릴 때까지 몇 번 시도한다
+        for i in range(3):
+            self.key("esc")
+            try:
+                self.wait(ui["menu_quit"], timeout=5)
+                break
+            except StepTimeout:
+                if i == 2:
+                    raise
+                # 메인 HUD 가 보이는 채로 뜬 퀘스트 완료 창이 ESC 를 먹는다 (2026-10-24 어비스 3판 뒤 캐릭터 바꾸기)
+                self.clear_blockers(ocr=True)
+                self.to_main()
+        self.click(ui["menu_quit"])
+        # 창이 뜨는 애니메이션 중에 클릭하면 아래 '시작 화면으로'가 눌릴 수 있어 단축키(Space)를 쓴다
+        self.wait(ui["dialog_to_charselect"])
+        self.sleep(0.8, 1.2)
+        self.key("space")
+        errors = [n for n in ui.get("login_errors", []) if self.vision.has(n)]
+        m = self.wait_any([ui["charselect_title"], ui["title_start"], *errors], timeout=60)
+        if m.name in errors:  # login.run 이 확인을 누르고 쉬었다가 다시 시도한다
+            raise StepTimeout(f"접속 오류 창 ({m.name})")
+        if m.name == ui["title_start"]:
+            self.log.warning("캐릭터 선택 대신 타이틀로 나감 → 게임 시작")
+            self.key("space")  # 타이틀 '게임 시작' (Space 배지)
+            self.wait(ui["charselect_title"], timeout=60)
+        self.state.available(refresh=True)
+
+    def dump_box(self, tag: str) -> str:
+        """블랙박스(직전 30초 화면·누른 것·패킷)를 스크린샷 폴더에 남기고 폴더 이름을 돌려준다 (못 남기면 "")."""
+        return self.session.dump_box(tag, behind=bool(self.background))
+
+    def snapshot(self, tag: str) -> Path:
+        """지금 화면을 스크린샷 폴더에 (뒤에서 도는 중이면 게임 창만)."""
+        return self.session.snapshot(tag, behind=bool(self.background))

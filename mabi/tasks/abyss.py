@@ -1,0 +1,693 @@
+"""어비스 반복 플레이. 일일 숙제와 따로, 사람이 멈추거나(F12) 정한 횟수·시간이 될 때까지 같은 어비스를 다시 돈다.
+
+흐름 (2026-10-23 '허상의 정박지' 로 확인):
+  메뉴(ESC) → '어비스' → 오른쪽 목록에서 던전 → 입장 화면('함께하기' · 난이도 · '우연한 만남' 켬) → '입장하기'
+  → 우연한 만남 매칭 (모두 모이면 자동 입장) → 들어가면 숏컷 자동 진행·자동 전투가 저절로 켜진다
+  → 클리어하면 '던전 클리어 / 화면을 터치해 주세요' → 보상 화면(나가기 ESC / 다시 하기 Space / 다른 던전 가기)
+  → '다시 하기' = 같은 던전·난이도로 다시 매칭 → 4초 세고 입장
+판이 끝났을 때 장비 내구도(패킷)가 repair_below 이하면 '다시 하기' 대신 나가서 대장간에서 전체 수리하고 다시 입장한다 (tasks.repair).
+쓰러지면 '행동불능' + '남은 부활 횟수 N/M' 과 오른쪽 아래 '여신상에서 부활' / '여기서 부활'(R, 아이템 1개) 이 뜬다.
+최대 횟수 M 은 함께하기·난이도 등에 따라 다르다 (3, 6 을 봤다) — 고정값으로 보지 않는다.
+'여기서 부활' 을 누르고 그 판을 이어 한다 (2026-10-24 확인 — 누르면 IsDead 가 false, IsReviving 이 true 로 남는다).
+부활 횟수를 다 썼거나 함께하기에서 전멸해 '여기서 부활' 이 막히면 망설이지 않고 나간다 (사용자 규칙):
+오른쪽 맨 위 나가기 버튼 → '던전에서 퇴장하시겠습니까?' 나가기(Space) → 처음부터 다시 입장한다.
+어비스 안은 CLI 가 던전으로 치지 않는다 (Dungeon.State 가 NotInDungeon). 그래서 안에 있는지는 나가기 버튼으로,
+끝났는지는 get_activity 의 IsAbyssResultSequencePlaying 과 클리어 화면으로 본다.
+"""
+import time
+
+from .. import gamedata as gd, judge
+from ..bot import Bot
+from ..exceptions import CannotProceed, LootPending, NotSeen, StepTimeout
+from ..game_state import Activity
+from ..place import ABYSS, place
+from .. import monitor
+from ..monitor import detect as d, handlers
+from . import entry, press, ui_text
+from .arrival import go_talk, wait_arrival, wait_settled, where_settled
+from .clear import touch_prompt_visible
+from .fight import Fight
+from .exits import DungeonExit, Exit
+from .repeat import Repeat
+from .spear import SpearDodge
+
+
+def dungeons(now=None) -> list[str]:
+    """이번 주 어비스 던전 (게임 데이터 일정 — data/content.json)."""
+    return list(gd.abysses(now))
+
+
+def difficulties(dungeon: str | None = None, mode: str = "solo") -> list[str]:
+    """그 던전(없으면 이번 주 첫 던전)의 이번 주 열린 난이도. mode: solo 혼자하기 · party 함께하기."""
+    by = gd.abysses(mode=mode)
+    return list(by.get(dungeon) or next(iter(by.values()), []))
+
+# 게임을 앞에 두고만 도는 던전 — 패턴 이동(WASD 를 누른 채)이 있어 뒤에서 돌면 창을 가져오느라 늦는다 (AbyssRepeat.setup)
+FRONT_ONLY = ("흩어진 물길",)
+
+
+
+
+def phase(bot: Bot):
+    """어비스 어디쯤인가 — 패킷·CLI·화면을 함께 보고 우선순위로 고른다 (judge.decide). 값:
+      loading 맵 로딩 · matching 우연한 만남 매칭 중 (보상 화면이 남은 채일 수 있다) · reward 클리어·보상 화면
+      play 판 안 · out 어비스 맵이 아님 · None 모름.
+    우선순위: 로딩(패킷) > 매칭(패킷) > 보상 화면이 보임(화면) > 결과 연출 중(CLI) > 결과 옴(패킷) > 맵(패킷)
+    > 어비스 밖이라는 장소 이름(CLI) > 나가기 버튼이 보임(화면) > 어비스 장소 이름(CLI) — CLI 장소는 패킷이 맵을 모를 때만.
+    눈에 보이는 보상 화면을 패킷 맵보다 앞에 둔다 — 패킷이 끊겨 결과를 놓치자 보상 화면('우연한 만남 찾는 중')을
+    판 안으로 보고 다음 판을 통째로 놓쳤다 (2026-11-03 19:26). 나가기 버튼은 사냥터에도 비슷한 게 있어 패킷 맵 뒤에
+    (2026-10-26 리모콘을 막 켰을 때 사냥터를 어비스로 봄). 패킷이 맵을 모를 땐(리모콘을 막 켬) CLI 의 '어비스 밖' 이
+    그 버튼보다 앞선다 — 사냥터에서 그 버튼을 어비스 나가기로 보고 열 번 눌렀다 (2026-11-16 12:20·12:32).
+    화면은 '보인다' 만 신호로 쓴다 — 안 보이는 건 창에 가려서일 수 있다."""
+    p, st = bot.packets, bot.packets.state
+    known = bot.map_loading() is not None  # 패킷이 지금 맵을 안다
+    frame = []
+
+    def on_screen(*names) -> bool:
+        if not frame:
+            frame.append(bot.frame())
+        return any(n and bot.vision.has(n) and bot.vision.find(frame[0], n) for n in names)
+
+    def packet_map():
+        if not known or st.loading:
+            return None
+        if st.channel_type != ABYSS:
+            return "out"
+        return None if st.abyss_result or st.abyss_matching in (1, 2, 3) else "play"
+
+    asked = []
+
+    def cli_place():  # CLI 장소 이름은 판 안·보상 화면·매칭 중 모두 어비스라 '어비스 어딘가' 까지만 안다 (한 번만 묻는다)
+        if known:
+            return None
+        if not asked:
+            pl = place(bot)
+            asked.append(None if not pl.name else "abyss" if pl.kind == ABYSS else "out")
+        return asked[0]
+
+    def cli_result() -> bool:
+        return Activity.of(bot.activity()).abyss_result
+
+    def exit_button():  # 결과 연출 동안엔 나가기 버튼이 남는다 — 결과를 알면 보지 않는다 (어긋남이 아니다)
+        if cli_result() or (p.ok and st.abyss_result):
+            return None
+        return "play" if on_screen(ui.get("abyss_exit")) else None
+
+    ui = bot.ui
+    v = judge.decide(bot, "어비스", [
+        ("패킷 로딩", lambda: "loading" if bot.map_loading() else None),
+        ("패킷 매칭", lambda: "matching" if p.ok and st.abyss_matching in (1, 2, 3) else None),
+        ("화면 보상", lambda: "reward" if d.reward_button(bot, find=lambda n: on_screen(n) or None)
+                                        or on_screen(ui.get("dungeon_touch")) else None),
+        ("CLI 결과 연출", lambda: "reward" if cli_result() else None),
+        ("패킷 결과", lambda: "reward" if p.ok and st.abyss_result and not st.loading else None),
+        ("패킷 맵", packet_map),
+        ("CLI 장소 밖", lambda: "out" if cli_place() == "out" else None),
+        ("화면 나가기 버튼", exit_button),
+        ("CLI 장소", cli_place),
+    ], same={"matching": {"reward", "abyss", "out"}, "reward": {"abyss"}, "play": {"abyss"},  # 매칭은 필드에서도 기다린다
+             "loading": {"matching", "reward", "abyss"}}).value  # 다음 판으로 넘어가는 로딩엔 매칭·보상 신호가 남는다
+    return "play" if v == "abyss" else v  # CLI 장소만 알면 예전처럼 판 안으로
+
+
+def inside(bot: Bot) -> bool:
+    """어비스 판 안인가 (phase). '다시 하기' 뒤 지난 판 맵에 선 채 매칭을 기다리는 건 판 안이 아니다."""
+    return phase(bot) == "play"
+
+
+def _travel_to_entry(bot: Bot) -> bool:
+    """입장 화면 버튼이 '이동하기' 다 — 캐릭터가 어비스 입구에서 멀다 (캐릭터를 바꾸면 그 캐릭터가 마지막에 있던 곳에서
+    시작해 거의 늘 이렇다 — 2026-10-24 '입장하기' 만 기다리다 실패). 눌러서 입구로 가고, 멀면 빠른 이동(T).
+    도착하면 입장 화면이 고른 탭·난이도 그대로 다시 뜬다 (2026-11-03 혼자하기 실측: 이멘 마하 → 빠른 이동 24초 → '입장하기').
+    그러면 True — 그 창에서 잇는다. 창 없이 메인 화면에 멈췄으면 False (메뉴에서 다시 연다).
+    메인 화면만 기다리면 다시 뜬 입장 화면을 막는 창으로 보고 닫는다 (레이드 선착장과 같은 문제, 2026-10-28)."""
+    bot.log.info("어비스 입구에서 멂 → 이동하기")
+    ui_text.click(bot, gd.text("abyss_move"), gd.region("abyss_entry_right"), what="이동하기", shot="abyss")
+    bot.fast_travel(wait=5)
+    if wait_arrival(bot, lambda: entry.visible(bot), bot.cfg["abyss"]["travel_timeout"], "abyss_travel",
+                    "어비스 입구로 가지 못함", still=3):
+        bot.log.info("어비스 입구 도착 → 입장 화면")
+        return True
+    bot.log.info("이동이 멈췄는데 입장 화면이 없음 → 메뉴에서 다시 엶")
+    return False
+
+
+def where(bot: Bot, dungeon: str) -> str:
+    """지금 어느 화면인가 — 어디서 시작해도 그 자리부터 잇는다 (2026-10-24: 입장 화면을 띄운 채 시작하면
+    메인 화면만 기다리며 멍하니 있었다).
+      play     어비스 안 (나가기 버튼)              reward  클리어·보상 화면
+      main     필드 메인 화면                       menu    메뉴(ESC)가 열려 있음
+      entry    입장 화면 (오른쪽 아래 버튼·'주요 전리품' — tasks/entry.py)
+      matching 매칭 중 — 패킷의 매칭 상태로, 없으면 입장 화면인데 입장하기·이동하기 버튼이 없는 것으로.
+               매칭 중 화면은 필드 + 오른쪽 '우연한 만남' 창 (2026-10-25 captures/abyss)
+      list     어비스 목록 (dungeon 이름이 오른쪽 목록에)
+      loading  맵 로딩 중 (패킷, 모르면 CLI 가 답하지 않는 것으로)    other  그 밖의 창 — ESC 로 닫으면 된다"""
+    # 패킷 매칭은 보상 화면보다 먼저 본다 — 다시 하기를 누른 뒤에도 보상 화면이 남은 채 매칭한다
+    # (2026-10-27 그 사이 일시정지·이어 하기 → 보상 화면으로 보고 나가 버림). 순서는 phase 가 정한다
+    at = phase(bot)
+    if at in ("loading", "play", "matching", "reward"):
+        return at
+    if bot.at_main():
+        return "main"
+    if bot.exists(bot.ui["menu_quit"]):
+        return "menu"
+    if (e := entry.read(bot)):
+        # 버튼이 없는 입장 창은 매칭 중 — 패킷이 매칭을 모를 때만 이렇게 본다 (패킷이 아니라고 했으면 버튼을 못 읽은 입장 창.
+        # 매칭으로 보면 매칭 상한 10분을 헛기다린다)
+        return "entry" if e.button or bot.packets.ok else "matching"
+    if ui_text.find(bot, dungeon, gd.region("abyss_list")):
+        return "list"
+    if bot.map_loading() is None and bot.is_loading():
+        return "loading"
+    return "other"
+
+
+def loot_pending(bot: Bot) -> tuple[int, int] | None:
+    """어비스 목록 왼쪽 아래 '주간 전리품' 칸의 '전리품 받기' 버튼 자리 — 정산할 게 남았을 때만.
+    글자만으로는 모른다: 정산한 뒤에도 버튼은 '전리품 받기' 그대로 흐려지고 'N일 후 수령 가능' 이 붙는다 (2026-11-09 11:27
+    이걸 정산 남음으로 보고 눌러 움직이지 않아 실패). 받을 수 있을 때만 버튼 오른쪽 위에 빨간 점이 있다."""
+    x, y, w, h = gd.region("abyss_loot_dot")
+    dot = bot.frame()[y:y + h, x:x + w].astype(int)
+    b, g, r = dot[..., 0], dot[..., 1], dot[..., 2]
+    # 팝업에 가려 어두워져도 빨강은 남는다 (어둡게 가린 화면에서 RGB 63,08,03)
+    if int(((r > 70) & (r > 3 * g) & (r > 3 * b)).sum()) < 12:
+        return None
+    return ui_text.find(bot, gd.text("abyss_loot"), gd.region("abyss_loot"))
+
+
+LOOT_MENU_LIMIT = 180   # 에반 대화가 열린 뒤 메뉴 '주간 전리품 받기' 를 고르기까지 (빛나는 버튼 글자를 1분 넘게 못 읽은 적 있음)
+LOOT_FINISH_LIMIT = 60  # 고른 뒤 '전리품 정산' 화면을 닫고 메인 화면으로 돌아오기까지
+LOOT_TRIES = 2          # 정산을 해 보고도 목록에 '전리품 받기' 가 남아 있으면 한 번 더
+
+
+def settle_loot(bot: Bot) -> None:
+    """주간 전리품 정산 — 어비스 입장과는 별개 과정이다 (단계 기록·시간 상한이 따로). 어비스 목록이 열린 채로 부른다.
+    주간 초기화(월요일) 뒤에는 정산하기 전엔 어느 어비스도 못 들어간다 ('입장 불가 — 주간 전리품을 먼저 정산하세요', 2026-11-09).
+    흐름 (그날 실기로 확인): '전리품 받기' → 퀘스트 '주간 전리품 수령' 으로 관청 에반에게 자동 이동 → 도착하면 대화가 열림
+    → 인사말 넘김 → 메뉴 '주간 전리품 받기'(Space) → 대사 넘김 → '전리품 정산' 보상 화면 → 확인(Space) → 필드 메인 화면.
+    지난주 덜 돈 콘텐츠(결계 등)가 있으면 그 사이 '마물 퇴치 증표 사용하기' 화면이 뜬다 — 증표로 놓친 전리품을 받는 화면.
+    뜨면 바로 '전리품 받기'(Space)로 받는다 (사용자, 2026-11-09: 재화를 써서라도 받을 것).
+    메뉴 버튼은 '전리품받기' 만 본다 — OCR 이 빛나는 버튼의 '주간' 을 '추간' 으로 읽어 1분 넘게 못 골랐다 (같은 날 12:29).
+    대사로 판단하지 않는다 — 메뉴 버튼 글자(점검자 choose)와 화면 제목으로만 본다.
+    됐는지는 여기서 시간으로 정하지 않는다 — 다시 연 어비스 목록에 '전리품 받기' 가 남았나로 본다 (enter_screen).
+    그래서 단계 상한이 지나도 실패로 치지 않고 로그·화면만 남긴다 (움직이지도 못한 것만 NotSeen — go_talk)."""
+    hit = loot_pending(bot)
+    if not hit:
+        return
+    bot.step("abyss_loot", "주간 전리품 정산")
+    with bot.npc_talk():  # 대화는 여기서 다룬다 — 끼어들기가 넘기지 않게 (대장간 수리와 같음)
+        go_talk(bot, lambda: bot.click(hit), "주간 전리품(관청)", "abyss_loot", bot.cfg["abyss"]["travel_timeout"])
+        mon = monitor.of(bot)
+        ctx = monitor.Ctx("abyss", "주간 전리품", choose=gd.text("abyss_loot_claim"), choose_region="board_choices")
+        chosen, waits, end = False, 0, time.monotonic() + LOOT_MENU_LIMIT
+        while time.monotonic() < end:
+            if ui_text.find(bot, gd.text("abyss_loot_token"), gd.region("abyss_loot_token"), exact=False):
+                bot.log.info("지난주 놓친 전리품 → 마물 퇴치 증표로 받기 (Space)")
+                bot.key("space")
+                bot.sleep(2, 2.5)
+                chosen, end = True, time.monotonic() + LOOT_FINISH_LIMIT
+                continue
+            if ui_text.find(bot, gd.text("abyss_loot_done"), gd.region("abyss_loot_done")):
+                bot.sleep(2.5, 3)  # 받은 물품이 하나씩 그려지는 동안은 확인 버튼이 아직 없다
+                bot.key("space")
+                bot.sleep(1.5, 2)
+                chosen = True
+                continue
+            if chosen and bot.at_main():
+                bot.log.info("주간 전리품 정산 끝")
+                return
+            seen = mon.check(ctx, guard=False)
+            if ctx.take("chosen") and not chosen:
+                chosen, end = True, time.monotonic() + LOOT_FINISH_LIMIT  # 여기부터는 마무리 상한
+            if seen.done == monitor.Did.CHOICE_WAIT:
+                waits += 1
+                if waits == 4:  # 메뉴는 떴는데 '주간 전리품 받기' 를 못 읽음 — 왜 못 읽는지 볼 화면을 남긴다
+                    bot.log.debug(f"'주간 전리품 받기' 를 글자로 못 찾음 ({bot.snapshot('missed_abyss_loot_menu').name})")
+            if not seen.done:
+                bot.sleep(0.8, 1.2)
+    bot.log.warning(f"주간 전리품 정산이 {'마무리' if chosen else '메뉴'} 단계에서 상한을 넘김 — 목록을 다시 열어 확인 "
+                    f"→ {bot.snapshot('abyss_loot_end').name}")
+    bot.to_main()
+
+
+def enter_screen(bot: Bot, dungeon: str, difficulty: str = "", at: str = "", solo: bool = False) -> None:
+    """입장 시도 → 정산이 남았으면(LootPending) 입장을 멈추고 정산 과정 → 끝나면 입장을 다시 이어 간다 (목록부터 다시 연다
+    — 정산하러 관청으로 옮겨 가 목록이 닫혀 있다). 정산을 LOOT_TRIES 번 하고도 남아 있으면 CannotProceed."""
+    for _ in range(LOOT_TRIES):
+        try:
+            return open_entry(bot, dungeon, difficulty, at=at, solo=solo)
+        except LootPending:
+            bot.log.info("주간 전리품이 남아 있음 → 입장을 멈추고 정산부터 (정산 전엔 어비스에 못 들어감)")
+            settle_loot(bot)
+        at = ""
+        bot.step("abyss_open", f"어비스 입장 화면 ({dungeon}) — 정산 뒤 다시")
+    try:
+        return open_entry(bot, dungeon, difficulty, solo=solo)
+    except LootPending:
+        raise CannotProceed(f"주간 전리품을 정산하지 못함 (목록에 '전리품 받기' 가 남음) → {bot.snapshot('abyss_loot_left').name}")
+
+
+MOVE_TRIES = 3  # 입장 창 버튼이 '이동하기' 면 입구로 걸어가 보는 횟수 (가는 길에 몹과 싸워 끊기면 다시)
+
+
+def open_entry(bot: Bot, dungeon: str, difficulty: str = "", _moved: int = 0, at: str = "",
+               solo: bool = False) -> None:
+    """dungeon 입장 화면을 열고 탭('함께하기', solo 면 '혼자하기') · 난이도 · ('함께하기' 면) '우연한 만남' 을 누른다
+    (누르기만 — 맞았는지는 입장하기 뒤 매칭·로딩 신호로 enter 가 안다).
+    at(where 결과)이 입장 화면이나 어비스 목록이면 그 자리부터, 아니면 메인 화면 → 메뉴 → 어비스 → 목록에서 dungeon.
+    버튼이 '이동하기' 면 입구로 간 뒤 다시 연다 (MOVE_TRIES 번까지 — 입구에서 먼 캐릭터는 거의 늘 이렇다, 2026-10-24).
+    버튼 글자를 못 읽었으면 그대로 둔다 — 입장하기(Space)를 누르고 결과로 안다 (예전엔 '입장하기' 가 안 읽히면 한 번도
+    눌러 보지 않고 실패했다).
+    주간 전리품 정산이 남았으면 LootPending 으로 멈춘다 — 정산은 별개 과정이라 여기서 하지 않는다 (enter_screen 으로 부를 것)."""
+    if at == "entry" and not ui_text.find(bot, dungeon, gd.region("abyss_entry_title")):
+        bot.log.info(f"다른 어비스의 입장 화면 → 닫고 '{dungeon}' 로")
+        at = ""
+    if at != "entry":
+        if at != "list":  # 메인 화면 → 메뉴(ESC) → '어비스' → 어비스 목록
+            ui_text.open_menu(bot, "abyss_menu", "메뉴의 어비스", "abyss", menu_open=at == "menu")
+            bot.sleep(1.0, 1.5)
+        if loot_pending(bot):
+            raise LootPending()
+        ui_text.click(bot, dungeon, gd.region("abyss_list"), what=f"어비스 '{dungeon}'", shot="abyss")
+        bot.sleep(1.0, 1.5)
+        # 입장 화면이 열렸나: 오른쪽 아래(버튼·'주요 전리품')로 본다 — 위쪽 탭은 연속 실행 제한 창이 가릴 수 있다
+        for _ in range(6):
+            if entry.visible(bot):
+                break
+            # 전리품 버튼을 못 읽고 지나쳤으면 '입장 불가 — 주간 전리품을 먼저 정산하세요' 가 뜬다 → 닫고 멈춤 (목록은 그대로)
+            if ui_text.find(bot, gd.text("abyss_loot_first"), gd.region("abyss_popup"), exact=False):
+                bot.key("space")
+                bot.sleep(1.0, 1.3)
+                raise LootPending()
+            bot.sleep(1.0, 1.4)
+        else:
+            raise NotSeen(f"'{dungeon}' 입장 화면이 열리지 않음 → {bot.snapshot('abyss').name}")
+    entry.set_tab(bot, solo, "abyss")
+    if difficulty:
+        ui_text.click(bot, difficulty, gd.region("abyss_difficulty"), what=f"난이도 '{difficulty}'", shot="abyss")
+    # 버튼: '이동하기' 면 입구로 가서 다시. 입장하기거나 못 읽었으면 그대로 (입장하기 결과로 안다)
+    e = None
+    for _ in range(3):
+        e = entry.read(bot)
+        if e and e.button:
+            break
+        bot.sleep(1.0, 1.4)
+    if e and e.button == "move":
+        if _moved >= MOVE_TRIES:
+            raise NotSeen(f"'{dungeon}' 입구로 {_moved}번 가도 버튼이 '이동하기' 그대로 → {bot.snapshot('abyss').name}")
+        back = _travel_to_entry(bot)
+        return open_entry(bot, dungeon, difficulty, _moved=_moved + 1, solo=solo, at="entry" if back else "")
+    if not (e and e.button):
+        bot.log.info("입장 창 버튼 글자를 못 읽음 → 그대로 진행 (입장하기 결과로 확인)")
+    if not solo:  # 혼자하기는 매칭(우연한 만남)이 없다
+        entry.chance_on(bot, e if e and e.button else None)
+
+
+RETRY_LOOK = 5   # 보상 화면에서 '다시 하기' 버튼이 그려지길 기다리는 초
+ENTER_TRIES = 3  # 입장하기를 눌러도 매칭·입장이 시작되지 않으면 창을 다시 맞춰 누르는 횟수
+ENTER_TOOK = 8   # 입장하기 뒤 매칭·맵 로딩 신호를 기다리는 초
+
+
+def enter(bot: Bot, dungeon: str, difficulty: str = "", at: str = "", solo: bool = False) -> None:
+    """입장 창을 맞추고(enter_screen — 탭·난이도·우연한 만남은 누르기만) 입장하기(Space). 패킷에 매칭(우연한 만남)이나
+    맵 로딩 신호가 오면 된 것 (press.until — 안 오면 창을 다시 맞춰 ENTER_TRIES 번까지, 그래도면 까닭을 붙여 NotSeen).
+    패킷을 모르면 신호를 기다리지 않는다 (뒤의 매칭·입장 기다림이 상한까지 본다).
+    2026-11-16 사용자: 입장 창인지만 알면 아는 자리를 누르고 결과로 확인."""
+    enter_screen(bot, dungeon, difficulty, at=at, solo=solo)
+    press.until(bot, lambda: bot.key("space"),
+                press.signal(bot, lambda s: s.abyss_matching in (1, 2, 3) or s.loading, ENTER_TOOK,
+                             still=lambda: entry.visible(bot)),
+                "입장하기", tries=ENTER_TRIES, shot="abyss",
+                again=lambda: enter_screen(bot, dungeon, difficulty, at=where(bot, dungeon), solo=solo),
+                why=lambda: entry.describe(bot, solo))
+
+
+def entered_since(bot: Bot, since: float) -> bool | None:
+    """since(monotonic) 뒤에 어비스 맵에 새로 들어왔나. 패킷이 맵을 모르면 None.
+    '다시 하기' 뒤엔 지난 판 맵(보상 화면)에 선 채 매칭을 기다린다 — 패킷이 끊겨 결과를 놓치면 inside 가 그 자리를
+    판 안으로 봐, 매칭 중에 판 진행 → 보상 화면 기다림으로 빠져 다음 판을 통째로 놓쳤다 (2026-11-03 19:26)."""
+    if bot.map_loading() is None:
+        return None
+    st = bot.packets.state
+    return not st.loading and st.channel_type == ABYSS and st.entered_at > since
+
+
+def wait_entered(bot: Bot, timeout: float, since: float | None = None) -> bool:
+    """매칭(우연한 만남)이 잡혀 어비스 안으로 들어갈 때까지. 모두 모이면 저절로 들어간다. 시간 안에 못 들어가면 False.
+    패킷이 있으면 맵을 떠나는 순간 바로 알고, 로딩 동안은 화면을 보지 않는다. 어비스 맵에 들어온 지 10초가 지났는데
+    나가기 버튼이 가려져 있으면 그래도 들어온 것으로 본다 (판 진행 쪽이 가린 창을 넘긴다). 기다리기 시작한 뒤에 들어간
+    어비스 맵만 센다 — '다시 하기' 뒤엔 지난 판 맵에 선 채로 매칭을 기다릴 수 있다. since: 입장·다시 하기를 누른 때."""
+    end = time.monotonic() + timeout
+    start = time.monotonic() if since is None else since
+    while not (inside(bot) and entered_since(bot, start) is not False):
+        if time.monotonic() > end:
+            return False
+        loading = bot.map_loading()
+        st = bot.packets.state
+        if loading:
+            bot.wait_loaded(end - time.monotonic())
+            continue
+        if loading is False and st.channel_type == ABYSS and st.entered_at > start:
+            if time.monotonic() - st.entered_at > 10:
+                bot.log.info("패킷: 어비스 맵에 들어옴 (나가기 버튼은 가려짐)")
+                return True
+            bot.clear_blockers()
+            bot.sleep(1)
+            continue
+        mark = bot.packets.mark()
+        bot.clear_blockers(ocr=True)  # 매칭 중에 퀘스트 클리어 창 등이 뜨면 입장을 막는다 (2026-10-24 06:07)
+        # 3초 쉬되 맵을 떠나기 시작하면 바로 깬다 (창을 닫는 사이에 시작해 이미 끝난 로딩도)
+        if bot.wait_packet(lambda s: s.loading, 3, since=mark) is None:
+            bot.sleep(3)
+    return True
+
+
+class AbyssExit(Exit):
+    """어비스 안에서 나간다: 오른쪽 맨 위 나가기 → '던전에서 퇴장하시겠습니까?' 나가기(Space).
+    나가기 전에 판이 끝났으면(쓰러진 사이 파티가 보스를 잡음 — 결과가 옴) 나가지 않는다 → 부르는 쪽이 클리어로 잇는다.
+    판 밖이라고 ESC 만 누르다 '나가지 못함' 으로 멈췄다 (2026-10-26 사용자 제보)."""
+    NAME, SNAP = "어비스", "abyss_leave"
+
+    def where(self, bot):  # 모르면 누르지 않는다 — 사냥터에도 비슷한 나가기 아이콘이 있다 (2026-11-16 12:20)
+        at = phase(bot)
+        return None if at is None else at == "play"
+
+    def dialog(self, bot, timeout):
+        return DungeonExit.dialog(self, bot, timeout)
+
+    def finished_before(self, bot):
+        return at_reward(bot)
+
+
+def leave(bot: Bot) -> bool:
+    """어비스 판 안에서 나간다 (AbyssExit). 나왔으면 True, 나가기 전에 판이 끝났으면 False."""
+    return AbyssExit().run(bot)
+
+
+def get_out(bot: Bot, at: str | None = None) -> None:
+    """어비스 어디에 있든(매칭 중·판 안·보상 화면) 밖으로 — 캐릭터를 바꾸거나 실패 뒤 정리할 때 (exits.leave_instance)."""
+    at = at or where_settled(bot, lambda: where(bot, bot.cfg["abyss"]["dungeon"]))
+    if at == "matching":  # 매칭은 들어간 뒤 나간다
+        bot.step("abyss_match", "우연한 만남 매칭 중")
+        if wait_entered(bot, bot.cfg["abyss"]["match_timeout"]):
+            at = "play"
+    if at == "play":
+        if not leave(bot):  # 나가기 전에 판이 끝남 → 보상 화면에서 나간다
+            to_reward(bot)
+            exit_reward(bot)
+    elif at == "reward":
+        bot.key("esc")  # 보상 화면 '나가기' — 판은 이미 끝났다
+        bot.sleep(3, 4)
+        wait_settled(bot, bot.cfg["timing"]["loading"])
+
+
+def revives_left(bot: Bot) -> int | None:
+    """남은 부활 횟수 = 이 판의 최대 - 쓴 횟수 (패킷 revive.count, 최대는 판마다 게임이 보내는 값 — 3, 6 을 봤다).
+    화면 '남은 부활 횟수 3/3' 일 때 쓴 0 · 최대 3 (death1 실측). 모르면 None."""
+    st = bot.packets.state
+    if bot.packets.ok and st.revives_max:
+        return max(0, st.revives_max - (st.revives_used or 0))
+    return None
+
+
+def revive_here(bot: Bot) -> bool:
+    """사망 화면에서 '여기서 부활'(R). 부활했으면 True, 못 했으면 False → 부르는 쪽이 나가서 처음부터.
+    막혔는지 미리 알아내려 하지 않는다 — R 을 누르고 정해진 시간 안에 부활 신호가 오는지로 정한다 (사용자 2026-10-25).
+    함께하기 전멸·부활 아이템 없음 등으로 막혀 있으면 R 은 아무 일도 하지 않아 누르는 비용이 없다.
+    (예전엔 화면 글자·버튼 색으로 미리 막힘을 판단했는데, 잘못 읽으면 부활할 수 있는데도 나가 버렸다.)
+    누르기 전에 나가는 것은 확실한 신호뿐: 패킷이 알려 준 이 판의 부활 횟수를 다 씀, 화면의 '전멸하였습니다'.
+    부활 신호: 패킷 revive.item_ok (ReviveUsingConsumable_RSP_SUCCESS) 또는 쓰러짐이 풀림 (패킷 SetDead 0 · CLI IsDead)."""
+    if revives_left(bot) == 0:
+        bot.log.warning(f"부활 횟수를 다 씀 (패킷) → 나감 ({bot.snapshot('abyss_dead').name})")
+        return False
+    # 사망 화면 버튼은 쓰러지고 1~2초 뒤에 뜨고, 그 전의 키는 무시된다 → 버튼이 보일 때까지 잠깐.
+    # 못 찾아도(전멸이면 버튼이 없다) 그냥 누른다 — 판단은 아래 시간 제한이 한다
+    # 전멸이면 '여기서 부활' 이 없고 나가서 다시 들어가는 수밖에 없다 — 함께하기는 나가기 말고 할 수 있는 게 없고,
+    # '캠프파이어에서 부활' 도 캠프파이어를 건드린 적이 없으면 안 된다 (2026-11-03 사용자). 버튼이 없고 화면 가운데
+    # '전멸하였습니다' 화면이면 R 을 누르며 기다리지 않고 바로 나간다 (예전엔 20초쯤 걸렸다). 전멸은 그 아래 '…재도전…' 줄로
+    # 본다 — 첫 줄은 연속 실행 제한 창이 가리는 자리다. 쓰러지기만 한 화면은 '행동불능 · 부활 제한 구역' 이라 '재도전' 이 없다
+    for _ in range(3):
+        if bot.vision.find(bot.frame(), "revive_here"):
+            break
+        if ui_text.find(bot, gd.text("abyss_wiped"), gd.region("abyss_wiped"), exact=False):
+            bot.log.warning(f"전멸 → 바로 나감 ({bot.snapshot('abyss_dead').name})")
+            return False
+        bot.sleep(1.5, 2)
+    mark = bot.packets.mark()
+    bot.key("r")  # '여기서 부활' 단축키 (사용자 확인 2026-10-25) — 버튼 위치가 모드마다 달라도 된다
+    end = time.monotonic() + bot.cfg["abyss"]["revive_timeout"]
+    again = False
+    while time.monotonic() < end:
+        bot.sleep(1.0)
+        if bot.packets.ok and getattr(bot.packets.state, "abyss_result", 0):
+            bot.log.info("부활을 기다리는 사이 판이 끝남 (어비스 결과)")
+            return False  # 부르는 쪽(play)이 결과를 보고 클리어로 잇는다
+        if bot.packets.find("revive.item_ok", mark) or not bot.is_dead():
+            left = revives_left(bot)
+            bot.log.info(f"여기서 부활{f' (남은 부활 {left}번)' if left is not None else ''}")
+            return True
+        if not again and end - time.monotonic() < 5:  # 첫 키가 무시됐을 수 있다 (아직 쓰러진 채일 때만 한 번 더)
+            bot.key("r")
+            again = True
+    bot.log.warning(f"'여기서 부활' 신호가 없음 (전멸·부활 횟수·아이템 없음 등) → 나감 ({bot.snapshot('abyss_dead').name})")
+    return False
+
+
+def play(bot: Bot, run_timeout: float, revive: bool = True, on_revive=lambda: None, tick=lambda act: False) -> str:
+    """어비스 안에서 끝날 때까지 지켜본다. 'clear' | 'dead' | 'timeout'.
+    쓰러지면 revive 일 때 '여기서 부활' 하고 이어 한다 (못 하면 'dead' → 나가서 처음부터).
+    배고프면 그때마다 음식을 먹는다 (어비스 반복은 일일 숙제의 하루 횟수 제한 없이).
+    쓰러짐('여기서 부활')과 판 중에 끼어든 창(퀘스트 클리어 창·대화)은 점검자가 (fight.watch).
+    tick(act): 확인마다 부른다 — 보스전 궁극기·팔라딘 변신 (Repeat.skills).
+    흩어진 물길은 예외로 투창병 속성 패턴을 맡는다 — 내가 대상이 되면 패킷이 기다림을 깨우고 바로 움직인다 (tasks/spear).
+    뼈대는 fight.Fight, 어비스만 다른 것은 AbyssPlay."""
+    return AbyssPlay(bot, run_timeout, revive, on_revive, tick).run()
+
+
+class AbyssPlay(Fight):
+    KIND, WHAT = "abyss", "판 진행"
+
+    def __init__(self, bot: Bot, *a):
+        self.mark = bot.packets.mark()
+        super().__init__(bot, *a)
+        self.spear = SpearDodge(bot)
+        self.here = True
+
+    def cleared(self) -> bool:  # 패킷: 이 판의 결과가 옴 (클리어 순간, CLI 결과 연출 표시와 같은 때)
+        return self.bot.packets.find("abyss.result", self.mark, lambda v: bool(v.get("abyss"))) is not None
+
+    def wake(self, s):  # 3초 쉬되 결과가 오거나 투창 대상이 되면 바로 깬다
+        return self.cleared() or self.spear.wanted()
+
+    def packet_end(self):
+        if self.cleared():
+            self.bot.log.info("패킷: 어비스 결과 옴 → 클리어")
+            return "clear"
+        if self.spear.wanted():
+            self.spear.run()
+            return self.NEXT
+
+    def act_end(self, act):
+        return "clear" if Activity.of(act).abyss_result else None
+
+    def before_watch(self, act):
+        self.here = inside(self.bot)
+
+    def watch_ocr(self):  # 나가기 버튼이 가려졌으면 퀘스트 완료 창은 템플릿이 안 맞을 때가 있어 글자로도 본다
+        return not self.here
+
+    def dead_end(self, seen):  # 부활을 기다리는 사이 파티가 보스를 잡았으면 쓰러진 채로 클리어 — 나가면 안 된다
+        return "clear" if self.cleared() or at_reward(self.bot) else "dead"
+
+    def screen_end(self, seen):
+        if not self.here and seen.what in (d.REWARD, d.TOUCH):
+            return "clear"  # 클리어 연출로 HUD 가 사라졌다 (CLI 를 못 읽었을 때)
+        if not self.here and not seen.done and touch_prompt_visible(self.bot):
+            return "clear"
+
+    def fighting(self, seen):
+        return self.here and not seen.done
+
+
+def at_reward(bot: Bot) -> bool:
+    """클리어 화면('화면을 터치해 주세요')이나 보상 화면(다시 하기 / 나가기)인가 (phase)."""
+    return phase(bot) == "reward"
+
+
+def to_reward(bot: Bot) -> str:
+    """클리어 화면을 넘겨 보상 화면(나가기 / 다시 하기)까지. 뒤에서는 클릭하지 않는다 (장면 넘기기는 기다리고,
+    '화면을 터치해 주세요' 는 Space). 'reward', 또는 이미 다시 하기가 눌려 매칭·입장 중이면 'matching' —
+    그땐 '다시 하기' 버튼이 '우연한 만남 찾는 중' 으로 바뀌어 안 나온다 (2026-11-03 19:27 그 버튼만 기다리다
+    들어간 다음 판에서 120초 서 있다 실패)."""
+    end = time.monotonic() + 120
+    mon = monitor.of(bot)
+    # 연출은 기다리고 (scene_skip 꺼짐), 클리어와 함께 깨진 퀘스트(주말 어비스 3판 등)의 완료 창·대화는 넘기고,
+    # 화면 터치는 뒤에서면 Space 로 — 점검자가 한다. 보상 화면이 보이면 그 일은 끝 (다시 하기·나가기는 repeat 가 정한다)
+    ctx = monitor.Ctx("abyss", "클리어 뒤", finish_on={d.REWARD: "reward"})
+    n = 0
+    while not d.reward_button(bot):  # 보상 화면 판정은 점검자와 같은 것 (detect.reward_button)
+        if time.monotonic() > end:
+            raise StepTimeout(f"어비스 보상 화면이 나오지 않음 → {bot.snapshot('abyss_reward').name}")
+        n += 1
+        if phase(bot) in ("matching", "loading") or bot.map_loading():
+            bot.log.info("보상 화면: 이미 다시 하기로 매칭·입장 중 → 들어가길 기다림")
+            return "matching"
+        # 완료 창이 보상 화면을 가리면 템플릿이 안 맞을 때가 있다 — 두 번에 한 번은 글자로 '확인'·'화면 터치' 도 본다
+        seen = mon.check(ctx, guard=False, ocr=n % 2 == 0)
+        if seen.finish:
+            break
+        if not seen.done and seen.what in (d.MAIN, d.UNKNOWN) and touch_prompt_visible(bot):
+            handlers.touch(bot, ctx, seen)  # 반투명 '화면을 터치해 주세요' (그림이 잘 안 맞는다)
+        bot.sleep(1.5, 2.0)
+    bot.sleep(1.5, 2.0)  # 보상 연출
+    return "reward"
+
+
+def exit_reward(bot: Bot) -> None:
+    """보상 화면 '나가기'(ESC) → 필드 메인 화면까지."""
+    bot.key("esc")
+    bot.sleep(3, 4)
+    # 필드로 나오는 로딩이 끝나 메인 화면이 보일 때까지 — 3~4초만 보고 끝내면 다음 카드(다른 캐릭터)가
+    # 로딩 화면에서 ESC 메뉴를 찾다 실패했다 (2026-10-24 21:24)
+    if not wait_settled(bot, bot.cfg["timing"]["loading"]):
+        if at_reward(bot):  # 나가기 키가 안 들었다
+            bot.key("esc")
+            if not wait_settled(bot, bot.cfg["timing"]["loading"]):
+                # 여기서 그냥 넘어가면 다음 일(수리 등)이 '메인 화면으로 돌아오지 못함' 으로만 끝난다
+                bot.log.warning(f"보상 화면에서 나가지 못한 채 다음으로 → {bot.snapshot('abyss_exit_reward').name}")
+    # 판 수를 채운 판에서 깨진 퀘스트(주말 어비스 3판 등)의 완료 창이 필드로 나온 뒤 뜬다. 메인 HUD 가
+    # 보이는 채로 떠서 ESC 를 먹어, 다음 카드가 캐릭터를 바꾸려다 메뉴가 안 열려 실패했다 (2026-10-24 21:24).
+    # 무한 반복은 '다시 하기' Space 가 그 창의 '확인' 까지 눌러 넘어갔다
+    for _ in range(3):
+        bot.sleep(1.5, 2)
+        bot.clear_blockers(ocr=True)
+
+
+class AbyssRepeat(Repeat):
+    """어비스 반복. 판이 끝나면 보상 화면에서 '다시 하기'(Space)로 같은 던전을 다시 매칭한다.
+    어디서 시작하나 (where): 어비스 안이면 그 판부터, 클리어·보상 화면이면 보상부터 (2026-10-23 클리어 화면에서
+    시작해 입장부터 하려다 ESC 가 듣지 않아 멈췄다), 매칭 중이면 들어가길 기다리고, 입장 화면·어비스 목록이면
+    그 자리부터, 그 밖(메인·다른 창)은 메뉴에서 입장."""
+    KIND, TITLE = "abyss", "어비스"
+    INSIDE = ("play", "reward", "matching")
+
+    def target(self):
+        return self.a["dungeon"] + (" / " + self.a["difficulty"] if self.a.get("difficulty") else "")
+
+    def where(self):
+        return where_settled(self.bot, lambda: where(self.bot, self.a["dungeon"]))
+
+    def boss_fight(self, s):
+        # 어비스는 보스전 신호가 없다 (CLI 던전 상태도 NotInDungeon) — 모닥불 뒤 연출(보스 등장)이 나온 뒤가 보스전 (boss_scene).
+        # 맵 종류는 보지 않는다 (판 도중에 리모콘을 켜면 맵 진입을 못 봐 모른다 — 반복이 어비스 안에서만 부른다). 연출 중엔 안 누른다
+        return s.boss_scene
+
+    @property
+    def solo(self) -> bool:
+        """혼자하기로 하나 ([abyss] mode = "solo"). 기본은 함께하기 (우연한 만남)."""
+        return self.a.get("mode") == "solo"
+
+    match_at = 0.0  # 입장·다시 하기를 누른 때 — 그 뒤에 새로 들어간 맵만 이번 판 (entered_since)
+
+    def setup(self):
+        self.bot.scene_skip = False  # 연출은 누르지 않고 기다린다 — 누르면 뒤에서 돌던 게임이 앞으로 나온다 (2026-10-25 사용자)
+        if self.behind and self.a.get("dungeon") in FRONT_ONLY:
+            # 투창·틱택토는 WASD 를 누른 채 움직여야 해 게임이 앞에 있어야 한다. 뒤에서 키를 보낸 뒤 앞으로 가져오면
+            # 게임이 첫 활성화를 놓쳐 두 번 가져오느라 약 3초 걸려, 5초 안에 칸에 서야 하는 틱택토가 늦었다
+            # (11-03 20:51·20:55). 사용자: "물결은 백그라운드로 돌리게 하면 안되겠다"
+            self.behind = False
+            self.bot.log.info("흩어진 물길은 게임을 앞에 두고 돈다 (패턴 이동이 늦지 않게)")
+
+    def leave_for_switch(self, at):
+        get_out(self.bot, at)
+
+    def loop(self, at):
+        bot, a = self.bot, self.a
+        bot.background = self.behind
+        stage = {"play": "play", "reward": "reward", "matching": "match"}.get(at, "entry")
+        if at != "main":
+            bot.log.info({"play": "이미 어비스 안 → 이 판부터 이어서", "reward": "어비스 클리어 화면 → 보상부터",
+                          "matching": "매칭 중 → 들어가길 기다림", "entry": "어비스 입장 화면 → 그 자리부터",
+                          "list": "어비스 목록 → 그 자리부터", "menu": "메뉴가 열려 있음 → 그 자리부터"}.get(at, f"알 수 없는 화면({at}) → 닫고 메뉴에서 입장"))
+        while True:
+            if stage == "entry":
+                # 입장은 메뉴·목록·버튼을 눌러야 해서 게임을 앞에 두고 한다. 들어간 뒤로는 다시 뒤에서
+                bot.step("abyss_open", f"어비스 입장 화면 ({a['dungeon']})")
+                bot.background = False
+                self.match_at = time.monotonic()
+                enter(bot, a["dungeon"], a.get("difficulty", ""), at=at, solo=self.solo)
+                at = ""  # 처음 한 번만 — 다음 입장은 판이 끝난 자리(메인)에서
+                self.to_back()
+                stage = "match"
+            if stage == "match" and not (inside(bot) and entered_since(bot, self.match_at) is not False):
+                bot.step("abyss_match", "입장 중 (혼자하기)" if self.solo else "우연한 만남 매칭 중")
+                self.emit(stage="match")
+                if not wait_entered(bot, a["match_timeout"], self.match_at):
+                    self.stat["retries"] += 1
+                    bot.log.warning(f"{a['match_timeout'] / 60:.0f}분 안에 매칭·입장이 되지 않음 → 처음부터 다시 "
+                                    f"→ {bot.snapshot('abyss_match').name}")
+                    bot.to_main()
+                    stage = "entry"
+                    continue
+            if stage != "reward" and self.recheck("play"):
+                stage, at = "entry", ""
+                continue
+            r = "clear" if stage == "reward" else self.play_round(play, "abyss_play")
+            if r == "dead":
+                bot.log.warning("쓰러짐 → 나가서 처음부터 다시 입장")
+            elif r == "timeout":
+                bot.log.warning(f"{a['run_timeout'] / 60:.0f}분 안에 끝나지 않음 → 나가서 다시 입장 → {bot.snapshot('abyss_timeout').name}")
+            if r in ("dead", "timeout") and not leave(bot):
+                r = "clear"  # 나가기 전에 판이 끝남 — 보상부터 잇는다
+            if r in ("dead", "timeout"):
+                self.stat["deaths" if r == "dead" else "retries"] += 1
+                stage = "entry"
+            else:
+                self.cleared()  # 결과가 온 순간 센다 — 보상 화면 정리를 기다리지 않는다
+                got = to_reward(bot)
+                if got == "matching" and not self.done():
+                    self.match_at = bot.packets.state.entered_at  # 지난 판 맵 뒤에 들어가는 맵이 다음 판
+                    stage = "match"
+                    continue
+                if self.done():
+                    exit_reward(bot)
+                    break
+                if self.yield_between(lambda: exit_reward(bot)) or self.repair_between(lambda: exit_reward(bot)):
+                    stage = "entry"
+                    continue
+                self._again()
+                stage = "match"
+            if self.done():
+                break
+
+    def _again(self):
+        """보상 화면 '다시 하기' (Space) → 같은 던전·난이도로 다시 매칭. 보상 화면은 '나가기' 로도 알아보므로 '다시 하기' 가
+        그려지길 잠깐 기다린다 — 안 보여도 누르고 매칭 신호로 본다."""
+        bot = self.bot
+        try:
+            bot.wait(bot.ui["dungeon_retry"], timeout=RETRY_LOOK)
+        except StepTimeout:
+            bot.log.info("보상 화면에 '다시 하기' 가 안 보임 → 그대로 Space (매칭 신호로 확인)")
+        self.match_at = time.monotonic()
+        bot.key("space")
+        for _ in range(2):  # 키가 안 들었으면 — 뒤에서는 키를 한 번 더, 앞에서는 누른다
+            # 패킷: 매칭 상태(요청·찾는 중·잡힘)나 맵 로딩이 오면 눌린 것. 모르면 2~3초 뒤 화면의 '다시 하기' 버튼으로
+            took = bot.wait_packet(lambda s: s.abyss_matching in (1, 2, 3) or s.loading, 3, since=bot.input_mark)
+            if took or took is None:
+                # 패킷이 모르면 다시 누르지 않는다 — 다시 하기를 누른 뒤 매칭하는 동안에도 보상 화면(버튼)이 남아 있어,
+                # 버튼이 보인다고 또 누르면 매칭이 취소된다 (안 눌렸으면 매칭 상한 뒤 처음부터 다시 한다)
+                break
+            if not bot.exists(bot.ui["dungeon_retry"]):
+                break
+            if bot.behind():  # 뒤에서 도는 중이면 클릭(게임을 앞으로 가져옴) 대신 키 (2026-10-24 사용자)
+                bot.key("space")
+            else:
+                bot.click(bot.ui["dungeon_retry"])
+
+
+def repeat(bot: Bot, cfg: dict, runs: int = 0, minutes: float = 0, on_event=lambda e: None,
+           character: dict | None = None, loot=None, iface=None) -> dict:
+    """어비스를 반복한다 (AbyssRepeat). runs·minutes 가 0 이면 사람이 멈출 때까지 (StopRequested).
+    시간이 다 되면 그 판은 마저 끝내고 보상 화면에서 나간다. character({slot, name})가 있으면 그 캐릭터로 접속해서
+    한다 (지금 그 캐릭터면 다시 고르지 않는다). 반환 {clears, deaths, retries, revives, seconds}."""
+    return AbyssRepeat(bot, cfg, runs, minutes, on_event, character, loot, iface).run()

@@ -1,0 +1,67 @@
+; 모비 커넥터 리모콘 설치 파일 (tools\build.py 가 판 번호·경로를 넘겨 부른다)
+; 사용자별 설치(관리자 권한 없이 설치) — 예전 2.x 설치판과 같은 %LOCALAPPDATA%\Programs 아래.
+; 사용자 데이터는 %LOCALAPPDATA%\MabiDaily 라 지우거나 덮어써도 남는다.
+
+#ifndef AppVersion
+  #define AppVersion "0.0.0"
+#endif
+
+[Setup]
+AppId={{6E0C5B3A-8F1D-4C2B-9E57-4A1F2D7B9C31}
+AppName=모비 커넥터 리모콘
+AppVersion={#AppVersion}
+AppPublisher=Oxtakarnus
+AppPublisherURL=https://github.com/Oxtakarnus/mobi-remote
+DefaultDirName={localappdata}\Programs\mobi-remote-py
+DefaultGroupName=모비 커넥터 리모콘
+DisableProgramGroupPage=yes
+PrivilegesRequired=lowest
+OutputDir={#OutputDir}
+OutputBaseFilename=mobi-remote-{#AppVersion}-setup
+SetupIconFile=icon.ico
+UninstallDisplayIcon={app}\mobi-remote.exe
+Compression=lzma2
+SolidCompression=yes
+WizardStyle=modern
+; 실행 중인 리모콘이 있으면 닫으라고 묻는다 (덮어쓰기 실패 방지)
+CloseApplications=yes
+
+[Languages]
+Name: "korean"; MessagesFile: "compiler:Languages\Korean.isl"
+
+[Tasks]
+Name: "desktopicon"; Description: "바탕 화면에 바로 가기 만들기"; GroupDescription: "추가 작업:"
+
+[InstallDelete]
+; app\·_internal\ 은 통째로 바꾼다 — 예전 판에만 있던 파일이 남아 새 것과 섞이지 않게 (패치 받다 남은 것도)
+Type: filesandordirs; Name: "{app}\_internal"
+Type: filesandordirs; Name: "{app}\app"
+Type: filesandordirs; Name: "{app}\app.new"
+Type: filesandordirs; Name: "{app}\app.old"
+Type: filesandordirs; Name: "{app}\update"
+
+[Files]
+Source: "{#SourceDir}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
+
+[UninstallDelete]
+; 실행 중에 생긴 것 (__pycache__, 패치로 바뀐 app\, 받아 둔 패치)
+Type: filesandordirs; Name: "{app}\app"
+Type: filesandordirs; Name: "{app}\update"
+
+[Icons]
+; 예전 2.x(Electron) 설치판과 같은 이름·자리 → 2.x 의 새 판 알림으로 이 설치 파일을 실행하면 바로 가기가 새 판을 가리키게 된다
+Name: "{userprograms}\모비 커넥터 리모콘"; Filename: "{app}\mobi-remote.exe"
+Name: "{userdesktop}\모비 커넥터 리모콘"; Filename: "{app}\mobi-remote.exe"; Tasks: desktopicon
+
+[Run]
+Filename: "{app}\mobi-remote.exe"; Description: "지금 실행"; Flags: nowait postinstall skipifsilent shellexec
+; 패킷 감시는 Npcap 이 있어야 켜진다. 무료판 Npcap 은 재배포·무인 설치를 허락하지 않아(OEM 라이선스 필요) 같이 넣지 못한다
+; → 없을 때만 받는 곳을 여는 체크를 띄운다 (기본 체크). 없어도 리모콘은 화면·CLI 로 돈다
+Filename: "https://npcap.com/#download"; Description: "Npcap 받는 페이지 열기 (패킷 감시에 필요, 무료 — 없어도 리모콘은 동작)"; Flags: nowait postinstall skipifsilent shellexec; Check: not NpcapInstalled
+
+[Code]
+// Npcap 은 64비트 System32\Npcap 에 깔린다 (리모콘 packet_monitor.NPCAP_DIR 와 같은 곳). 32비트 설치기라 sysnative 로 본다
+function NpcapInstalled: Boolean;
+begin
+  Result := FileExists(ExpandConstant('{sysnative}\Npcap\wpcap.dll')) or FileExists(ExpandConstant('{sys}\Npcap\wpcap.dll'));
+end;
