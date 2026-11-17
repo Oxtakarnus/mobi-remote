@@ -41,6 +41,7 @@ from . import names as NM
 from . import stage as ST
 from . import textures as TX
 from . import tools as T
+from . import xaf as XF
 from .export import Exporter, ExportError
 
 log = logging.getLogger("mabi")
@@ -54,8 +55,8 @@ FORMAT = 17   # 꺼낸 모델 형식 — 바뀌면 캐시를 비운다 (2: 뼈�
              # 12: 발광 emit·가장자리 빛 fresnel, 13: 모든 모델에 게임 부위 fit.slot — 백팩,
              # 14: 스타킹 stocking, 15: 보석 gem, 16: 의상 이펙트 fx·소켓 노드, 17: 재질 배정은 게임 prefab 을 따른다)
 MESH_FORMAT = 1   # 모델 json 에만 더한 것 — 바뀌면 동작 클립 밖의 모델만 비운다, 텍스처·아이콘은 둔다 (1: 옷·머리 흔들림 cloth)
-CLIP_FORMAT = 3   # 꺼낸 동작 클립 형식 — 바뀌면 동작 클립(clip_*·anim_*)만 비운다 (2: 묶음 안 여러 클립 중 그 파일 것 — anim.pick_clip,
-                  #  3: 오일러 커브를 X → Y → Z 순서로)
+CLIP_FORMAT = 4   # 꺼낸 동작 클립 형식 — 바뀌면 동작 클립(clip_*·anim_*)만 비운다 (2: 묶음 안 여러 클립 중 그 파일 것 — anim.pick_clip,
+                  #  3: 오일러 커브를 X → Y → Z 순서로, 4: 표정 짝에 표정 키 face — xaf)
 TOOL_BODY = "Female"   # 무기 기본 자세 (모델 json 은 체형 공용 — 다른 체형 자세는 attach 표에서 뷰어가 고른다)
 
 
@@ -101,6 +102,7 @@ class DressRoom:
         self._lib_err: Exception | None = None   # 실행용 메시 목차를 못 읽은 까닭 (make 가 모델을 반쪽으로 표시)
         self._fx: FX.Effects | None = None    # 의상 이펙트 (처음 꺼낼 때)
         self._motions: dict | None = None     # 동작 탭 목록 (motions)
+        self._xaf: XF.Library | None = None   # 표정 키 목차 (처음 표정 짝을 꺼낼 때)
         self._source: dict | None = None      # 꺼낸 캐시의 게임 파일·형식 (stamp.json 과 같은 값 — source)
         self._model_locks: dict[str, threading.Lock] = {}
 
@@ -188,6 +190,7 @@ class DressRoom:
             self._lib_err = None
             self._fx = None
             self._motions = None
+            self._xaf = None
 
     def _check_stamp(self, stamp) -> None:
         """게임이 패치됐으면 꺼내 둔 모델·텍스처·아이콘을 비운다 (cab.json 은 assets, names.json 은 names 가 따로 비교한다).
@@ -269,7 +272,7 @@ class DressRoom:
             if kind == "anim":
                 N.export(pack, fbx, out)
             elif kind == "facial":
-                N.export(pack, fbx, out, keep=N.face_only)
+                N.export(pack, fbx, out, keep=N.face_only, face=self._face_keys(fbx))
             elif kind == "bdc":
                 B.export(self._gd(), fbx, out)
             elif kind == "decal":
@@ -293,6 +296,18 @@ class DressRoom:
                     prefab=item.prefab if item is not None else None)
 
         return self._build(rel, make, (ExportError, B.BodyError, MD.PartError))
+
+    def _face_keys(self, fbx: str) -> dict | None:
+        """표정 짝의 표정 키 (입·눈 그림 칸, 눈 메시 보이기, 눈꺼풀 모프 — xaf). 못 읽으면 경고만 하고 뼈만 튼다."""
+        try:
+            with self._lock:
+                if self._xaf is None:
+                    self._xaf = XF.Library(Path(self._gd()))
+                lib = self._xaf
+            return lib.keys(fbx)
+        except Exception as e:   # noqa: BLE001 — 표정 키는 덤이라 무엇이 틀려도 뼈 클립은 낸다
+            TX.problem("표정 키를 읽지 못했습니다", e)
+            return None
 
     def _build(self, rel: str, make, errors: tuple = ()) -> str:
         """make(경로) 로 캐시 파일 rel 을 만든다 — 모델마다 잠금 하나, 이미 있으면 그대로.

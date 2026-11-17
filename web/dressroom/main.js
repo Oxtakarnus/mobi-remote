@@ -172,7 +172,7 @@ function tick(dt) {
   if (!D.rig) return;
   D.pose(dt);
   life.gaze = gazeOn();
-  life.update(dt, D.rig, stage.camera, D.base[MESH.eyes] || null);
+  life.update(dt, D.rig, stage.camera, D.faceBlinks ? null : D.base[MESH.eyes] || null);   // 표정이 눈꺼풀을 움직이면 깜빡이기는 쉰다
   D.physics(dt);
   D.effects(dt, stage.camera);
 }

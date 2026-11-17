@@ -88,21 +88,30 @@ export class Motion {
     return new Motion(out, true);
   }
 
-  /** 동작 시작부터 time(초) 지난 자세를 뼈대에. */
-  apply(rig, time) {
+  /** 동작 시작부터 time(초) → [그 단계, 단계 안 시간, 반복?] — 마지막 단계만 반복한다. */
+  at(time) {
     let t = Math.max(0, time);
     const n = this.steps.length;
     for (let i = 0; i < n - 1; i++) {
       const s = this.steps[i];
-      if (t < s.clip.length) {
-        s.clip.apply(rig, t, false);
-        if (s.face) s.face.apply(rig, t, false);
-        return;
-      }
+      if (t < s.clip.length) return [s, t, false];
       t -= s.clip.length;
     }
-    const s = this.steps[n - 1];
-    s.clip.apply(rig, t);
-    if (s.face) s.face.apply(rig, t);
+    return [this.steps[n - 1], t, true];
+  }
+
+  /** 동작 시작부터 time(초) 지난 자세를 뼈대에. */
+  apply(rig, time) {
+    const [s, t, loop] = this.at(time);
+    s.clip.apply(rig, t, loop);
+    if (s.face) s.face.apply(rig, t, loop);
+  }
+
+  /** 그 시간 표정 짝의 표정 키를 out(Map)에 — 넣었으면 true. */
+  faceKeys(time, out) {
+    const [s, t, loop] = this.at(time);
+    if (!s.face || !s.face.keys) return false;
+    s.face.keys.sample(t, loop, out);
+    return true;
   }
 }

@@ -99,10 +99,10 @@ export function seamRule(inner, outer) {
 }
 
 // 눈 모델 메시 이름
-export const EYE_MESH = { left: /^Mesh_EyeBase_L(_|$)/, right: /^Mesh_EyeBase_R(_|$)/, ball: /^Mesh_Eye(Ball|High|Shade)(_|$)/,
+export const EYE_MESH = { left: /^Mesh_EyeBase_L(_|$)/, right: /^Mesh_EyeBase_R(_|$)/, ball: /^Mesh_Eye(Ball|High|Shade|BasePlane)(_|$)/,
   brow: /^Mesh_EyeBrow(_|$)/ };
 
-/** 눈 모델 메시가 가린 눈 부위(hidden)에도 보이나 — 눈동자·하이라이트는 두 눈 다 가렸을 때만 숨긴다 (한 메시라). */
+/** 눈 모델 메시가 가린 눈 부위(hidden)에도 보이나 — 눈동자·하이라이트·표정 눈 판은 두 눈 다 가렸을 때만 숨긴다 (한 메시라). */
 export function eyeVisible(name, hidden) {
   if (EYE_MESH.left.test(name)) return !hidden.has('LeftEye');
   if (EYE_MESH.right.test(name)) return !hidden.has('RightEye');

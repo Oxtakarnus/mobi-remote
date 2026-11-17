@@ -19,6 +19,7 @@ import * as THREE from './vendor/three.module.min.js';
 import { OrbitControls } from './vendor/OrbitControls.js';
 import { eyeVisible, EYE_MESH } from './cover.js';
 import { FxPlayer } from './fx.js';
+import { MOUTH, IRIS_CELL, EYE_CELL, MORPH, VIS } from './facial.js';
 
 const GAIN = 128 / 95;
 
@@ -67,6 +68,9 @@ uniform int kind;          // 0 염색 · 1 그림 · 2 단색
 uniform vec3 dye0, dye1, dye2, base;
 #ifdef IRIS
 uniform vec4 irisAtlas, irisST;
+#endif
+#ifdef EMOEYE
+uniform vec4 emoAtlas;   // 표정 눈 그림 표 (4×8 — 칸은 표정 키)
 #endif
 #ifdef MOUTH
 uniform sampler2D mouthMap;
@@ -330,6 +334,9 @@ void main() {
 #ifdef IRIS
   uv = atlasUv(uv, irisST, irisAtlas);
 #endif
+#ifdef EMOEYE
+  uv = atlasUv(uv, vec4(1.0, 1.0, 0.0, 0.0), emoAtlas);
+#endif
   vec4 tex = kind < 2 ? texture2D(map, uv) : vec4(1.0);
 #ifdef ALPHATEST
   if (tex.a < 0.5) discard;   // 금속·가죽 재질은 알파가 구멍이 아니라 그 재질 자리 표시라 자르지 않는다
@@ -339,6 +346,10 @@ void main() {
   if (alpha < 0.01) discard;
 #else
   float alpha = 1.0;
+#endif
+#ifdef EMOEYE
+  alpha = tex.a;
+  if (alpha < 0.01) discard;
 #endif
   vec3 albedo;
 #ifdef STOCKING
@@ -512,6 +523,13 @@ function makeMaterial(m, texBase) {
     uniforms.irisAtlas = { value: v4(vec._BaseMapAtlasSize) };
     uniforms.irisST = { value: v4(vec._BaseMapScalePosition, [1, 1, 0, 0]) };
   }
+  const emoEye = /_Eye_Emotion_/.test(m.name);
+  if (emoEye) {
+    // 표정 눈 판 (Mesh_EyeBasePlane — 평소엔 숨김, 표정 키가 켠다) — 그림 표의 한 칸을 빛 없이 얹는다
+    defines.EMOEYE = '';
+    defines.UNLIT = '';
+    uniforms.emoAtlas = { value: new THREE.Vector4(4, 8, 1, 0) };
+  }
   if (m.emotion) {
     // 입 — 표정 표(4×8)의 기본 칸. 두 번째 UV(uvMouth) 를 쓰는 메시에만 붙는다 (loadModel 이 정한다)
     const st = vec._EmotionMouthMapScalePosition || [1, 1, 0, 0];
@@ -521,14 +539,14 @@ function makeMaterial(m, texBase) {
     uniforms.mouthOn = { value: 0 };
     uniforms.mouthST = { value: new THREE.Vector4(sb[0] * st[0], sb[1] * st[1], sb[2] + st[2], sb[3] + st[3]) };
   }
-  if (!m.skin && !eyeRole(m.name)) clothFeatures(m, defines, uniforms, texBase, held);
+  if (!m.skin && !eyeRole(m.name) && !emoEye) clothFeatures(m, defines, uniforms, texBase, held);
   // _CullType 은 Unity CullMode — 0 양면, 1 뒷면만, 2 앞면만. 값이 없는 피부 셰이더는 앞면만
   const cull = m.float ? m.float._CullType : undefined;
   const side = cull === 0 ? THREE.DoubleSide : cull === 1 ? THREE.BackSide : THREE.FrontSide;
   const mat = new THREE.ShaderMaterial({ vertexShader: VERT, fragmentShader: FRAG, side, defines, uniforms });
-  if (blend) {
+  if (blend || emoEye) {
     mat.transparent = true;
-    mat.depthWrite = !!fl._ZWrite;   // 안경알은 깊이를 안 쓴다 (뒤 눈이 가려지지 않게)
+    mat.depthWrite = !emoEye && !!fl._ZWrite;   // 안경알·표정 눈은 깊이를 안 쓴다 (뒤 눈이 가려지지 않게)
   }
   mat.userData = { info: m, tex: held };   // tex: 이 머티리얼이 잡은 텍스처 (variant 는 빌려 쓰므로 없다)
   eyeMaterial(mat, eyeRole(m.name));
@@ -598,6 +616,17 @@ function clothChannels(info) {
 }
 
 /** 재질 i 의 갈래 (같은 텍스처를 쓴다 — clone 은 텍스처까지 복제해 아직 안 읽힌 그림을 놓친다). mats 끝에 더한다. */
+/** 표정 키의 그림 칸 값 → 칸 번호 (1부터 — 보간이 넘친 0·음수는 첫 칸). */
+const cell = (v) => Math.max(1, v);
+
+/** 표정 키 메시 보이기 둘이 같은가 (Map 이름 → bool, null). */
+function sameVis(a, b) {
+  if (!a || !b) return a === b;
+  if (a.size !== b.size) return false;
+  for (const [k, v] of a) if (b.get(k) !== v) return false;
+  return true;
+}
+
 function variant(mats, i) {
   const src = mats[i];
   const mat = src.clone();
@@ -733,6 +762,11 @@ export class Model {
     this.toolUsed = new Map(); // 도구 조각(attach 항목) → 실제로 놓은 상태 값 (poseTools — 소켓이 없으면 꺼낼 때 상태)
     this.fx = null;         // 의상 이펙트 (fx.js FxPlayer — 모델이 보이고 후드 모양이 맞을 때만 돈다)
     this.fxTex = [];        // 이펙트가 잡은 텍스처 url
+    this.faceVis = null;    // 표정 키가 정한 메시 보이기 (이름 → bool, 없으면 null) — setFace
+    this.faceMorphs = new Set();   // 표정 키가 정한 모프 (표정이 끝나면 0 으로)
+    this.faceMouth = null;  // 표정 키의 입 {on, cell, rot, st} (없으면 null)
+    this.faceOn = false;    // 지난번 setFace 에 표정 키가 있었나
+    this.mouthForce = 0;    // 장식이 정한 입 칸 (setMouth — 표정 키보다 앞선다)
   }
 
   /** 옷의 가림 규칙 (mabi/dress/cover.py — 없으면 null). */
@@ -745,11 +779,13 @@ export class Model {
     return this.meta.fit || null;
   }
 
-  /** 메시 하나를 보이나 — 내보낼 때 숨김·몸 자르는 고리·옷 자르는 판·모델 숨김·머리 단계·후드 모양·가린 눈·무기 상태. */
+  /** 메시 하나를 보이나 — 내보낼 때 숨김(표정 키가 켜고 끈다)·몸 자르는 고리·옷 자르는 판·모델 숨김·머리 단계·후드 모양·가린 눈·무기 상태. */
   meshVisible(o) {
     const f = o.userData.flags;
     const tool = f.piece === undefined ? null : this.toolShown(f.piece);
-    if (!this.shown || (tool === null ? f.hidden : !tool) || f.cut || f.sep) return false;
+    const fv = this.faceVis ? this.faceVis.get(o.name) : undefined;
+    const hidden = fv === undefined ? f.hidden : !fv;
+    if (!this.shown || (tool === null ? hidden : !tool) || f.cut || f.sep) return false;
     if (f.hair !== undefined && this.hairLevel !== null && f.hair !== this.hairLevel) return false;
     if (f.hood && f.hood !== this.hood) return false;
     return !this.eyeHide || eyeVisible(o.name, this.eyeHide);
@@ -938,15 +974,71 @@ export class Model {
     }
   }
 
-  /** 입 모양 덮어쓰기 — 표정 표 칸(1부터, 풍선껌 같은 장식이 정한다) 또는 0(평소 입: 꾸미기 입이나 재질 기본 칸). */
+  /** 입 모양 덮어쓰기 — 표정 표 칸(1부터, 풍선껌 같은 장식이 정한다) 또는 0(평소 입). 표정 키의 입보다 앞선다. */
   setMouth(cell) {
+    this.mouthForce = cell || 0;
+    this.paintMouth();
+  }
+
+  /** 입 표 칸·회전·크기·자리 — 장식 칸 → 표정 키 → 재질 기본 순. 덮어쓰지 않으면 평소 입(꾸미기 입이나 재질 기본 칸). */
+  paintMouth() {
+    const force = this.mouthForce, f = !force && this.faceMouth && this.faceMouth.on ? this.faceMouth : null;
     for (const m of this.mats) {
-      const a = m.uniforms.mouthAtlas;
-      if (!a) continue;
-      if (m.userData.mouthBase === undefined) m.userData.mouthBase = a.value.z;
-      a.value.z = cell || m.userData.mouthBase;
-      m.uniforms.mouthOn.value = cell ? 1 : 0;
+      const u = m.uniforms;
+      if (!u.mouthAtlas) continue;
+      const vec = m.userData.info.vec || {};
+      const at = vec._EmotionMouthMapAtlasSize || [4, 8, 1, 0];
+      const st = vec._EmotionMouthMapScalePosition || [1, 1, 0, 0];
+      const sb = vec._EmotionMouthMapScalePositionBase || [1, 1, 0, 0];
+      const s = f ? f.st.map((x, i) => x ?? st[i]) : st;
+      u.mouthAtlas.value.z = force || (f && f.cell != null ? cell(f.cell) : at[2]);
+      u.mouthAtlas.value.w = f ? f.rot ?? at[3] : at[3];
+      u.mouthST.value.set(sb[0] * s[0], sb[1] * s[1], sb[2] + s[2], sb[3] + s[3]);
+      u.mouthOn.value = force || f ? 1 : 0;
     }
+  }
+
+  /** 표정 키 (facial.js — 열쇠 → 값) — 메시 보이기·눈꺼풀 모프·눈동자 칸·표정 눈 칸·입. null 이면 평소 얼굴로. */
+  setFace(vals) {
+    if (!vals && !this.faceOn) return;
+    this.faceOn = !!vals;
+    let vis = null;
+    if (vals) {
+      for (const o of this.meshes) {
+        const x = vals.get(o.name + VIS);
+        if (x !== undefined) (vis || (vis = new Map())).set(o.name, x > 0.5);
+      }
+    }
+    if (!sameVis(vis, this.faceVis)) {
+      this.faceVis = vis;
+      this.refresh();
+    }
+    const used = new Set();
+    if (vals) {
+      for (const [k, v] of vals) {
+        if (!k.startsWith(MORPH)) continue;
+        const n = k.slice(MORPH.length);
+        this.setMorph(n, Math.min(Math.max(v, 0), 1));
+        used.add(n);
+      }
+    }
+    for (const n of this.faceMorphs) if (!used.has(n)) this.setMorph(n, 0);
+    this.faceMorphs = used;
+    const iris = vals && vals.get(IRIS_CELL), eye = vals && vals.get(EYE_CELL);
+    for (const m of this.mats) {
+      const u = m.uniforms;
+      if (u.irisAtlas) u.irisAtlas.value.z = iris != null ? cell(iris) : (m.userData.info.vec._BaseMapAtlasSize || [1, 1, 1, 0])[2];
+      if (u.emoAtlas) u.emoAtlas.value.z = eye != null ? cell(eye) : 1;
+    }
+    const g = (k) => (vals ? vals.get(MOUTH + k) : undefined);
+    const on = g('_MouthShowType');
+    this.faceMouth = on === undefined ? null : {
+      on: on > 0.5,
+      cell: g('_EmotionMouthMapAtlasSize.z'),
+      rot: g('_EmotionMouthMapAtlasSize.w'),
+      st: ['x', 'y', 'z', 'w'].map((c) => g('_EmotionMouthMapScalePosition.' + c)),
+    };
+    this.paintMouth();
   }
 
   /** 문신 색만 바꾼다. */

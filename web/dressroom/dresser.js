@@ -11,6 +11,7 @@ import { BodyFit } from './body.js';
 import { Motion } from './motion.js';
 import { ClothSet } from './cloth.js';
 import { fxTime } from './fx.js';
+import { hasMorph } from './facial.js';
 
 export const ONE = ['Top', 'Bottom'];      // 한 벌(OnePiece)과 같이 못 입는 부위
 // 장식·무기 — 몸을 가리지 않고 몸 셰이프도 안 옮긴다 (손에 든 부채가 손바닥을 숨기지 않게)
@@ -75,6 +76,8 @@ export class Dresser {
     this.expr = null;          // 고른 표정 클립 (anim.js Clip — 얼굴 뼈만, 동작 위에 반복)
     this.exprStem = null;      // 그 표정 줄기 (setExpr)
     this.exprT0 = 0;
+    this.faceVals = new Map(); // 이번 프레임 표정 키 (동작의 표정 짝 → 고른 표정 순으로 덮는다 — facial.js)
+    this.faceBlinks = false;   // 표정 키가 눈꺼풀을 움직이나 (그동안 저절로 깜빡이기는 쉰다)
     this.decals = new Map();   // 데칼 부품 모델 → 그림 주소
     this.bodyDecal = null;     // 지금 몸 문신 데칼 값 (Model.setDecal 'body') — 옷의 피부 조각에도 얹는다
   }
@@ -553,14 +556,31 @@ export class Dresser {
     }
   }
 
-  /** 매 프레임 — 기본 자세 → 동작 → 표정 → 몸 조절. 시선·깜빡임(life.js)은 부르는 쪽이 그 뒤에. */
+  /** 매 프레임 — 기본 자세 → 동작 → 표정 → 몸 조절, 표정 키를 얼굴에. 시선·깜빡임(life.js)은 부르는 쪽이 그 뒤에
+   *  (표정 키가 눈꺼풀을 움직이면 faceBlinks — 깜빡이기를 쉬게 한다). */
   pose(dt) {
     if (!this.rig) return;
     this.time += dt;
     this.rig.rest(false);
-    if (this.move && this.clip) this.clip.apply(this.rig, this.time - this.clipT0);
-    if (this.expr) this.expr.apply(this.rig, this.time - this.exprT0);   // 동작의 표정 짝보다 위
+    const vals = this.faceVals;
+    vals.clear();
+    let face = false;
+    if (this.move && this.clip) {
+      const t = this.time - this.clipT0;
+      this.clip.apply(this.rig, t);
+      face = this.clip.faceKeys(t, vals);
+    }
+    if (this.expr) {   // 동작의 표정 짝보다 위
+      const t = this.time - this.exprT0;
+      this.expr.apply(this.rig, t);
+      if (this.expr.keys) {
+        this.expr.keys.sample(t, true, vals);
+        face = true;
+      }
+    }
     if (this.fit) this.fit.apply();
+    for (const m of this.base) if (m) m.setFace(face ? vals : null);
+    this.faceBlinks = face && hasMorph(vals);
   }
 
   /** 흔들림 한 걸음 — pose 뒤 시선·다른 뼈 고치기까지 다 끝난 다음 부른다 (cloth.js). 흔든 팀 수.

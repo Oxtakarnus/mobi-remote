@@ -1,4 +1,6 @@
 // 동작 재생 — mabi/dress/anim.py 가 프레임마다 뽑아 둔 뼈 트랙(위치·회전·크기)을 공용 뼈대에 얹는다.
+// 표정 짝 클립은 표정 키(facial.js — 입·눈 그림 칸, 눈 메시 보이기, 눈꺼풀 모프)도 갖는다.
+import { FaceKeys } from './facial.js';
 
 /** 회전 키 둘 사이 (d 의 p0·p1 에서 x,y,z,w) → out. 게임 곡선에서 뽑은 키는 길이가 정확히 1 이 아니어서
  *  three.js slerp 는 작은 각(내적 ≥ 1)을 같은 값으로 보고 건너뛴다 — 그러면 그 뼈만 키마다 계단(30fps)으로 움직여
@@ -23,6 +25,7 @@ export class Clip {
     this.fps = meta.fps;
     this.frames = meta.frames;
     this.duration = meta.duration;
+    this.keys = meta.face ? new FaceKeys(meta.face) : null;   // 표정 키 (표정 짝만)
     this.tracks = meta.tracks.map((t) => {
       const w = t.kind === 'r' ? 4 : 3;
       return { path: t.path, kind: t.kind, n: t.n, w, data: new Float32Array(bin, t.off, t.n * w), rig: null, bone: null };

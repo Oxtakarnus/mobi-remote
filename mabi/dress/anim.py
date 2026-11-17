@@ -167,7 +167,9 @@ def pick_clip(clips: list, stem: str):
     return None
 
 
-def export(pack: A.AssetPack, fbx: str, out_json: Path, keep=None) -> dict:
+def export(pack: A.AssetPack, fbx: str, out_json: Path, keep=None, face: dict | None = None) -> dict:
+    """동작 fbx → 클립 json + bin. keep: 남길 뼈 경로 거르기 (표정 짝은 face_only).
+    face: 표정 키 (xaf.convert — 표정 짝만) — 있으면 meta["face"] 에 넣고, 뼈 트랙이 없어도 낸다."""
     env = pack.open([fbx])
     name = fbx.rsplit("/", 1)[-1]
     clip = pick_clip([o.read() for o in env.objects if o.type.name == "AnimationClip"], name.rsplit(".", 1)[0])
@@ -178,7 +180,9 @@ def export(pack: A.AssetPack, fbx: str, out_json: Path, keep=None) -> dict:
         for n in skeleton(root)[0]:
             paths[zlib.crc32(n["path"].encode("utf-8"))] = n["path"]
     meta, data = decode(clip, paths, keep=keep)
-    if not meta["tracks"]:
+    if face:
+        meta["face"] = face
+    elif not meta["tracks"]:
         raise ExportError(f"동작의 뼈 경로를 맞추지 못했습니다: {fbx.rsplit('/', 1)[-1]}")
     out_json = Path(out_json)
     write_atomic(out_json.with_suffix(".bin"), data)

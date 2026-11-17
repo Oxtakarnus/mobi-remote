@@ -1,7 +1,8 @@
-// 드레스룸 동작 탭 시험 (node tests/dress_motion.test.mjs) — web/dressroom/motion.js · anim.js Clip
+// 드레스룸 동작 탭 시험 (node tests/dress_motion.test.mjs) — web/dressroom/motion.js · anim.js Clip · facial.js
 import assert from 'node:assert/strict';
 import { Clip, lerpQuat } from '../web/dressroom/anim.js';
 import { Motion, MotionTable } from '../web/dressroom/motion.js';
+import { FaceKeys, hasMorph } from '../web/dressroom/facial.js';
 
 let n = 0;
 const t = (name, fn) => { fn(); n++; console.log('PASS', name); };
@@ -39,6 +40,29 @@ t('시작 단계는 한 번, 마지막 단계는 반복', () => {
   assert.equal(Math.round(r.x('B')), 5);
   assert.equal(Math.round(r.x('A')), 5);   // 표정도 같은 시간
   assert.equal(m.picked, true);
+});
+
+t('표정 키 — 칸은 섞지 않고 모프는 섞는다, 동작 단계와 같은 시간', () => {
+  const keys = { fps: 30, frames: 3, tracks: [
+    { o: 'Mesh_EyeBase_L', p: 'MT_BlinkDown_L', t: 'morph', v: [0, 1, 0] },
+    { o: 'Mesh_Skin_Head', p: '_EmotionMouthMapAtlasSize.z', t: 'shader', v: [1, 25, 25] },
+    { o: 'Mesh_EyeBasePlane', p: 'Visibility', t: 'vis', v: [1] }] };
+  const k = new FaceKeys(keys), out = new Map();
+  k.sample(0.5 / 30, true, out);
+  assert.equal(out.get('morph/MT_BlinkDown_L'), 0.5);
+  assert.equal(out.get('Mesh_Skin_Head/_EmotionMouthMapAtlasSize.z'), 1);
+  assert.equal(out.get('Mesh_EyeBasePlane/Visibility'), 1);
+  assert.ok(hasMorph(out));
+  assert.equal(hasMorph(new Map([['Mesh_EyeBall/Visibility', 0]])), false);
+  // 클립 meta.face → Clip.keys, Motion.faceKeys 는 apply 와 같은 단계·시간
+  const face = clip(3, 'A');
+  face.keys = new FaceKeys(keys);
+  const m = new Motion([{ clip: clip(31), face: null }, { clip: clip(3, 'B'), face }], true);
+  assert.equal(m.faceKeys(0.5, new Map()), false);   // 시작 단계는 표정 짝 없음
+  const o2 = new Map();
+  assert.equal(m.faceKeys(1 + 1 / 30, o2), true);
+  assert.ok(Math.abs(o2.get('morph/MT_BlinkDown_L') - 1) < 1e-9);
+  assert.equal(new Clip({ fps: 30, frames: 1, duration: 0, tracks: [], face: keys }, new ArrayBuffer(0)).keys.frames, 3);
 });
 
 const TABLE = {
