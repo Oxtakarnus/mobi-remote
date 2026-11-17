@@ -15,7 +15,7 @@
 릴리스에는 설치 파일과 패치를 둘 다 올린다.
 
 설치 파일 이름은 '...-setup.exe' 로 끝나야 한다 — 예전(2.x) 리모콘의 새 판 확인이 GitHub 최신 릴리스에서
-이 이름의 파일을 받아 실행한다. 사용자 데이터는 설치 폴더가 아니라 %LOCALAPPDATA%\\MabiDaily 에 있어(mabi/paths.py)
+이 이름의 파일을 받아 실행한다. 사용자 데이터는 설치 폴더가 아니라 %LOCALAPPDATA%\\MobiRemote 에 있어(mabi/paths.py)
 새 판으로 덮어써도 남는다.
 """
 import ast

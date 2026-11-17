@@ -3,7 +3,8 @@
 - 리소스(읽기 전용): 템플릿, 기본 config.toml. 설치판은 설치 폴더의 app\\ (패치로 바뀌는 곳, gui.py) 에 코드와 같이 있다.
 - 데이터(쓰기): 설정, 캐릭터 프로필, 하루 기록, 로그, 스크린샷, 실행 리포트.
     개발 중(파이썬으로 실행): 프로젝트 폴더 그대로 (지금까지의 배치 유지)
-    exe(포터블): 실행 파일 옆 MabiDaily_data\\ , 쓸 수 없는 위치면 %LOCALAPPDATA%\\MabiDaily\\
+    exe: %LOCALAPPDATA%\\MobiRemote\\ (포터블은 실행 파일 옆 MobiRemote_data\\ , 쓸 수 없는 위치면 LOCALAPPDATA)
+    3.26.0 까지는 이름이 MabiDaily 였다 — 처음 켤 때 옛 폴더를 새 이름으로 옮긴다 (default_data_dir)
 - paths.json(데이터 폴더 기준 위치에 있음)으로 데이터 폴더 전체나 로그·스크린샷 폴더만 따로 바꿀 수 있다.
 """
 import json
@@ -13,7 +14,8 @@ import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 
-APP_NAME = "MabiDaily"
+APP_NAME = "MobiRemote"
+OLD_NAMES = ("MabiDaily",)   # 예전 데이터 폴더 이름 (3.26.0 까지)
 PROJECT = Path(__file__).resolve().parent.parent
 
 
@@ -38,15 +40,34 @@ def _writable(d: Path) -> bool:
 
 
 def default_data_dir() -> Path:
-    """개발: 프로젝트 폴더. exe: %LOCALAPPDATA%\\MabiDaily\\ (설치판을 지우거나 새 판으로 덮어써도 설정·기록이 남게).
-    exe 옆에 portable.txt 가 있으면 무설치판으로 보고 exe 옆 MabiDaily_data\\ (쓸 수 없는 위치면 LOCALAPPDATA)."""
+    """개발: 프로젝트 폴더. exe: %LOCALAPPDATA%\\MobiRemote\\ (설치판을 지우거나 새 판으로 덮어써도 설정·기록이 남게).
+    exe 옆에 portable.txt 가 있으면 무설치판으로 보고 exe 옆 MobiRemote_data\\ (쓸 수 없는 위치면 LOCALAPPDATA).
+    옛 이름(OLD_NAMES) 폴더만 있으면 새 이름으로 옮긴다."""
     if not frozen():
         return PROJECT
     here = Path(sys.executable).resolve().parent
-    portable = here / f"{APP_NAME}_data"
-    if (here / "portable.txt").exists() and _writable(portable):
-        return portable
-    return Path(os.environ.get("LOCALAPPDATA", Path.home())) / APP_NAME
+    if (here / "portable.txt").exists():
+        portable = _renamed(here, "{}_data")
+        if _writable(portable):
+            return portable
+    return _renamed(Path(os.environ.get("LOCALAPPDATA", Path.home())), "{}")
+
+
+def _renamed(parent: Path, form: str) -> Path:
+    """parent 아래 새 이름 폴더 (form 의 {} 자리에 APP_NAME). 새 폴더가 없고 옛 이름 폴더가 있으면 새 이름으로 옮긴다 —
+    못 옮기면(다른 프로그램이 안의 파일을 열어 둠 등) 이번엔 옛 폴더를 그대로 쓰고 다음에 켤 때 다시 옮긴다."""
+    new = parent / form.format(APP_NAME)
+    if new.exists():
+        return new
+    for name in OLD_NAMES:
+        old = parent / form.format(name)
+        if old.is_dir():
+            try:
+                old.rename(new)
+                return new
+            except OSError:
+                return old
+    return new
 
 
 @dataclass

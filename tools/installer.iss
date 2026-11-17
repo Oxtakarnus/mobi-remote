@@ -1,6 +1,6 @@
 ; 모비 커넥터 리모콘 설치 파일 (tools\build.py 가 판 번호·경로를 넘겨 부른다)
 ; 사용자별 설치(관리자 권한 없이 설치) — 예전 2.x 설치판과 같은 %LOCALAPPDATA%\Programs 아래.
-; 사용자 데이터는 %LOCALAPPDATA%\MabiDaily 라 지우거나 덮어써도 남는다.
+; 사용자 데이터는 %LOCALAPPDATA%\MobiRemote (3.26.0 까지 MabiDaily — 리모콘이 처음 켤 때 옮김) 라 지우거나 덮어써도 남는다.
 
 #ifndef AppVersion
   #define AppVersion "0.0.0"
