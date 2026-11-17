@@ -6,6 +6,7 @@
 클립 자료 (Unity Mecanim, 확인한 것):
   m_ClipBindingConstant.genericBindings  커브 묶음마다 path(뼈 경로 CRC32)·attribute(1 위치 · 2 회전 · 3 크기 · 4 오일러)
                                          — 위치·크기·오일러는 커브 3개, 회전(쿼터니언)은 4개를 차례로 쓴다
+                                         오일러는 X → Y → Z 순서로 돈다 (Unity 기본 Z → X → Y 가 아니다 — 아래 _euler_to_quat)
   m_MuscleClip.m_Clip.data               커브 번호 순서대로 Streamed → Dense → Constant
     Streamed  u32 배열을 풀면 프레임(시간 f32, 키 수 i32, 키마다 커브 번호 i32·계수 f32×4) 반복.
               키 뒤 구간 값 = ((c0·dt + c1)·dt + c2)·dt + c3. 맨 앞·뒤 프레임은 ±무한 시간(기울기용) — 뺀다.
@@ -107,7 +108,7 @@ def decode(clip, paths: dict[int, str], fps: int = FPS, keep=None) -> tuple[dict
             continue
         kind = _KIND[b.attribute][0]
         v = vals[:, cur:cur + k]
-        if kind == "e":   # 오일러(도) → 쿼터니언 (Unity 순서 ZXY)
+        if kind == "e":   # 오일러(도) → 쿼터니언 (X → Y → Z)
             v = _euler_to_quat(v)
             kind = "r"
         if np.all(np.abs(v - v[0]) < 1e-6):
@@ -131,7 +132,11 @@ def _qmul(a: np.ndarray, b: np.ndarray) -> np.ndarray:
 
 
 def _euler_to_quat(e: np.ndarray) -> np.ndarray:
-    """Unity Quaternion.Euler — Z 다음 X 다음 Y 로 돈다 (q = qy·qx·qz)."""
+    """동작 클립 오일러 커브(도) → 쿼터니언. X 다음 Y 다음 Z 로 돈다 (q = qz·qy·qx).
+    클립의 오일러 커브는 모델링 도구의 회전 순서를 그대로 지닌다 — Unity 기본(Z → X → Y)으로 풀면 Y 가 ±90° 근처인
+    뼈가 프레임마다 180° 가까이 뒤집힌다 (레트로댄스 골반: (-90, 90, 0) → (0, 90, 90) 은 XYZ 로는 같은 자세).
+    2026-11-17 오일러 커브가 든 클립 35개를 순서 여섯 가지로 풀어 프레임 사이 각 변화를 비교 — 34개가 XYZ 에서
+    가장 매끈했고 나머지 하나는 XYZ·ZXY 가 비슷했다. 바인딩의 customType 은 늘 0 이라 순서를 따로 적어 두지 않는다."""
     h = np.radians(np.asarray(e, np.float64)) / 2
     z0 = np.zeros(len(h))
 
@@ -139,7 +144,7 @@ def _euler_to_quat(e: np.ndarray) -> np.ndarray:
         v = [z0, z0, z0, np.cos(h[:, i])]
         v[i] = np.sin(h[:, i])
         return np.stack(v, 1)
-    return _qmul(_qmul(axis(1), axis(0)), axis(2)).astype(np.float32)
+    return _qmul(_qmul(axis(2), axis(1)), axis(0)).astype(np.float32)
 
 
 def pick_clip(clips: list, stem: str):

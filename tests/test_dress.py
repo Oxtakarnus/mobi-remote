@@ -341,12 +341,18 @@ class AnimTest(unittest.TestCase):
         out = N._sample_streamed(keys, np.array([0.0, 0.5, 1.0, 2.0]))
         self.assertEqual(out.tolist(), [2.0, 2.5, 5.0, 5.0])
 
-    def test_euler_order_zxy(self):
+    def test_euler_order_xyz(self):
         q = N._euler_to_quat(np.array([[0, 90, 0]], np.float32))[0]
         np.testing.assert_allclose(q, [0, math.sqrt(0.5), 0, math.sqrt(0.5)], atol=1e-6)
         # (90, 90, 0): X 로 먼저 돌고 Y 로 — z 축은 -y 로 간다 (Y 먼저면 x 로 간다)
         q = N._euler_to_quat(np.array([[90, 90, 0]], np.float32))[0]
         np.testing.assert_allclose(_rotate(q, [0, 0, 1]), [0, -1, 0], atol=1e-6)
+        # (0, 90, 90): Y 다음 Z — x 축은 Y 로 -z 에 간 뒤 Z 로는 그대로 (Z 를 먼저 돌면 y 로 간다)
+        q = N._euler_to_quat(np.array([[0, 90, 90]], np.float32))[0]
+        np.testing.assert_allclose(_rotate(q, [1, 0, 0]), [0, 0, -1], atol=1e-6)
+        # Y 가 90° 면 X·Z 가 겹친다 — 클립이 (-90, 90, 0) 과 (0, 90, 90) 을 섞어 써도 같은 자세
+        a, b = N._euler_to_quat(np.array([[-90, 90, 0], [0, 90, 90]], np.float32))
+        self.assertAlmostEqual(abs(float(np.dot(a, b))), 1.0, places=5)
 
     def test_decode(self):
         def bind(path, attr):
