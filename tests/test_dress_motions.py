@@ -185,6 +185,27 @@ class BuildTest(unittest.TestCase):
         self.assertIn("HF@PlayerCommon_FaceOnly_Grin_Facial", t["clips"])
         self.assertNotIn("HF@PlayerCommon_FaceOnly_Grin_Facial", t["facial"])
 
+    def test_timelines(self):
+        names = ["Emotion_Bye_HF", "Emotion_Fire", "Emotion_Gift_Start", "Emotion_Gift_Loop", "Emotion_Dull", "Emotion_Pop_HM_02"]
+        tl = mock.Mock()
+        tl.timelines.return_value = {n.lower(): n for n in names}
+        tl.useful.side_effect = lambda n: n != "Emotion_Dull"
+        lst = [
+            {"id": "e:Bye", "cat": "emotion", "steps": {"Female": {"": ["HF@PlayerCommon_Emotion_Bye"]}}},
+            {"id": "e:Fire", "cat": "emotion", "steps": {"Female": {"": ["HF@Fire_Start", "HF@Fire_Loop"]}}},
+            {"id": "e:Gift", "cat": "emotion", "steps": {"Female": {"": ["HF@PlayerCommon_Emotion_Gift_Start", "HF@PlayerCommon_Emotion_Gift_Loop"]}}},
+            {"id": "e:Dull", "cat": "emotion", "steps": {"Female": {"": ["HF@Dull"]}}},
+            {"id": "e:Pop", "cat": "emotion", "steps": {"Male": {"": ["HM@Pop"]}, "Female": {"": ["HF@Pop"]}}},
+            {"id": "s:Walk", "cat": "common", "steps": {"Female": {"": ["HF@Emotion_Fire"]}}}]
+        acts = {("Pop", "PlayerMale"): ["Emotion_Pop_HM_02"]}
+        got = M.timelines(lst, acts, tl)
+        self.assertEqual(got, {
+            "HF@PlayerCommon_Emotion_Bye": "Emotion_Bye_HF",          # 체형 끝 이름
+            "HF@Fire_Start": "Emotion_Fire",                          # 하나뿐이면 첫 단계
+            "HF@PlayerCommon_Emotion_Gift_Start": "Emotion_Gift_Start",   # 단계 줄기 이름
+            "HF@PlayerCommon_Emotion_Gift_Loop": "Emotion_Gift_Loop",
+            "HM@Pop": "Emotion_Pop_HM_02"})                           # 시트 (그 배우만)
+
     def test_without_sheets(self):
         t = M.build(None, PATHS)   # 시트를 못 읽으면 꾸미기만
         self.assertEqual({e["cat"] for e in t["list"]}, {"customize"})

@@ -1200,6 +1200,19 @@ const _v = new THREE.Vector3();
 /** 메시 삼각형 거르기 — drop(a, b, c) 가 참인 삼각형을 뺀다 (drop 이 없으면 처음대로 다). 처음 인덱스는 mesh.userData.index0 에
  *  두고, 같은 버퍼(처음 크기) 앞쪽에 채운 뒤 그룹 범위만 줄인다 — 버퍼를 새로 만들면 GPU 쪽 옛 버퍼가 남는다.
  *  눈썹 한쪽 숨기기(setEyeHide)와 옷에 덮인 몸·안쪽 옷 숨기기(fit.js hideCovered)가 쓴다. */
+/** 감정 표현 이펙트 (모델 id 'tl:<타임라인>' — {fx}, mabi/dress/fx.py timeline) → 메시 없이 이펙트만 든 모델.
+ *  그릴 것이 없으면 null. 장면에 넣고 빼기·놓기는 다른 모델과 같다 (Stage.add·remove). */
+export async function loadTimeline(id, url) {
+  const meta = await (await fetch(url)).json();
+  if (!meta || !meta.fx) return null;
+  const texBase = url.slice(0, url.lastIndexOf('/') + 1) + '../tex/';
+  const group = new THREE.Group();
+  group.name = id;
+  const model = new Model(id, meta, group, [], []);
+  model.fx = new FxPlayer(meta.fx, model, (name, repeat) => texture(texBase + name + '.png', model.fxTex, repeat));
+  return model;
+}
+
 export function keepTriangles(mesh, drop = null) {
   const g = mesh.geometry, u = mesh.userData;
   if (!u.index0) u.index0 = { idx: g.index.array.slice(), groups: g.groups.map((x) => ({ ...x })) };

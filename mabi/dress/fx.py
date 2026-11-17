@@ -7,7 +7,11 @@
                                       PosRefBoneName·RotRefBoneName (옷 prefab 의 EffectSocket_* 노드나 몸 뼈, #MODEL_ROOT = 발밑),
                                       LocalOffset·LocalRotation(도, Unity 오일러), Rotation/PositionAttachmentInfo.EffectAttachmentType
                Type AdditiveRenderer  MaterialPath (Fx/… mat), TargetRendererNames — 그 메시를 이 재질로 한 번 더 그린다
-  AssetPackages  Fx/1_Effect/Character/0_Common/Fashion/FX_*.prefab — ParticleSystem 노드 트리. 재질·그림·메시는 Fx/**/0_Resource/,
+  감정 표현도 동작마다 타임라인이 있다 (동작 표 timeline — motions). 구간마다 시작·끝 시각이 있어 동작 시간에 맞춰 튼다:
+  timeline()  몸에 붙는 Effect 구간만 (소품에 붙는 것·소품·IK 는 아직) → {tracks (+ begin·end·follow), prefabs}
+              begin·end 초 (IsInfinite 면 end 없음 — 동작이 다시 돌 때까지), follow = PositionAttachmentInfo 가 Attached
+              (NotAttached 는 시작한 자리에 남는다)
+AssetPackages  Fx/1_Effect/Character/0_Common/Fashion/FX_*.prefab · …/Emotion/FX_*.prefab (감정 표현) — ParticleSystem 노드 트리. 재질·그림·메시는 Fx/**/0_Resource/,
                  셰이더는 Shaders/MMN/FX/·Shaders/MMN/CH/MMN_CharacterFX* 에 있다. 이펙트용 CAB 표는 dressroom\\fx\\ 에 따로 둔다
                  (캐릭터 표를 키우지 않게 — 무대 stage 와 같은 방식).
 
@@ -45,6 +49,7 @@ SHEET = "StageObjectModelTimeline"
 FORMAT = 1                  # fx.json 형식
 COL_ALWAYS, COL_HOOD = 2, 4
 FASHION = "/Fx/1_Effect/Character/0_Common/Fashion/"
+EMOTION = "/Fx/1_Effect/Character/0_Common/Emotion/"
 ASSET = "Assets/PatchableAssets/"
 N = 16                      # 곡선·그라디언트 표본 칸 (N+1 개)
 _TL = "StageTimelines/"
@@ -79,7 +84,7 @@ STATIC = {"dur": 1.0, "loop": True, "prewarm": False, "delay": 0.0, "space": 0, 
 
 def keep(p: str) -> bool:
     """이펙트용 CAB 표가 기억할 자산 경로 (바꾸면 assets._CAB_VER 를 올린다 — 표를 다시 만든다)."""
-    return (FASHION in p or ("/Fx/" in p and "/0_Resource/" in p) or "/Shaders/MMN/FX/" in p
+    return (FASHION in p or EMOTION in p or ("/Fx/" in p and "/0_Resource/" in p) or "/Shaders/MMN/FX/" in p
             or "/Shaders/MMN/CH/MMN_CharacterFX" in p)
 
 
@@ -342,15 +347,57 @@ class Effects:
     def has(self, model: str) -> bool:
         return model in self.table()
 
-    def _timeline(self, name: str) -> dict | None:
+    def _open_res(self) -> None:
         if self._res is None:
             self._res = gf.Resources(self.gd, lambda p: _TL in p, main=True)
             self._tls = {p.rsplit("/", 1)[-1][: -len(_TL_END)]: p for p in self._res.paths if p.endswith(_TL_END)}
+
+    def _timeline(self, name: str) -> dict | None:
+        self._open_res()
         p = self._tls.get(name)
         if p is None:
             return None
         d = sjon.load(self._res.read(p))
         return d if isinstance(d, dict) else None
+
+    def timelines(self) -> dict[str, str]:
+        """타임라인 이름 (소문자 → 이름) — 동작 표가 감정 표현과 잇는다."""
+        with self._lock:
+            self._open_res()
+            return {k.lower(): k for k in self._tls}
+
+    def useful(self, name: str) -> bool:
+        """감정 표현에 그릴 것이 있는 타임라인인가 (몸에 붙는 Effect 구간 — timeline 이 꺼내는 것)."""
+        with self._lock:
+            tl = self._timeline(name)
+        return any(pl for _iv, pl in _effects_on_self(tl))
+
+    def timeline(self, name: str) -> dict | None:
+        """감정 표현 타임라인 → 모델 json 의 fx 값 (구간 시각 begin·end·follow 를 더한 tracks, prefabs). 없으면 None."""
+        with self._lock:
+            tl = self._timeline(name)
+            tracks, prefabs, index = [], [], {}
+            for iv, pl in _effects_on_self(tl):
+                i = self._prefab_index(_effect_path(pl), index, prefabs)
+                if i is None:
+                    continue
+                tr = _track(pl, i, False)
+                tr["begin"] = float(iv.get("BeginTime") or 0)
+                tr["end"] = None if iv.get("IsInfinite") else float(iv.get("EndTime") or 0)
+                tr["follow"] = ((pl.get("PositionAttachmentInfo") or {}).get("EffectAttachmentType") or "Attached") == "Attached"
+                tracks.append(tr)
+            return {"tracks": tracks, "overlays": [], "prefabs": prefabs} if tracks else None
+
+    def _prefab_index(self, path: str, index: dict, prefabs: list) -> int | None:
+        """FX prefab 경로 → prefabs 번호 (처음이면 꺼내 더한다, 못 꺼내면 None)."""
+        if not path:
+            return None
+        if path not in index:
+            pf = self.prefab(ASSET + path)
+            index[path] = len(prefabs) if pf else None
+            if pf:
+                prefabs.append(pf)
+        return index[path]
 
     def _assets(self) -> tuple[A.AssetPack, T.TextureStore]:
         if self._pack is None:
@@ -381,17 +428,9 @@ class Effects:
                 for iv in t.get("Intervals") or []:
                     pl = iv.get("Playable") or {}
                     if t.get("Type") == "Effect":
-                        path = (((pl.get("PrefabPathGroups") or {}).get("Default") or {}).get("Lod0") or "")
-                        if not path:
-                            continue
-                        if path not in index:
-                            pf = self.prefab(ASSET + path)
-                            index[path] = len(prefabs) if pf else None
-                            if pf:
-                                prefabs.append(pf)
-                        if index[path] is None:
-                            continue
-                        tracks.append(_track(pl, index[path], hood))
+                        i = self._prefab_index(_effect_path(pl), index, prefabs)
+                        if i is not None:
+                            tracks.append(_track(pl, i, hood))
                     elif t.get("Type") == "AdditiveRenderer" and pl.get("MaterialPath"):
                         mat = self.material(ASSET + pl["MaterialPath"])
                         # 그림 없는 기본 재질(FX_Alp)은 메시 정점 색으로 그리는 덧칠이라 뺀다 — 정점 색을 꺼내지 않는다
@@ -569,6 +608,22 @@ class Effects:
         return {"name": m.m_Name, "kind": kind, "blend": [int(blend[0]), int(blend[1])], "cull": int(cull),
                 "f": {k: _r(floats[k]) for k in _FLOATS if k in floats},
                 "c": {k: [_r(c.r), _r(c.g), _r(c.b), _r(c.a)] for k, c in cols.items() if k in _COLORS}, "t": t}
+
+
+def _effect_path(pl: dict) -> str:
+    """Effect 구간 → FX prefab 경로 (Assets/PatchableAssets/ 뺀 것, 없으면 '')."""
+    return ((pl.get("PrefabPathGroups") or {}).get("Default") or {}).get("Lod0") or ""
+
+
+def _effects_on_self(tl: dict | None):
+    """타임라인 → 몸(Self)에 붙는 Effect 구간 (구간, Playable) — 소품(TimelineProp)에 붙는 것은 뺀다."""
+    for t in (tl or {}).get("Tracks") or []:
+        if not t.get("IsEnabled", True) or t.get("Type") != "Effect":
+            continue
+        for iv in t.get("Intervals") or []:
+            pl = iv.get("Playable") or {}
+            if _effect_path(pl) and (pl.get("PosRefActor") or "Self") == "Self":
+                yield iv, pl
 
 
 def _track(pl: dict, fx: int, hood: bool) -> dict:

@@ -2,7 +2,7 @@
 // 드레스룸 화면(main.js)과 다른 프로그램이 같이 쓴다. 다른 프로그램 쪽 자료는 성인 체형의 기준 모습만 담아
 // 코디에 age 가 없고 몸 조절 자료도 크기·체형만일 수 있다 (body.js) — age 는 드레스룸 화면의 줄 고르기에만 쓴다.
 // 받는 것: 모델 주소 함수, 장면(붙이기·떼기), 체형·의상 목록, 얼굴 표(face.js FaceTable). 화면 갱신은 on 알림으로 알린다.
-import { Rig, loadModel } from './viewer.js';
+import { Rig, loadModel, loadTimeline } from './viewer.js';
 import { MESH, DECAL, emptyFace } from './face.js';
 import { hideCovered, transferShapes, soleLift } from './fit.js';
 import { coverage, gameSlot } from './cover.js';
@@ -73,6 +73,7 @@ export class Dresser {
     this.time = 0;
     this.playing = null;       // 지금 동작 열쇠 (play)
     this.steps = null;         // 고른 동작 단계 (없으면 대기 동작)
+    this.tl = [];              // 단계마다 감정 표현 이펙트 모델 (viewer loadTimeline — 없으면 null)
     this.expr = null;          // 고른 표정 클립 (anim.js Clip — 얼굴 뼈만, 동작 위에 반복)
     this.exprStem = null;      // 그 표정 줄기 (setExpr)
     this.exprT0 = 0;
@@ -179,6 +180,7 @@ export class Dresser {
     this.base = [];
     this.cover = null;
     this.clip = null;
+    this.setTimelines([]);
     this.fit = null;
     this.body = body;
     this.face = face;
@@ -522,17 +524,47 @@ export class Dresser {
     this.playing = want;
     this.steps = steps;
     this.stepsWeapon = steps && weapon === 'Drawn' ? 'Drawn' : 'Undrawn';
+    let tl = [];
     try {
+      const fx = steps ? this.loadTimelines(steps) : [];
       const m = steps ? await Motion.load(steps, (stem) => this.url('clip:' + stem))
         : new Motion([{ clip: await loadClip(await this.url(want)), face: null }]);
-      if (this.playing === want) { this.clip = m; this.clipT0 = this.time; }
+      tl = await fx;
+      if (this.playing === want) {
+        this.clip = m;
+        this.clipT0 = this.time;
+        this.setTimelines(tl);
+        tl = [];
+      }
     } catch (e) {
       if (this.playing !== want) return;
       this.clip = null;
+      this.setTimelines([]);
       if (steps) throw e;
     } finally {
+      for (const x of tl) if (x) x.dispose();   // 기다리는 사이 다른 동작을 골랐다
       if (this.playing === want) this.fitWeapon();
     }
+  }
+
+  /** 단계마다 감정 표현 이펙트 모델 (없거나 못 불러오면 null — 이펙트는 덤이라 동작은 튼다). */
+  loadTimelines(steps) {
+    return Promise.all(steps.map(async (s) => {
+      if (!s.tl) return null;
+      try {
+        return await loadTimeline('tl:' + s.tl, await this.url('tl:' + s.tl));
+      } catch (e) {
+        console.warn('감정 표현 이펙트를 불러오지 못했습니다', s.tl, e);
+        return null;
+      }
+    }));
+  }
+
+  /** 지금 동작의 감정 표현 이펙트를 바꾼다 (전 것은 장면에서 빼고 놓는다). */
+  setTimelines(list) {
+    for (const m of this.tl) if (m) this.scene.remove(m);
+    this.tl = list;
+    for (const m of list) if (m) this.scene.add(m);
   }
 
   /** 동작 틀기 켜고 끄기 (끄면 기본 자세 — 무기도 넣는다). */
@@ -590,12 +622,18 @@ export class Dresser {
     return this.cloth.update(dt, this.rig, this.models());
   }
 
-  /** 의상 이펙트 한 걸음 — 자세·시선·흔들림까지 다 고친 뒤 부른다 (파티클 자리를 이번 프레임 뼈 행렬로 잡는다). */
+  /** 의상·감정 표현 이펙트 한 걸음 — 자세·시선·흔들림까지 다 고친 뒤 부른다 (파티클 자리를 이번 프레임 뼈 행렬로 잡는다).
+   *  감정 표현 이펙트는 동작의 지금 단계 것만 그 단계 시간으로 (동작을 끄면 멈춘다). */
   effects(dt, camera) {
-    if (!this.rig || !camera || !this.wornModels().some((m) => m.fx)) return;
+    const tl = this.tl.some(Boolean);
+    if (!this.rig || !camera || (!tl && !this.wornModels().some((m) => m.fx))) return;
     this.rig.root.updateMatrixWorld(true);
     camera.updateMatrixWorld();
     fxTime.value = this.time % 1000;
+    if (tl) {
+      const [step, t] = this.move && this.clip && this.clip.picked ? this.clip.clock(this.time - this.clipT0) : [-1, 0];
+      this.tl.forEach((m, i) => { if (m && m.fx) m.fx.update(dt, this.rig, camera, i === step ? t : null); });
+    }
     for (const m of this.wornModels()) {
       if (!m.fx) continue;
       try {

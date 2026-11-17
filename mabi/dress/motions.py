@@ -9,11 +9,14 @@
             두 사람 동작은 Host 쪽만, 실패 동작(_Fail)은 뺀다.
   표정 짝   같은 폴더의 <파일>_Facial (게임의 표정 짝 시트도 이 규칙을 따른다) — 몸 동작과 같이 튼다.
   표정      Facial 시트(게임 표정 메뉴 — 이모지·이름·체형별 PlayerCommon_FaceOnly_*_Facial) — 얼굴 뼈만, 지금 동작 위에 얹는다.
+  타임라인  감정 표현의 이펙트 (fx.timeline) — ActionStageTimeline 시트(동작 키·배우 Player<체형>·'Any' 갈래 → 타임라인들,
+            단계 수와 같으면 단계마다, 아니면 첫 단계), 시트에 없으면 이름 규칙 Emotion_<키>[_HF·HM·HC]·
+            PlayerCommon_Emotion_<키>·<단계 줄기에서 PlayerCommon_ 뺀 것>[_HF…]. 그릴 것이 있는 타임라인만 둔다.
 
 표 (motions.json, 시트·동작 목차가 그대로면 다시 쓴다):
   {"list": [{"id", "cat", "name", "steps": {체형 폴더: {셰이프: [줄기…]}}}],   마지막 줄기를 반복한다
             공통 중 무기를 든 동작은 "drawn": true, "jobs": {직업: {체형 폴더: {셰이프: [줄기]}}} 도 둔다
-   "clips": {줄기: 자산 경로}, "facial": {몸 줄기: 표정 줄기}}
+   "clips": {줄기: 자산 경로}, "facial": {몸 줄기: 표정 줄기}, "timeline": {몸 줄기: 타임라인 이름}}
 줄기 = 파일 이름에서 .fbx 를 뺀 것 (HF@PlayerCommon_Walk) — 모델 id 'clip:<줄기>'. 셰이프 '' 는 기본,
 다른 셰이프는 기본과 다를 때만 둔다.
 """
@@ -23,6 +26,7 @@ import logging
 import re
 from pathlib import Path
 
+from .. import gamefiles as gf
 from .. import gamesheet as G
 from . import assets as A
 from . import catalog as C
@@ -30,9 +34,12 @@ from . import names as NM
 
 log = logging.getLogger("mabi")
 
-FORMAT = 4   # 2: 표정(face) 갈래, 3: 무기를 꺼내 드는 공통 동작 drawn, 4: 직업별 동작 jobs·전투 자세·경계 걷기 등
+FORMAT = 5   # 2: 표정(face) 갈래, 3: 무기를 꺼내 드는 공통 동작 drawn, 4: 직업별 동작 jobs·전투 자세·경계 걷기 등,
+             # 5: 감정 표현 타임라인 timeline
 CATS = (("common", "공통"), ("customize", "꾸미기"), ("emotion", "감정 표현"), ("face", "표정"))
 FOLDERS = tuple(sorted({v[1] for v in C.BODIES.values()}))    # Female · Infant · Male
+ACTORS = {"Female": "PlayerFemale", "Male": "PlayerMale", "Infant": "PlayerInfant"}   # 동작 타임라인 시트의 배우
+SUFFIX = {"Female": "HF", "Male": "HM", "Infant": "HC"}                                # 타임라인 이름 끝
 SHAPES = tuple(C.STAND)   # 뷰어 셰이프 이름 ('' 기본·Thin·Fat·Muscular)
 _SHAPE_TOKEN = {"default": "", "thin": "Thin", "fat": "Fat", "muscle": "Muscular", "muscular": "Muscular"}
 
@@ -134,6 +141,36 @@ def social_rows(sh: G.Sheets) -> list[tuple[str, str]]:
         key = r.s()
         if key and key.isascii():
             out.append((NM.clean(name), key))
+    return out
+
+
+def action_rows(sh: G.Sheets, names: dict[str, str]) -> dict[tuple[str, str], list[str]]:
+    """ActionStageTimeline → {(동작 키, 배우): [타임라인…]} — 'Any' 갈래만. 키·배우·갈래 뒤 칸 꼴을 다 몰라
+    행 나머지에서 문자열로 읽히는 값 중 타임라인 이름(names — 소문자 → 이름)인 것을 차례대로 줍는다."""
+    if "ActionStageTimeline" not in sh:
+        return {}
+    s = sh.sheet("ActionStageTimeline")
+    text = sh.text
+    out: dict[tuple[str, str], list[str]] = {}
+    for i in range(s.count):
+        r = s.reader(i)
+        try:
+            key, actor, branch = r.s(), r.s(), r.s()
+        except (IndexError, ValueError, G.SheetError):
+            continue
+        if branch != "Any":
+            continue
+        rest, got = s.row(i)[r.o:], []
+        for o in range(len(rest)):
+            try:
+                v = G.Reader(rest, o, text).s()
+            except (IndexError, ValueError, G.SheetError):
+                continue
+            name = names.get(v.lower())
+            if name and name not in got:
+                got.append(name)
+        if got:
+            out.setdefault((key, actor), got)
     return out
 
 
@@ -305,9 +342,44 @@ def match_social(key: str, clips: Clips) -> list[str] | None:
     return None
 
 
+def _first(names: dict[str, str], cands) -> str | None:
+    return next((names[c.lower()] for c in cands if c.lower() in names), None)
+
+
+def timelines(lst: list[dict], acts: dict, tl) -> dict[str, str]:
+    """감정 표현 단계 줄기 → 그릴 것이 있는 타임라인 이름 (머리 설명의 '타임라인'). tl: fx.Effects (timelines·useful)."""
+    names = tl.timelines()
+    good: dict[str, bool] = {}
+    out: dict[str, str] = {}
+    for e in lst:
+        if e["cat"] != "emotion":
+            continue
+        key = e["id"].split(":", 1)[1]
+        for folder, shapes in e["steps"].items():
+            sfx = SUFFIX.get(folder, "")
+            got = acts.get((key, ACTORS.get(folder, ""))) or []
+            if not got:
+                one = _first(names, (f"Emotion_{key}_{sfx}", f"Emotion_{key}", f"PlayerCommon_Emotion_{key}"))
+                got = [one] if one else []
+            for seq in shapes.values():
+                for i, stem in enumerate(seq):
+                    name = got[i] if len(got) == len(seq) else (got[0] if i == 0 and got else None)
+                    if name is None:
+                        base = stem.split("@", 1)[-1]
+                        short = base.removeprefix("PlayerCommon_")
+                        name = _first(names, (f"{short}_{sfx}", short, f"{base}_{sfx}", base))
+                    if name is None:
+                        continue
+                    if name not in good:
+                        good[name] = tl.useful(name)
+                    if good[name]:
+                        out.setdefault(stem, name)
+    return out
+
+
 # ── 표 ──
-def build(sh: G.Sheets | None, paths) -> dict:
-    """시트(없으면 꾸미기만)·자산 경로 → 표."""
+def build(sh: G.Sheets | None, paths, tl=None) -> dict:
+    """시트(없으면 꾸미기만)·자산 경로 → 표. tl: 감정 표현 타임라인 (fx.Effects — 없으면 timeline 이 빈다)."""
     idx = index(paths)
     full = index(paths, every=True)
     every = {s: p for f in FOLDERS for s, p in full[f].items()}   # 직업 갈래는 다른 체형 폴더 파일도 쓴다
@@ -331,16 +403,25 @@ def build(sh: G.Sheets | None, paths) -> dict:
     clip_paths = {s: every[s] for s in used | set(facial.values())}
     order = {c: i for i, (c, _) in enumerate(CATS)}
     lst = sorted(merged.values(), key=lambda e: order[e["cat"]])   # 갈래 안 순서는 만든 순서 그대로
-    return {"list": lst, "clips": clip_paths, "facial": facial}
+    timeline: dict[str, str] = {}
+    if sh is not None and tl is not None:
+        try:
+            timeline = timelines(lst, action_rows(sh, tl.timelines()), tl)
+        except Exception as e:   # noqa: BLE001 — 이펙트는 덤이라 못 이어도 동작 표는 낸다
+            log.warning(f"드레스룸 감정 표현 타임라인을 잇지 못했습니다: {type(e).__name__}: {e}")
+    return {"list": lst, "clips": clip_paths, "facial": facial, "timeline": timeline}
 
 
-def load(cache_dir: Path, game_dir, paths, pack_stamp, opener=None) -> dict:
-    """motions.json — 시트·동작 목차가 그대로면 저장한 것. 시트를 못 읽으면 꾸미기만 (저장 안 함)."""
-    t, _fresh = G.cached(Path(cache_dir) / "motions.json", FORMAT, game_dir, lambda sh: build(sh, paths), opener,
-                         what="드레스룸 동작 표", key="motions", stamper=lambda gd: G.stamp(gd) + list(pack_stamp))
+def load(cache_dir: Path, game_dir, paths, pack_stamp, opener=None, tl=None) -> dict:
+    """motions.json — 시트·동작 목차(·타임라인 목차)가 그대로면 저장한 것. 시트를 못 읽으면 꾸미기만 (저장 안 함)."""
+    def stamper(gd):
+        return G.stamp(gd) + list(pack_stamp) + (gf.res_stamp(Path(gd)) if tl is not None else [])
+    t, _fresh = G.cached(Path(cache_dir) / "motions.json", FORMAT, game_dir, lambda sh: build(sh, paths, tl), opener,
+                         what="드레스룸 동작 표", key="motions", stamper=stamper)
     return t if t is not None else build(None, paths)
 
 
 def public(t: dict) -> dict:
-    """화면에 줄 것 — 갈래·목록·표정 짝 (자산 경로는 뺀다)."""
-    return {"cats": [{"id": c, "name": n} for c, n in CATS], "list": t["list"], "facial": t["facial"]}
+    """화면에 줄 것 — 갈래·목록·표정 짝·타임라인 (자산 경로는 뺀다)."""
+    return {"cats": [{"id": c, "name": n} for c, n in CATS], "list": t["list"], "facial": t["facial"],
+            "timeline": t.get("timeline") or {}}

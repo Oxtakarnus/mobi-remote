@@ -197,9 +197,43 @@ class TableTest(unittest.TestCase):
 
     def test_keep(self):
         self.assertTrue(FX.keep("Assets/PatchableAssets/Fx/1_Effect/Character/0_Common/Fashion/FX_A.prefab"))
+        self.assertTrue(FX.keep("Assets/PatchableAssets/Fx/1_Effect/Character/0_Common/Emotion/FX_Emotion_A.prefab"))
         self.assertTrue(FX.keep("Assets/PatchableAssets/Fx/0_Resource/Textures/FX_Noise.png"))
         self.assertTrue(FX.keep("Assets/PatchableAssets/Shaders/MMN/FX/Amplify shader/FX_Default.shader"))
         self.assertFalse(FX.keep("Assets/PatchableAssets/Fx/1_Effect/Monster/FX_B.prefab"))
+
+
+class EmotionTimelineTest(unittest.TestCase):
+    TL = {"Tracks": [
+        {"Type": "Effect", "IsEnabled": True, "Intervals": [
+            {"BeginTime": 0.3, "EndTime": 4.3, "Playable": {"PrefabPathGroups": {"Default": {"Lod0": "Fx/A.prefab"}},
+                                                         "PosRefBoneName": "_Lip_Center"}},
+            {"BeginTime": 1, "EndTime": 2, "IsInfinite": True, "Playable": {
+                "PrefabPathGroups": {"Default": {"Lod0": "Fx/A.prefab"}}, "PosRefBoneName": "#MODEL_ROOT",
+                "PositionAttachmentInfo": {"EffectAttachmentType": "NotAttached"}}},
+            {"BeginTime": 0, "EndTime": 1, "Playable": {"PrefabPathGroups": {"Default": {"Lod0": "Fx/B.prefab"}},
+                                                       "PosRefActor": "TimelineProp"}}]},
+        {"Type": "Effect", "IsEnabled": False, "Intervals": [
+            {"BeginTime": 0, "EndTime": 1, "Playable": {"PrefabPathGroups": {"Default": {"Lod0": "Fx/C.prefab"}}}}]},
+        {"Type": "Prop", "Intervals": [{"Playable": {"AssetPath": "Fx/P.prefab"}}]}]}
+
+    def effects(self, tl):
+        fx = FX.Effects(Path("."), Path("."))
+        fx._timeline = lambda name: tl if name == "TL" else None
+        fx.prefab = lambda path: {"name": path.rsplit("/", 1)[-1], "systems": [{}], "meshes": []}
+        return fx
+
+    def test_timeline(self):
+        fx = self.effects(self.TL)
+        self.assertTrue(fx.useful("TL"))
+        self.assertFalse(fx.useful("없음"))
+        got = fx.timeline("TL")
+        self.assertEqual([p["name"] for p in got["prefabs"]], ["A.prefab"])   # 소품에 붙는 것·꺼진 트랙은 뺀다
+        a, b = got["tracks"]
+        self.assertEqual((a["fx"], a["bone"], a["begin"], a["end"], a["follow"]), (0, "_Lip_Center", 0.3, 4.3, True))
+        self.assertEqual((b["fx"], b["bone"], b["begin"], b["end"], b["follow"]), (0, "", 1.0, None, False))
+        self.assertIsNone(fx.timeline("없음"))
+        self.assertFalse(self.effects({"Tracks": self.TL["Tracks"][2:]}).useful("TL"))
 
 
 class SocketTest(unittest.TestCase):

@@ -40,6 +40,11 @@ t('시작 단계는 한 번, 마지막 단계는 반복', () => {
   assert.equal(Math.round(r.x('B')), 5);
   assert.equal(Math.round(r.x('A')), 5);   // 표정도 같은 시간
   assert.equal(m.picked, true);
+  // 단계마다 도는 이펙트 시계 — 시작 단계는 그 시간, 반복 단계는 바퀴마다 0 부터
+  assert.deepEqual(m.clock(0.5), [0, 0.5]);
+  const [i, t] = m.clock(1 + 0.5);
+  assert.equal(i, 1);
+  assert.ok(Math.abs(t - (0.5 - 1 / 3)) < 1e-9);
 });
 
 t('표정 키 — 칸은 섞지 않고 모프는 섞는다, 동작 단계와 같은 시간', () => {
@@ -72,6 +77,7 @@ const TABLE = {
     { id: 'e:Bye', cat: 'emotion', name: '손인사', steps: { Female: { '': ['HF@Bye_Start', 'HF@Bye_Loop'] }, Male: { '': ['HM@Bye'] } } },
   ],
   facial: { 'HF@Bye_Loop': 'HF@Bye_Loop_Facial' },
+  timeline: { 'HF@Bye_Loop': 'Emotion_Bye' },
 };
 
 t('동작 표 — 체형 폴더·갈래·검색', () => {
@@ -86,9 +92,9 @@ t('동작 표 — 체형 폴더·갈래·검색', () => {
 
 t('단계 — 셰이프 것이 없으면 기본, 표정 짝', () => {
   const mt = new MotionTable(TABLE);
-  assert.deepEqual(mt.steps('s:PeaceWalk', 'Female', 'Fat'), [{ body: 'HF@Walk_Fat', face: null }]);
-  assert.deepEqual(mt.steps('s:PeaceWalk', 'Female', 'Thin'), [{ body: 'HF@Walk', face: null }]);
-  assert.deepEqual(mt.steps('e:Bye', 'Female', ''), [{ body: 'HF@Bye_Start', face: null }, { body: 'HF@Bye_Loop', face: 'HF@Bye_Loop_Facial' }]);
+  assert.deepEqual(mt.steps('s:PeaceWalk', 'Female', 'Fat'), [{ body: 'HF@Walk_Fat', face: null, tl: null }]);
+  assert.deepEqual(mt.steps('s:PeaceWalk', 'Female', 'Thin'), [{ body: 'HF@Walk', face: null, tl: null }]);
+  assert.deepEqual(mt.steps('e:Bye', 'Female', ''), [{ body: 'HF@Bye_Start', face: null, tl: null }, { body: 'HF@Bye_Loop', face: 'HF@Bye_Loop_Facial', tl: 'Emotion_Bye' }]);
   assert.equal(mt.steps('e:Bye', 'Infant', ''), null);
 });
 
@@ -117,11 +123,11 @@ t('직업별 동작 — 무기 직업 갈래가 이 체형에 있으면 그것, 
   const mt = new MotionTable({ ...TABLE, list: [...TABLE.list,
     { id: 's:AlertStand', cat: 'common', name: '경계 자세', drawn: true, steps: { Female: { '': ['HF@Alert'] }, Male: { '': ['HM@Alert'] } },
       jobs: { Archer: { Female: { '': ['HF@Archer_Alert'], Fat: ['HF@Archer_Alert_Fat'] } } } }] });
-  assert.deepEqual(mt.steps('s:AlertStand', 'Female', '', 'Archer'), [{ body: 'HF@Archer_Alert', face: null }]);
-  assert.deepEqual(mt.steps('s:AlertStand', 'Female', 'Fat', 'Archer'), [{ body: 'HF@Archer_Alert_Fat', face: null }]);
-  assert.deepEqual(mt.steps('s:AlertStand', 'Male', '', 'Archer'), [{ body: 'HM@Alert', face: null }]);     // 이 체형엔 없다
-  assert.deepEqual(mt.steps('s:AlertStand', 'Female', '', 'Mage'), [{ body: 'HF@Alert', face: null }]);     // 없는 직업
-  assert.deepEqual(mt.steps('s:AlertStand', 'Female', ''), [{ body: 'HF@Alert', face: null }]);             // 무기 없음
+  assert.deepEqual(mt.steps('s:AlertStand', 'Female', '', 'Archer'), [{ body: 'HF@Archer_Alert', face: null, tl: null }]);
+  assert.deepEqual(mt.steps('s:AlertStand', 'Female', 'Fat', 'Archer'), [{ body: 'HF@Archer_Alert_Fat', face: null, tl: null }]);
+  assert.deepEqual(mt.steps('s:AlertStand', 'Male', '', 'Archer'), [{ body: 'HM@Alert', face: null, tl: null }]);     // 이 체형엔 없다
+  assert.deepEqual(mt.steps('s:AlertStand', 'Female', '', 'Mage'), [{ body: 'HF@Alert', face: null, tl: null }]);     // 없는 직업
+  assert.deepEqual(mt.steps('s:AlertStand', 'Female', ''), [{ body: 'HF@Alert', face: null, tl: null }]);             // 무기 없음
   assert.equal(mt.byJob('s:AlertStand'), true);
   assert.equal(mt.byJob('s:PeaceWalk'), false);
   assert.equal(mt.byJob(null), false);

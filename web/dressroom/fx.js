@@ -9,6 +9,8 @@
 // 중력·수명 동안 속도(+궤도·방사)·속도 제한·크기·회전·색·그림 칸 넘기기·사용자 값(디졸브)·로컬/월드 공간·미리 돌리기.
 // 빼는 것: 하위 방출·속도 물려받기·소프트 파티클·거리 방출·충돌·정점 흔들기(vertexoffset 의 날갯짓).
 // 반복하지 않는 시스템은 끝나면 다시 튼다 — 옷 이펙트 구간은 끝이 없다 (타임라인 IsInfinite).
+// 감정 표현 이펙트(트랙에 begin·end)는 동작 시간(update 의 clock)에 맞춰 구간 안에서만 틀고, 반복하지 않는 시스템은
+// 한 번만 돈다. follow 가 false 인 구간은 시작한 자리에 남는다.
 //
 // 셰이더는 게임 FX 셰이더(재질 값 이름)를 참고한 웹 드레스룸의 역산 식에 맞춰 근사한다 — default·vertexoffset·
 // dissolve·fresnel·addnoise, 덧그리기의 horn(뿔 불꽃). vTex = (uv, 사용자 값 2개), vExtra = 다음 사용자 값 4개.
@@ -855,6 +857,7 @@ class Track {
     this.bone = null;
     this.rbone = null;
     this.started = false;
+    this.placed = false;   // 시작한 자리에 남는 구간(follow false)이 자리를 잡았나
   }
 
   /** 뼈 찾기 — 없으면 false (다른 옷이 소켓을 가져올 수 있어 나중에 다시 찾는다). */
@@ -874,8 +877,10 @@ class Track {
     this.root.multiply(this.local);
   }
 
-  step(dt, rig) {
-    this.place(rig);
+  /** timed: 감정 표현 구간 — 반복하지 않는 시스템을 다시 틀지 않는다. */
+  step(dt, rig, timed = false) {
+    if (this.def.follow !== false || !this.placed) this.place(rig);
+    this.placed = true;
     if (!this.started) {
       this.started = true;
       for (const s of this.systems) s.prewarm(this.root);
@@ -883,8 +888,15 @@ class Track {
     for (const s of this.systems) {
       s.step(dt, this.root);
       // 반복하지 않는 시스템은 제 길이가 지나고 입자가 다 지면 처음부터 — 옷 이펙트 구간은 끝이 없어(IsInfinite) 게임도 다시 튼다
-      if (!s.alive) s.reset();
+      if (!s.alive && !timed) s.reset();
     }
+  }
+
+  /** 구간이 끝났다 — 입자를 지우고 다음에 처음부터. */
+  stop() {
+    this.started = false;
+    this.placed = false;
+    for (const s of this.systems) s.reset();
   }
 
   draw(camera, on) {
@@ -923,21 +935,33 @@ export class FxPlayer {
     for (const t of this.tracks) for (const s of t.systems) { s.object.userData.noShadow = true; this.group.add(s.object); }
     this.overlays = (fx.overlays || []).map((o) => new Overlay(o, model, tex));
     this.retry = 0;
+    this.clock = null;   // 지난 프레임 동작 시간 (감정 표현 이펙트)
+    this.rig = null;
     model.group.add(this.group);
   }
 
-  /** 매 프레임 — 뼈 행렬이 이번 자세로 갱신된 뒤 부른다. */
-  update(dt, rig, camera) {
+  /** 매 프레임 — 뼈 행렬이 이번 자세로 갱신된 뒤 부른다. clock: 감정 표현 이펙트의 동작 시간(초, null 이면 멈춤 —
+   *  구간 begin·end 안에서만 튼다, 시간이 뒤로 가면 처음부터). 옷 이펙트는 넘기지 않는다 (늘 튼다). */
+  update(dt, rig, camera, clock = undefined) {
     const shown = this.model.shown;
     const hood = this.model.hood === 'on';
+    const timed = clock !== undefined;
+    if (timed && (clock === null || (this.clock != null && clock < this.clock))) for (const t of this.tracks) if (t.started) t.stop();
+    this.clock = timed ? clock : null;
+    if (rig !== this.rig) {   // 뼈대가 바뀌었다 (체형) — 뼈를 다시 찾는다
+      this.rig = rig;
+      for (const t of this.tracks) t.bone = t.rbone = null;
+    }
     this.retry -= dt;
     for (const t of this.tracks) {
-      const on = shown && (!t.def.hood || hood);
+      const live = !timed || (clock !== null && clock >= t.def.begin && (t.def.end == null || clock < t.def.end));
+      if (!live && t.started) t.stop();
+      const on = live && shown && (!t.def.hood || hood);
       if (!t.bone || !t.rbone) {
         if (this.retry > 0 || !t.resolve(rig)) { t.draw(camera, false); continue; }
       }
       if (!on) { t.draw(camera, false); continue; }
-      t.step(dt, rig);
+      t.step(dt, rig, timed);
       t.draw(camera, true);
     }
     if (this.retry <= 0) this.retry = 1;

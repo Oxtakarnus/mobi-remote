@@ -161,7 +161,9 @@ class DressRoom:
     def _load_motions(self, gd, pack: A.AssetPack) -> dict | None:
         """동작 탭 목록. 덤이라 못 만들면 None — 동작 탭 없이 뜬다 (대기 동작은 anim:<체형>:<셰이프> 로 따로)."""
         try:
-            return MO.load(self.dir, gd, pack.paths, pack.stamp())
+            if self._fx is None:   # 감정 표현 타임라인을 이으려고 (pack 의 잠금 안이라 바로 만든다)
+                self._fx = FX.Effects(Path(gd), self.dir)
+            return MO.load(self.dir, gd, pack.paths, pack.stamp(), tl=self._fx)
         except Exception as e:
             log.warning(f"드레스룸 동작 표를 만들지 못했습니다: {type(e).__name__}: {e}")
             return None
@@ -255,6 +257,7 @@ class DressRoom:
         · 'bdc:<체형>' (나이·키별 뼈 크기 — ResourcesPackage, body)
         · 'face:<부품 모델>' (얼굴형·눈·수염 메시) · 'decal:<부품 모델>' (입·문신 그림 — {"tex": 이름})
         · 'stage:rebirth' (환생 무대) · 'light:presets' (조명 프리셋) — stage
+        · 'tl:<타임라인>' (감정 표현 이펙트 — {"fx": fx.timeline 값 | null}, 동작 표 timeline 에 있는 것만)
         처음 보는 오류도 DressError 로 바꾼다 (_guard).
         """
         return _guard("모델", mid, lambda: self._model(mid))
@@ -264,6 +267,10 @@ class DressRoom:
         rel = f"models/{mid.replace(':', '_')}.json"
         if mid in ST.MODELS:   # 무대용 CAB 표는 dressroom\\stage\\ 에 따로 둔다
             return self._build(rel, lambda out: ST.export(mid, Path(self._gd()), self.dir, out), (ST.StageError,))
+        if mid.startswith("tl:"):
+            if mid[3:] not in set(((self._motions or {}).get("timeline") or {}).values()):
+                raise DressError(f"모르는 모델: {mid}")
+            return self._build(rel, lambda out: write_json(out, {"fx": self._timeline_fx(mid[3:])}))
         kind, fbx = self._fbx(mid)
 
         item = self._items.get(mid)
@@ -296,6 +303,18 @@ class DressRoom:
                     prefab=item.prefab if item is not None else None)
 
         return self._build(rel, make, (ExportError, B.BodyError, MD.PartError))
+
+    def _timeline_fx(self, name: str) -> dict | None:
+        """감정 표현 타임라인 → fx 값. 이펙트는 덤이라 못 꺼내면 None (환경 탓이면 반쪽 표시 — 다음에 다시)."""
+        with self._lock:
+            if self._fx is None:
+                self._fx = FX.Effects(Path(self._gd()), self.dir)
+            effects = self._fx
+        try:
+            return effects.timeline(name)
+        except Exception as e:   # noqa: BLE001
+            TX.problem(f"감정 표현 이펙트를 꺼내지 못했습니다 ({name})", e)
+            return None
 
     def _face_keys(self, fbx: str) -> dict | None:
         """표정 짝의 표정 키 (입·눈 그림 칸, 눈 메시 보이기, 눈꺼풀 모프 — xaf). 못 읽으면 경고만 하고 뼈만 튼다."""
