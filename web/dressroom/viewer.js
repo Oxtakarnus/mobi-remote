@@ -1185,7 +1185,7 @@ export async function loadModel(id, url, rig) {
   model.refresh();   // 몸 자르는 고리(cut)는 자리만 쓴다 (fit.js hideCovered), 후드는 벗은 모양부터
   if (meta.fx) {
     try {
-      model.fx = new FxPlayer(meta.fx, model, (name, repeat) => texture(texBase + name + '.png', model.fxTex, repeat));
+      model.fx = new FxPlayer(meta.fx, model, fxTexture(model, url));
     } catch (e) {   // 이펙트가 안 돼도 옷은 입는다
       console.warn('의상 이펙트를 만들지 못했습니다', id, e);
       if (model.fx) model.fx.dispose();
@@ -1200,17 +1200,10 @@ const _v = new THREE.Vector3();
 /** 메시 삼각형 거르기 — drop(a, b, c) 가 참인 삼각형을 뺀다 (drop 이 없으면 처음대로 다). 처음 인덱스는 mesh.userData.index0 에
  *  두고, 같은 버퍼(처음 크기) 앞쪽에 채운 뒤 그룹 범위만 줄인다 — 버퍼를 새로 만들면 GPU 쪽 옛 버퍼가 남는다.
  *  눈썹 한쪽 숨기기(setEyeHide)와 옷에 덮인 몸·안쪽 옷 숨기기(fit.js hideCovered)가 쓴다. */
-/** 감정 표현 이펙트 (모델 id 'tl:<타임라인>' — {fx}, mabi/dress/fx.py timeline) → 메시 없이 이펙트만 든 모델.
- *  그릴 것이 없으면 null. 장면에 넣고 빼기·놓기는 다른 모델과 같다 (Stage.add·remove). */
-export async function loadTimeline(id, url) {
-  const meta = await (await fetch(url)).json();
-  if (!meta || !meta.fx) return null;
+/** 이펙트 그림 불러오기 (FxPlayer 의 tex 인자) — url 은 그 모델 json 주소, 잡은 그림은 model.fxTex 에 (dispose 가 놓는다). */
+export function fxTexture(model, url) {
   const texBase = url.slice(0, url.lastIndexOf('/') + 1) + '../tex/';
-  const group = new THREE.Group();
-  group.name = id;
-  const model = new Model(id, meta, group, [], []);
-  model.fx = new FxPlayer(meta.fx, model, (name, repeat) => texture(texBase + name + '.png', model.fxTex, repeat));
-  return model;
+  return (name, repeat) => texture(texBase + name + '.png', model.fxTex, repeat);
 }
 
 export function keepTriangles(mesh, drop = null) {

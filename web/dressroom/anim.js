@@ -32,6 +32,15 @@ export class Clip {
     });
   }
 
+  /** 트랙 경로 앞에 node 를 붙인다 — 소품 루트 기준 클립을 몸 뼈대 밑에 붙은 소품에 (emote.js). this 를 돌려준다. */
+  rebase(node) {
+    for (const t of this.tracks) {
+      t.path = t.path ? node + '/' + t.path : node;
+      t.rig = null;
+    }
+    return this;
+  }
+
   /** 한 바퀴 길이(초) — 반복할 때 마지막 프레임이 첫 프레임에 이어진다. */
   get length() {
     return Math.max(0, this.frames - 1) / this.fps;

@@ -19,6 +19,14 @@ function rig(...paths) {
   return { bones, x: (p = 'A') => bones.get(p).position.x };
 }
 
+t('소품 동작은 소품 루트 밑으로', () => {
+  const c = clip(31, '_COM').rebase('Hand/Prop'), r = rig('_COM', 'Hand/Prop/_COM');
+  c.apply(r, 0.5, false);
+  assert.equal(r.x('_COM'), -1);            // 몸 뼈는 그대로
+  assert.equal(r.x('Hand/Prop/_COM'), 15);
+  assert.equal(clip(2, '').rebase('Hand/Prop').tracks[0].path, 'Hand/Prop');   // 소품 루트 트랙
+});
+
 t('클립 길이와 한 번만 틀기', () => {
   const c = clip(31), r = rig('A');
   assert.equal(c.length, 1);

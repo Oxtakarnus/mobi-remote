@@ -12,6 +12,7 @@ from mabi import gamefiles as gf
 from mabi.dress import catalog as C
 from mabi.dress import export as E
 from mabi.dress import fx as FX
+from mabi.dress import service as S
 
 
 def _rot(axis: str, deg: float) -> np.ndarray:
@@ -212,10 +213,17 @@ class EmotionTimelineTest(unittest.TestCase):
                 "PrefabPathGroups": {"Default": {"Lod0": "Fx/A.prefab"}}, "PosRefBoneName": "#MODEL_ROOT",
                 "PositionAttachmentInfo": {"EffectAttachmentType": "NotAttached"}}},
             {"BeginTime": 0, "EndTime": 1, "Playable": {"PrefabPathGroups": {"Default": {"Lod0": "Fx/B.prefab"}},
-                                                       "PosRefActor": "TimelineProp"}}]},
+                                                       "PosRefActor": "TimelineProp",
+                                                       "PosRefPropInfo": {"PropKey": "FX_P", "BoneName": "_P_00"}}},
+            {"BeginTime": 0, "EndTime": 1, "Playable": {"PrefabPathGroups": {"Default": {"Lod0": "Fx/D.prefab"}},
+                                                       "PosRefActor": "Other"}}]},
         {"Type": "Effect", "IsEnabled": False, "Intervals": [
             {"BeginTime": 0, "EndTime": 1, "Playable": {"PrefabPathGroups": {"Default": {"Lod0": "Fx/C.prefab"}}}}]},
-        {"Type": "Prop", "Intervals": [{"Playable": {"AssetPath": "Fx/P.prefab"}}]}]}
+        {"Type": "Prop", "Intervals": [{"BeginTime": 0, "EndTime": 10, "Playable": {
+            "PropKey": "FX_P", "AssetPath": "Fx/P.prefab", "AttachBoneName": "_HandtoolL", "DefaultLocalOffset": [0, 0.1, 0]}},
+            {"BeginTime": 1, "EndTime": 2, "Playable": {"PropKey": "FX_Q", "AssetPath": "Fx/Q.prefab", "AttachBoneName": "#MODEL_ROOT"}}]},
+        {"Type": "PropAnimation", "Intervals": [{"BeginTime": 0.5, "EndTime": 10, "Playable": {
+            "PropKey": "FX_P", "AnimationClipPath": "Fx/P_Ani.fbx"}}]}]}
 
     def effects(self, tl):
         fx = FX.Effects(Path("."), Path("."))
@@ -228,12 +236,29 @@ class EmotionTimelineTest(unittest.TestCase):
         self.assertTrue(fx.useful("TL"))
         self.assertFalse(fx.useful("없음"))
         got = fx.timeline("TL")
-        self.assertEqual([p["name"] for p in got["prefabs"]], ["A.prefab"])   # 소품에 붙는 것·꺼진 트랙은 뺀다
-        a, b = got["tracks"]
+        self.assertEqual([p["name"] for p in got["prefabs"]], ["A.prefab", "B.prefab"])   # 다른 배우·꺼진 트랙은 뺀다
+        a, b, c = got["tracks"]
         self.assertEqual((a["fx"], a["bone"], a["begin"], a["end"], a["follow"]), (0, "_Lip_Center", 0.3, 4.3, True))
         self.assertEqual((b["fx"], b["bone"], b["begin"], b["end"], b["follow"]), (0, "", 1.0, None, False))
+        self.assertEqual((c["fx"], c["bone"], c["rbone"]), (1, "_P_00", "_P_00"))   # 소품 뼈
         self.assertIsNone(fx.timeline("없음"))
-        self.assertFalse(self.effects({"Tracks": self.TL["Tracks"][2:]}).useful("TL"))
+        self.assertFalse(self.effects({"Tracks": self.TL["Tracks"][1:2]}).useful("TL"))   # 꺼진 트랙뿐
+        self.assertTrue(self.effects({"Tracks": self.TL["Tracks"][2:3]}).useful("TL"))    # 소품만 있어도
+
+    def test_props(self):
+        p, q = self.effects(self.TL).props("TL")
+        A = "Assets/PatchableAssets/"
+        self.assertEqual((p["key"], p["path"], p["bone"], p["off"], p["begin"], p["end"], p["anim"], p["abegin"]),
+                         ("FX_P", A + "Fx/P.prefab", "_HandtoolL", [0.0, 0.1, 0.0], 0.0, 10.0, A + "Fx/P_Ani.fbx", 0.5))
+        self.assertEqual((q["bone"], q["anim"]), ("", None))   # 뼈대 루트, 소품 동작 없음
+        self.assertEqual(self.effects(self.TL).props("없음"), [])
+
+    def test_service_props(self):
+        fx = self.effects(self.TL)
+        A = "Assets/PatchableAssets/"
+        fx.pack = lambda: NS(paths={A + "Fx/P.prefab": 0})   # 소품 동작·두 번째 소품은 목차에 없다
+        (p,) = S.DressRoom._props(fx, "TL")
+        self.assertEqual((p["key"], p["anim"]), ("FX_P", None))
 
 
 class SocketTest(unittest.TestCase):

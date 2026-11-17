@@ -8,9 +8,12 @@
                                       LocalOffset·LocalRotation(도, Unity 오일러), Rotation/PositionAttachmentInfo.EffectAttachmentType
                Type AdditiveRenderer  MaterialPath (Fx/… mat), TargetRendererNames — 그 메시를 이 재질로 한 번 더 그린다
   감정 표현도 동작마다 타임라인이 있다 (동작 표 timeline — motions). 구간마다 시작·끝 시각이 있어 동작 시간에 맞춰 튼다:
-  timeline()  몸에 붙는 Effect 구간만 (소품에 붙는 것·소품·IK 는 아직) → {tracks (+ begin·end·follow), prefabs}
-              begin·end 초 (IsInfinite 면 end 없음 — 동작이 다시 돌 때까지), follow = PositionAttachmentInfo 가 Attached
-              (NotAttached 는 시작한 자리에 남는다)
+  timeline()  Effect 구간 → {tracks (+ begin·end·follow), prefabs}. begin·end 초 (IsInfinite 면 end 없음 — 동작이 다시
+              돌 때까지), follow = PositionAttachmentInfo 가 Attached (NotAttached 는 시작한 자리에 남는다).
+              소품에 붙는 구간(PosRefActor TimelineProp)은 그 소품 뼈(PosRefPropInfo.BoneName, 없으면 소품 루트 = PropKey)에
+  props()     Prop 구간 → 소품 [{key, path(prefab), bone(AttachBoneName, '' = 뼈대 루트), off, rot, begin, end,
+              anim(같은 PropKey 의 PropAnimation 클립 fbx | None), abegin}] — 소품 prefab 은 무기처럼 몸 뼈 밑에 붙여 꺼낸다
+              (service 'tlp:'), 소품 동작은 그 prefab 뼈 경로 기준 클립 ('tlc:'). 손 IK·ObjectVisibility·소품 안 파티클은 없다
 AssetPackages  Fx/1_Effect/Character/0_Common/Fashion/FX_*.prefab · …/Emotion/FX_*.prefab (감정 표현) — ParticleSystem 노드 트리. 재질·그림·메시는 Fx/**/0_Resource/,
                  셰이더는 Shaders/MMN/FX/·Shaders/MMN/CH/MMN_CharacterFX* 에 있다. 이펙트용 CAB 표는 dressroom\\fx\\ 에 따로 둔다
                  (캐릭터 표를 키우지 않게 — 무대 stage 와 같은 방식).
@@ -50,6 +53,7 @@ FORMAT = 1                  # fx.json 형식
 COL_ALWAYS, COL_HOOD = 2, 4
 FASHION = "/Fx/1_Effect/Character/0_Common/Fashion/"
 EMOTION = "/Fx/1_Effect/Character/0_Common/Emotion/"
+TOY = "/Fx/1_Effect/Character/0_Common/Toy/"   # 감정 표현 소품 몇 개 (눈 스프레이)
 ASSET = "Assets/PatchableAssets/"
 N = 16                      # 곡선·그라디언트 표본 칸 (N+1 개)
 _TL = "StageTimelines/"
@@ -84,7 +88,7 @@ STATIC = {"dur": 1.0, "loop": True, "prewarm": False, "delay": 0.0, "space": 0, 
 
 def keep(p: str) -> bool:
     """이펙트용 CAB 표가 기억할 자산 경로 (바꾸면 assets._CAB_VER 를 올린다 — 표를 다시 만든다)."""
-    return (FASHION in p or EMOTION in p or ("/Fx/" in p and "/0_Resource/" in p) or "/Shaders/MMN/FX/" in p
+    return (FASHION in p or EMOTION in p or TOY in p or ("/Fx/" in p and "/0_Resource/" in p) or "/Shaders/MMN/FX/" in p
             or "/Shaders/MMN/CH/MMN_CharacterFX" in p)
 
 
@@ -367,21 +371,35 @@ class Effects:
             return {k.lower(): k for k in self._tls}
 
     def useful(self, name: str) -> bool:
-        """감정 표현에 그릴 것이 있는 타임라인인가 (몸에 붙는 Effect 구간 — timeline 이 꺼내는 것)."""
+        """감정 표현에 그릴 것이 있는 타임라인인가 (Effect 구간이나 소품)."""
         with self._lock:
             tl = self._timeline(name)
-        return any(pl for _iv, pl in _effects_on_self(tl))
+        return any(True for _ in _effects(tl)) or bool(_props(tl))
+
+    def props(self, name: str) -> list[dict]:
+        """감정 표현 타임라인의 소품 (머리 설명 props) — 없으면 []."""
+        with self._lock:
+            return _props(self._timeline(name))
+
+    def pack(self) -> A.AssetPack:
+        """이펙트용 CAB 표 (소품 prefab·소품 동작도 여기 있다)."""
+        with self._lock:
+            return self._assets()[0]
 
     def timeline(self, name: str) -> dict | None:
         """감정 표현 타임라인 → 모델 json 의 fx 값 (구간 시각 begin·end·follow 를 더한 tracks, prefabs). 없으면 None."""
         with self._lock:
             tl = self._timeline(name)
             tracks, prefabs, index = [], [], {}
-            for iv, pl in _effects_on_self(tl):
+            for iv, pl in _effects(tl):
                 i = self._prefab_index(_effect_path(pl), index, prefabs)
                 if i is None:
                     continue
                 tr = _track(pl, i, False)
+                if (pl.get("PosRefActor") or "Self") == PROP_ACTOR:
+                    tr["bone"] = tr["rbone"] = _prop_bone(pl)
+                    if not tr["bone"]:   # 어느 소품인지 모른다
+                        continue
                 tr["begin"] = float(iv.get("BeginTime") or 0)
                 tr["end"] = None if iv.get("IsInfinite") else float(iv.get("EndTime") or 0)
                 tr["follow"] = ((pl.get("PositionAttachmentInfo") or {}).get("EffectAttachmentType") or "Attached") == "Attached"
@@ -615,15 +633,48 @@ def _effect_path(pl: dict) -> str:
     return ((pl.get("PrefabPathGroups") or {}).get("Default") or {}).get("Lod0") or ""
 
 
-def _effects_on_self(tl: dict | None):
-    """타임라인 → 몸(Self)에 붙는 Effect 구간 (구간, Playable) — 소품(TimelineProp)에 붙는 것은 뺀다."""
+PROP_ACTOR = "TimelineProp"
+
+
+def _intervals(tl: dict | None, kind: str):
+    """타임라인 → 켜진 kind 트랙의 (구간, Playable)."""
     for t in (tl or {}).get("Tracks") or []:
-        if not t.get("IsEnabled", True) or t.get("Type") != "Effect":
+        if t.get("IsEnabled", True) and t.get("Type") == kind:
+            for iv in t.get("Intervals") or []:
+                yield iv, iv.get("Playable") or {}
+
+
+def _effects(tl: dict | None):
+    """타임라인 → 몸이나 소품에 붙는 Effect 구간 (구간, Playable) — 다른 배우(상대 등)에 붙는 것은 뺀다."""
+    for iv, pl in _intervals(tl, "Effect"):
+        if _effect_path(pl) and (pl.get("PosRefActor") or "Self") in ("Self", PROP_ACTOR):
+            yield iv, pl
+
+
+def _prop_bone(pl: dict) -> str:
+    """소품에 붙는 Effect 구간 → 소품 뼈 이름 (없으면 소품 루트 = PropKey)."""
+    info = pl.get("PosRefPropInfo") or {}
+    return info.get("BoneName") or info.get("PropKey") or ""
+
+
+def _props(tl: dict | None) -> list[dict]:
+    """타임라인 → 소품 (Effects.props)."""
+    anims: dict[str, tuple] = {}
+    for iv, pl in _intervals(tl, "PropAnimation"):
+        if pl.get("PropKey") and pl.get("AnimationClipPath"):
+            anims.setdefault(pl["PropKey"], (ASSET + pl["AnimationClipPath"], float(iv.get("BeginTime") or 0)))
+    out = []
+    for iv, pl in _intervals(tl, "Prop"):
+        if not pl.get("AssetPath"):
             continue
-        for iv in t.get("Intervals") or []:
-            pl = iv.get("Playable") or {}
-            if _effect_path(pl) and (pl.get("PosRefActor") or "Self") == "Self":
-                yield iv, pl
+        bone = pl.get("AttachBoneName") or ""
+        a = anims.get(pl.get("PropKey") or "")
+        out.append({"key": pl.get("PropKey") or "", "path": ASSET + pl["AssetPath"], "bone": "" if bone == TL.ROOT else bone,
+                    "off": [_r(v) for v in (pl.get("DefaultLocalOffset") or [0, 0, 0])],
+                    "rot": euler_quat(pl.get("DefaultLocalRotation") or [0, 0, 0]),
+                    "begin": float(iv.get("BeginTime") or 0), "end": float(iv.get("EndTime") or 0),
+                    "anim": a[0] if a else None, "abegin": a[1] if a else 0.0})
+    return out
 
 
 def _track(pl: dict, fx: int, hood: bool) -> dict:
