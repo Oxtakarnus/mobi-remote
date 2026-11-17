@@ -312,11 +312,23 @@
     (`anim.pick_clip` — 한 묶음(CAB)에 다른 파일의 클립이 여럿 들어 있어 첫 클립을 쓰면 82개가 엉뚱한 동작이었다. 대소문자만 다른
     이름·클립 하나뿐인 파일·시작과 반복이 한 파일에 든 것(요가 → 반복)도 맞춘다). 이 형식은 `CLIP_FORMAT` 이라 바뀌면 동작 클립만 지운다.
     회전 키 보간은 직접 계산한다 (`anim.lerpQuat`) — 키 길이가 정확히 1 이 아니라 three.js slerp 가 작은 각을 건너뛰어, 일부 뼈만
-    30fps 계단으로 움직이며 옆 뼈와 엇갈려 몸이 떨렸다.
+    30fps 계단으로 움직이며 옆 뼈와 엇갈려 몸이 떨렸다. 오일러 커브는 X → Y → Z 순서로 돈다 (`CLIP_FORMAT` 3 — Unity 기본
+    Z → X → Y 로 풀어 응원 댄스·레트로 댄스 등 35개가 깨졌었다).
     표정은 Facial 시트(게임 표정 메뉴 25개 — 이모지·이름·체형별 `PlayerCommon_FaceOnly_*_Facial`)로, 얼굴 뼈만 움직이는 클립을
-    지금 동작 위에 반복해 얹는다 (`Dresser.setExpr`, 시선은 그대로 켜 둔다). 눈·눈썹·눈꺼풀·턱은 움직이지만
-    입 그림(4×8 표 칸)은 안 바뀐다 — 클립에 입 곡선이 없고, FacialStageTimeline 시트(표정 클립 → 같은 이름 키)가 가리키는
-    자산을 아직 못 찾았다.
+    지금 동작 위에 반복해 얹는다 (`Dresser.setExpr`, 시선은 그대로 켜 둔다).
+    표정 짝 클립(`*_Facial`)의 입 그림 칸·표정 눈 그림·눈 메시 숨김·눈꺼풀 모프는 뼈 클립이 아니라 표정 키 파일
+    (ResourcesPackage `Animation/XafAnimation/…xaf` — 3ds Max XAF)에 있다 (`dress/xaf.py` → 클립 json `face`, `CLIP_FORMAT` 4).
+    뷰어는 뼈 클립과 같은 시간으로 키를 펴서(`facial.js FaceKeys`) 머리·눈 모델에 얹는다 (`Model.setFace` — 입 표 칸,
+    표정 눈 그림 `Female_Eye_Emotion_00` 4×8 표, 보통 눈 끄기, 눈꺼풀 모프). 표정 키가 눈꺼풀을 움직이는 동안 저절로 깜빡이기는 쉰다.
+    동작의 표정 짝 키와 표정 탭 키가 겹치면 표정 탭이 이긴다. 입술 위치 키(`_MouthMapScalePosition`)·입술 그림 보이기는 아직 안 쓴다.
+  - 감정 표현 타임라인 (11-17, `dress/fx.py` timeline·props·ik, 뷰어 `emote.js`·`ik.js`): 게임은 감정 표현마다 StageTimelines 타임라인을
+    둔다 — 동작 표 `timeline` (감정 표현 단계 줄기 → 타임라인, 시트 ActionStageTimeline 의 배우·'Any' 갈래를 먼저, 없으면 이름 규칙).
+    모델 'tl:<타임라인>' 에 구간마다 시작·끝 시각이 붙은 이펙트(몸 뼈나 소품 뼈에), 소품('tlp:' — 무기처럼 몸 뼈 밑에 붙인 prefab,
+    'tlc:' 소품 동작 — 소품 루트 기준 경로라 `Clip.rebase`), 손 IK(위팔·아래팔 두 마디 — 마시멜로·나팔·빨대를 입에),
+    소켓(입 이펙트 `_Lip_Effect` — 얼굴형 prefab 에만 있고 기본 머리엔 없어 체형 폴더마다 HeadA 에서 꺼낸다)을 싣는다.
+    뷰어는 지금 단계의 시간(`Motion.clock` — 반복 단계는 바퀴마다 0 부터)으로 구간 안에서만 튼다.
+    소품 동작 경로가 목차에 없는 몇 개(테이크아웃 음료·군고구마·마술 모자·빗자루 — 편집기 전용 경로 등)는 소품만 가만히 든다.
+    안 쓰는 트랙: ObjectVisibility(모자 숨기기 등)·AdditiveRenderer·소품 prefab 안 파티클(마시멜로 김 등).
   - 명암은 게임 캐릭터 셰이더를 역산한 식(참고한 웹 드레스룸)을 옮겼다 — 월드 고정 빛, 발→머리 높이 그라데이션, 경계 띠,
     실루엣·외곽선 색. 머티리얼 값(`_TintColor`·`_ShadingType`·`_FlatShadingAmount*`·`_CullType` 등)과 키워드를 export 가 꺼낸다.
     알파 자르기는 `_ALPHATEST_ON` 재질만 (금속·가죽 재질의 알파는 구멍이 아니라 재질 자리 표시).
@@ -384,7 +396,7 @@
     곳만. 하의가 상의를 자를 때는 허리 판이 종아리·발까지 맡고 혼자 넘어도 숨긴다. 치마 메시는 신발이,
     상의의 겉옷(outer) 메시는 하의·신발이 자르지 않는다 (`cover.js uncut`, 참고한 웹 드레스룸의 예외).
 - 설치판: UnityPy 가 필요해 런타임 구성 값이 바뀐다 (패치가 아니라 설치 파일). 패치만 받은 옛 설치판은 모델을 꺼낼 때 그 안내를 띄운다.
-- 2차로 남긴 것: 칸별 재질 이름, 표정의 입 그림, 포즈 고르기,
+- 2차로 남긴 것: 칸별 재질 이름, 포즈 고르기, 감정 표현 타임라인의 ObjectVisibility·AdditiveRenderer·소품 안 파티클,
   무대 조명(자홍 스포트·청록 점광)을 캐릭터 명암에, 환생 무대 별 돔(다른 번들).
 
 ## NPC 대화 (`mabi/tasks/dialogue.py`) · 화면 글자 (`mabi/tasks/ui_text.py`)

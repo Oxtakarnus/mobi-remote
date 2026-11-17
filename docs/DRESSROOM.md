@@ -14,6 +14,7 @@
   export.Exporter ── 모델 하나 → models\<id>.json + .bin, 텍스처 tex\*.png   (service.DressRoom 이 캐시·판 번호 관리)
         │
   web/dressroom ──── 조립: dresser.js (입히기·색·동작·무기·흔들림) · viewer.js (그리기) · cover.js (가림) · fit.js (겹침·몸 자르기)
+                           motion.js (동작 단계) · facial.js (표정 키) · emote.js·ik.js (감정 표현 이펙트·소품·손 IK) · fx.js (파티클)
                      화면: main.js (상태·기억) · list.js (목록 칸) · cards.js (옷 카드) · looks.js (기억 값 검사) · view.js (옵션) · ui.js
 ```
 
@@ -34,6 +35,9 @@
 | 이름·아이콘·부위 | 시트 Costume·CharacterHair·Equipment | 영어 모델 이름 | `names` |
 | 의상 이펙트 | 시트 StageObjectModelTimeline + ResourcesPackage 본 목차 타임라인 | — | `fx` |
 | 동작 클립 | 묶음 안에서 파일 이름과 같은 이름의 클립 | — | `anim.pick_clip` |
+| 표정 입·눈 그림·눈꺼풀 | 표정 짝 클립의 표정 키 xaf (ResourcesPackage `Animation/XafAnimation/`) | 뼈만 | `xaf`, `web/dressroom/facial.js` |
+| 감정 표현 이펙트·소품·손 IK | 시트 ActionStageTimeline → StageTimelines 타임라인 | 이름 규칙 (`Emotion_<키>[_HF·HM·HC]`) | `motions.timelines`, `fx`, `emote.js` |
+| 입 이펙트 소켓 `_Lip_Effect` | 얼굴형 prefab | 체형 폴더의 HeadA prefab (기본 머리엔 없다) | `catalog.head_prefab` |
 | 회전 키 보간 | 직접 계산 (`anim.lerpQuat`) — three.js slerp 쓰지 않음 | — | `web/dressroom/anim.js` |
 
 ## 지킬 규칙
@@ -73,6 +77,9 @@
 | 베일문 가디언 아머(아이)·남성 중갑신발을 못 꺼냄 | 법선이 4칸(x,y,z,w) | `export._cols` 앞 칸만 |
 | 동작 중 몸 떨림 | three.js slerp 가 길이 1 이 아닌 키의 작은 각을 건너뜀 | `anim.lerpQuat` |
 | 동작 82개가 엉뚱함 | 묶음의 첫 클립을 씀 | `anim.pick_clip` |
+| 응원 댄스·레트로 댄스 등 35개 동작이 깨짐 | 오일러 커브를 Unity 기본 순서(Z → X → Y)로 풂 | X → Y → Z (`CLIP_FORMAT` 3) |
+| 표정·감정 표현에 입 모양·표정 눈이 안 바뀜 | 뼈 클립만 틂 — 그림 칸·보이기·모프는 표정 키 파일에 따로 있다 | `xaf` (`CLIP_FORMAT` 4) |
+| 드래곤 브레스 불·마시멜로 같은 감정 표현 이펙트·소품이 없음 | 감정 표현 타임라인을 안 읽음 | `fx.timeline`·`props`·`ik` |
 | 격투가 클록 어깨가 주황 | 칸 i = 채널 i 로 칠함 | DyeInfo 배선 |
 | 재질·그림 몇 개 빠짐 | 묶음 파일 목차 번호 0 항목을 버림 | `gamefiles._entry`, `assets._starts` |
 | 가끔 다른 번들 내용이 섞임 | UnityPy 가 이름 없는 번들을 메모리 주소로 이름 지어 덮어씀 | 열 때 이름을 준다 |
