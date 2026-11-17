@@ -13,7 +13,12 @@
               소품에 붙는 구간(PosRefActor TimelineProp)은 그 소품 뼈(PosRefPropInfo.BoneName, 없으면 소품 루트 = PropKey)에
   props()     Prop 구간 → 소품 [{key, path(prefab), bone(AttachBoneName, '' = 뼈대 루트), off, rot, begin, end,
               anim(같은 PropKey 의 PropAnimation 클립 fbx | None), abegin}] — 소품 prefab 은 무기처럼 몸 뼈 밑에 붙여 꺼낸다
-              (service 'tlp:'), 소품 동작은 그 prefab 뼈 경로 기준 클립 ('tlc:'). 손 IK·ObjectVisibility·소품 안 파티클은 없다
+              (service 'tlp:'), 소품 동작은 그 prefab 뼈 경로 기준 클립 ('tlc:'). ObjectVisibility·소품 안 파티클은 없다
+  ik()        IKControl 구간 → 손 IK [{bone(움직일 손바닥), mode, target, dest, begin, end, fin, fout}]
+              mode 'disp' (DisplacementPosition — target 뼈가 dest 뼈에 닿게 손을 옮긴다: 소품을 입에),
+              'ref' (IKReferenceableEffectBone — 손바닥을 target 뼈에: 소품 손잡이를 잡는다). fin·fout 는 섞는 시간(초)
+  입 이펙트 소켓(_Lip_Effect)은 얼굴형 prefab(HeadA 등)에만 있고 기본 머리에는 없다 — service 가 체형 폴더마다
+  HeadA prefab 에서 꺼내 'tl:' 에 싣는다 (sockets)
 AssetPackages  Fx/1_Effect/Character/0_Common/Fashion/FX_*.prefab · …/Emotion/FX_*.prefab (감정 표현) — ParticleSystem 노드 트리. 재질·그림·메시는 Fx/**/0_Resource/,
                  셰이더는 Shaders/MMN/FX/·Shaders/MMN/CH/MMN_CharacterFX* 에 있다. 이펙트용 CAB 표는 dressroom\\fx\\ 에 따로 둔다
                  (캐릭터 표를 키우지 않게 — 무대 stage 와 같은 방식).
@@ -376,6 +381,11 @@ class Effects:
             tl = self._timeline(name)
         return any(True for _ in _effects(tl)) or bool(_props(tl))
 
+    def ik(self, name: str) -> list[dict]:
+        """감정 표현 타임라인의 손 IK (머리 설명 ik) — 없으면 []."""
+        with self._lock:
+            return _ik(self._timeline(name))
+
     def props(self, name: str) -> list[dict]:
         """감정 표현 타임라인의 소품 (머리 설명 props) — 없으면 []."""
         with self._lock:
@@ -655,6 +665,29 @@ def _prop_bone(pl: dict) -> str:
     """소품에 붙는 Effect 구간 → 소품 뼈 이름 (없으면 소품 루트 = PropKey)."""
     info = pl.get("PosRefPropInfo") or {}
     return info.get("BoneName") or info.get("PropKey") or ""
+
+
+_IK_MODE = {"DisplacementPosition": "disp", "IKReferenceableEffectBone": "ref"}
+
+
+def _ik(tl: dict | None) -> list[dict]:
+    """타임라인 → 손 IK (Effects.ik)."""
+    out = []
+    for iv, pl in _intervals(tl, "IKControl"):
+        mode = _IK_MODE.get(pl.get("IKControlTarget") or "")
+        bone, target, dest = pl.get("ControlBoneName") or "", pl.get("TargetBoneName") or "", pl.get("DisplacementTargetBoneName") or ""
+        if not mode or not bone or not target or (mode == "disp" and not dest):
+            continue
+        fade = pl.get("FadeInOutInfo") or {}
+        out.append({"bone": bone, "mode": mode, "target": target, "dest": dest if mode == "disp" else "",
+                    "begin": float(iv.get("BeginTime") or 0), "end": float(iv.get("EndTime") or 0),
+                    "fin": float(fade.get("FadeInDuration") or 0), "fout": float(fade.get("FadeOutDuration") or 0)})
+    return out
+
+
+def ik_bones(ik: list[dict]) -> set[str]:
+    """손 IK 가 쓰는 뼈 이름들."""
+    return {b for x in ik for b in (x["bone"], x["target"], x["dest"]) if b}
 
 
 def _props(tl: dict | None) -> list[dict]:

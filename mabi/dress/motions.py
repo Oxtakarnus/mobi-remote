@@ -37,7 +37,7 @@ log = logging.getLogger("mabi")
 FORMAT = 5   # 2: 표정(face) 갈래, 3: 무기를 꺼내 드는 공통 동작 drawn, 4: 직업별 동작 jobs·전투 자세·경계 걷기 등,
              # 5: 감정 표현 타임라인 timeline
 CATS = (("common", "공통"), ("customize", "꾸미기"), ("emotion", "감정 표현"), ("face", "표정"))
-FOLDERS = tuple(sorted({v[1] for v in C.BODIES.values()}))    # Female · Infant · Male
+FOLDERS = C.FOLDERS
 ACTORS = {"Female": "PlayerFemale", "Male": "PlayerMale", "Infant": "PlayerInfant"}   # 동작 타임라인 시트의 배우
 SUFFIX = {"Female": "HF", "Male": "HM", "Infant": "HC"}                                # 타임라인 이름 끝
 SHAPES = tuple(C.STAND)   # 뷰어 셰이프 이름 ('' 기본·Thin·Fat·Muscular)

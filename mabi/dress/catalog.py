@@ -200,6 +200,14 @@ def body_paths(body: str) -> dict[str, str]:
     return {"body": H + f"FBX/{b}.fbx", "head": face + "_Head_Default_00.fbx", "eye": face + "_Eye_Default_00.fbx"}
 
 
+FOLDERS = tuple(sorted({v[1] for v in BODIES.values()}))   # 체형 폴더 Female · Infant · Male
+
+
+def head_prefab(folder: str) -> str:
+    """체형 폴더 → 얼굴형 A prefab (입 이펙트 소켓 _Lip_Effect 가 있다 — 기본 머리 prefab 에는 없다)."""
+    return H + f"Facial/Customize/{folder}/Head/{folder}_HeadA_00.prefab"
+
+
 def stand_path(body: str, shape: str) -> str:
     """체형·셰이프 → 꾸미기 화면 대기 동작 fbx."""
     _, folder, _, pre = BODIES[body]

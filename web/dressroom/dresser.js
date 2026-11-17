@@ -557,7 +557,7 @@ export class Dresser {
     return Promise.all(steps.map(async (s) => {
       if (!s.tl || !rig) return null;
       try {
-        return await Emote.load(s.tl, (id) => this.url(id), rig);
+        return await Emote.load(s.tl, (id) => this.url(id), rig, this.folder());
       } catch (e) {
         console.warn('감정 표현 이펙트를 불러오지 못했습니다', s.tl, e);
         return null;
@@ -626,6 +626,11 @@ export class Dresser {
       }
     }
     if (this.fit) this.fit.apply();
+    if (this.tl.length) {   // 감정 표현 손 IK — 몸 크기까지 맞춘 자세에서 소품을 입에
+      const [step, t] = this.tlClock;
+      const e = this.tl[step];
+      if (e) e.reach(this.rig, t);
+    }
     for (const m of this.base) if (m) m.setFace(face ? vals : null);
     this.faceBlinks = face && hasMorph(vals);
   }

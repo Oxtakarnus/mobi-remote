@@ -258,7 +258,8 @@ class DressRoom:
         · 'face:<부품 모델>' (얼굴형·눈·수염 메시) · 'decal:<부품 모델>' (입·문신 그림 — {"tex": 이름})
         · 'stage:rebirth' (환생 무대) · 'light:presets' (조명 프리셋) — stage
         · 'tl:<타임라인>' (감정 표현 이펙트·소품 — {"fx": fx.timeline 값 | null, "props": [{key, bone, begin, end, abegin,
-          model: 'tlp:<타임라인>:<번호>', clip: 'tlc:<타임라인>:<번호>' | null}]}, 동작 표 timeline 에 있는 것만)
+          model: 'tlp:<타임라인>:<번호>', clip: 'tlc:<타임라인>:<번호>' | null}], "ik": fx.ik 값,
+          "sockets": {체형 폴더: 뼈대 노드 — 몸에 없는 소켓(_Lip_Effect)}}, 동작 표 timeline 에 있는 것만)
           'tlp:' 소품 모델 (무기처럼 몸 뼈 밑 — json attach[0].node 가 소품 루트 경로) · 'tlc:' 소품 동작 (소품 루트 기준 경로)
         처음 보는 오류도 DressError 로 바꾼다 (_guard).
         """
@@ -317,8 +318,9 @@ class DressRoom:
         if name not in set(((self._motions or {}).get("timeline") or {}).values()):
             raise DressError(f"모르는 모델: {mid}")
         effects = self._effects_lib()
+        pack = self.pack()
         if kind == "tl":
-            return self._build(rel, lambda out: write_json(out, self._timeline_json(effects, name)))
+            return self._build(rel, lambda out: write_json(out, self._timeline_json(effects, name, pack)))
         props = self._props(effects, name)
         if not i.isdigit() or int(i) >= len(props):
             raise DressError(f"모르는 모델: {mid}")
@@ -343,22 +345,23 @@ class DressRoom:
         known = effects.pack().paths
         return [dict(p, anim=p["anim"] if p["anim"] in known else None) for p in effects.props(name) if p["path"] in known]
 
-    @classmethod
-    def _timeline_json(cls, effects: FX.Effects, name: str) -> dict:
-        """'tl:' 내용. 이펙트·소품은 덤이라 못 꺼내면 빈 값 (환경 탓이면 반쪽 표시 — 다음에 다시)."""
-        try:
-            fx = effects.timeline(name)
-        except Exception as e:   # noqa: BLE001
-            TX.problem(f"감정 표현 이펙트를 꺼내지 못했습니다 ({name})", e)
-            fx = None
-        try:
-            props = cls._props(effects, name)
-        except Exception as e:   # noqa: BLE001
-            TX.problem(f"감정 표현 소품을 읽지 못했습니다 ({name})", e)
-            props = []
+    def _timeline_json(self, effects: FX.Effects, name: str, pack: A.AssetPack) -> dict:
+        """'tl:' 내용. 이펙트·소품·IK 는 덤이라 못 꺼내면 빈 값 (환경 탓이면 반쪽 표시 — 다음에 다시)."""
+        def part(what, fn, empty):
+            try:
+                return fn()
+            except Exception as e:   # noqa: BLE001
+                TX.problem(f"감정 표현 {what}을 꺼내지 못했습니다 ({name})", e)
+                return empty
+        fx = part("이펙트", lambda: effects.timeline(name), None)
+        props = part("소품", lambda: self._props(effects, name), [])
+        ik = part("손 IK", lambda: effects.ik(name), [])
+        want = FX.bones(fx) | FX.ik_bones(ik)
+        sockets = part("소켓", lambda: {f: FX.sockets(pack, C.head_prefab(f), want) for f in C.FOLDERS} if want else {}, {})
         return {"fx": fx, "props": [{"key": p["key"], "bone": p["bone"], "begin": p["begin"], "end": p["end"],
                                      "abegin": p["abegin"], "model": f"tlp:{name}:{k}",
-                                     "clip": f"tlc:{name}:{k}" if p["anim"] else None} for k, p in enumerate(props)]}
+                                     "clip": f"tlc:{name}:{k}" if p["anim"] else None} for k, p in enumerate(props)],
+                "ik": ik, "sockets": {f: s for f, s in sockets.items() if s}}
 
     def _face_keys(self, fbx: str) -> dict | None:
         """표정 짝의 표정 키 (입·눈 그림 칸, 눈 메시 보이기, 눈꺼풀 모프 — xaf). 못 읽으면 경고만 하고 뼈만 튼다."""

@@ -223,7 +223,18 @@ class EmotionTimelineTest(unittest.TestCase):
             "PropKey": "FX_P", "AssetPath": "Fx/P.prefab", "AttachBoneName": "_HandtoolL", "DefaultLocalOffset": [0, 0.1, 0]}},
             {"BeginTime": 1, "EndTime": 2, "Playable": {"PropKey": "FX_Q", "AssetPath": "Fx/Q.prefab", "AttachBoneName": "#MODEL_ROOT"}}]},
         {"Type": "PropAnimation", "Intervals": [{"BeginTime": 0.5, "EndTime": 10, "Playable": {
-            "PropKey": "FX_P", "AnimationClipPath": "Fx/P_Ani.fbx"}}]}]}
+            "PropKey": "FX_P", "AnimationClipPath": "Fx/P_Ani.fbx"}}]},
+        {"Type": "IKControl", "Intervals": [
+            {"BeginTime": 5.1, "EndTime": 6.7, "Playable": {
+                "ControlBoneName": "_L Palm", "IKControlTarget": "DisplacementPosition", "TargetBoneName": "_P_00",
+                "DisplacementTargetBoneName": "_Lip_Effect", "FadeInOutInfo": {"FadeInDuration": 0.3, "FadeOutDuration": 0.42}}},
+            {"BeginTime": 0, "EndTime": 9, "Playable": {
+                "ControlBoneName": "_R Palm", "IKControlTarget": "IKReferenceableEffectBone", "TargetBoneName": "_Straw",
+                "DisplacementTargetBoneName": "_Lip_Effect"}},
+            {"BeginTime": 0, "EndTime": 1, "Playable": {
+                "ControlBoneName": "_R Palm", "IKControlTarget": "DisplacementPosition", "TargetBoneName": "_Straw"}},
+            {"BeginTime": 0, "EndTime": 1, "Playable": {
+                "ControlBoneName": "_R Palm", "IKControlTarget": "Other", "TargetBoneName": "_Straw"}}]}]}
 
     def effects(self, tl):
         fx = FX.Effects(Path("."), Path("."))
@@ -252,6 +263,15 @@ class EmotionTimelineTest(unittest.TestCase):
                          ("FX_P", A + "Fx/P.prefab", "_HandtoolL", [0.0, 0.1, 0.0], 0.0, 10.0, A + "Fx/P_Ani.fbx", 0.5))
         self.assertEqual((q["bone"], q["anim"]), ("", None))   # 뼈대 루트, 소품 동작 없음
         self.assertEqual(self.effects(self.TL).props("없음"), [])
+
+    def test_ik(self):
+        a, b = self.effects(self.TL).ik("TL")   # dest 없는 disp·모르는 방식은 뺀다
+        self.assertEqual(a, {"bone": "_L Palm", "mode": "disp", "target": "_P_00", "dest": "_Lip_Effect",
+                             "begin": 5.1, "end": 6.7, "fin": 0.3, "fout": 0.42})
+        self.assertEqual((b["mode"], b["target"], b["dest"], b["fin"]), ("ref", "_Straw", "", 0.0))
+        self.assertEqual(FX.ik_bones([a, b]), {"_L Palm", "_P_00", "_Lip_Effect", "_R Palm", "_Straw"})
+        self.assertTrue(self.effects({"Tracks": self.TL["Tracks"][-1:]}).useful("TL") is False)   # IK 만으로는 쓸모 없다
+        self.assertEqual(C.head_prefab("Infant"), C.H + "Facial/Customize/Infant/Head/Infant_HeadA_00.prefab")
 
     def test_service_props(self):
         fx = self.effects(self.TL)

@@ -1,25 +1,29 @@
-// 감정 표현 타임라인 한 단계 — 이펙트(fx)와 소품(prop). 모델 id 'tl:<타임라인>' ({fx, props}, mabi/dress/service.py).
-// 소품은 몸 뼈 밑에 붙는 모델('tlp:' — 패션 무기처럼 뼈대에 소품 뼈를 더한다)과 소품 동작('tlc:' — 소품 루트 기준
-// 경로라 뼈대에 놓을 땐 소품 루트 경로를 앞에 붙인다). 동작의 그 단계 시간(motion.js clock)으로 구간 안에서만 보이고 돈다.
+// 감정 표현 타임라인 한 단계 — 이펙트(fx)·소품(prop)·손 IK. 모델 id 'tl:<타임라인>' ({fx, props, ik, sockets},
+// mabi/dress/service.py). 소품은 몸 뼈 밑에 붙는 모델('tlp:' — 패션 무기처럼 뼈대에 소품 뼈를 더한다)과 소품 동작('tlc:' —
+// 소품 루트 기준 경로라 뼈대에 놓을 땐 소품 루트 경로를 앞에 붙인다). sockets 는 기본 머리에 없는 입 이펙트 소켓 같은
+// 노드 (체형 폴더마다 — 얼굴형 모델에 이미 있으면 그대로 둔다). 동작의 그 단계 시간(motion.js clock)으로 구간 안에서만 돈다.
 import * as THREE from './vendor/three.module.min.js';
 import { Model, loadModel, fxTexture } from './viewer.js';
 import { FxPlayer } from './fx.js';
 import { loadClip } from './anim.js';
+import { solveIk } from './ik.js';
 
 export class Emote {
-  /** fx: 메시 없이 이펙트만 든 Model | null · props: [{model, clip, begin, end, abegin}] */
-  constructor(rig, fx, props) {
+  /** fx: 메시 없이 이펙트만 든 Model | null · props: [{model, clip, begin, end, abegin}] · ik: 손 IK (ik.js) */
+  constructor(rig, fx, props, ik = []) {
     this.rig = rig;
     this.fx = fx;
     this.props = props;
+    this.ik = ik;
   }
 
-  /** 타임라인 name 을 불러온다 — urlOf(모델 id) → 주소. 소품 뼈는 rig 에 붙인다. 그릴 것이 없으면 null.
-   *  소품 하나를 못 불러오면 그것만 빼고 (덤이다), 타임라인 자체를 못 읽으면 예외. */
-  static async load(name, urlOf, rig) {
+  /** 타임라인 name 을 불러온다 — urlOf(모델 id) → 주소. 소품 뼈·소켓(folder: 체형 폴더 것)은 rig 에 붙인다.
+   *  그릴 것이 없으면 null. 소품 하나를 못 불러오면 그것만 빼고 (덤이다), 타임라인 자체를 못 읽으면 예외. */
+  static async load(name, urlOf, rig, folder = '') {
     const id = 'tl:' + name;
     const url = await urlOf(id);
     const meta = await (await fetch(url)).json();
+    rig.add(((meta && meta.sockets) || {})[folder] || []);
     let fx = null;
     if (meta && meta.fx) {
       const group = new THREE.Group();
@@ -41,8 +45,9 @@ export class Emote {
         return null;
       }
     }))).filter(Boolean);
-    if (!fx && !props.length) return null;
-    return new Emote(rig, fx, props);
+    const ik = (meta && meta.ik) || [];
+    if (!fx && !props.length && !ik.length) return null;
+    return new Emote(rig, fx, props, ik);
   }
 
   /** 장면에 넣을 모델들. */
@@ -58,6 +63,11 @@ export class Emote {
       if (p.model.shown !== on) p.model.setShown(on);
       if (on && p.clip) p.clip.apply(rig, t - p.abegin, false);
     }
+  }
+
+  /** 손 IK — 몸 조절까지 다 얹은 뒤 (t: pose 와 같다). */
+  reach(rig, t) {
+    if (this.ik.length && rig === this.rig && t !== null) solveIk(rig, this.ik, t);
   }
 
   /** 이펙트 한 걸음 (fx.js FxPlayer.update — t 가 null 이면 멈춘다). */
