@@ -192,6 +192,16 @@ def _four(a, n: int, dtype, fill) -> np.ndarray:
     return out
 
 
+def _weights(bone_idx, bone_w, n: int) -> np.ndarray:
+    """뼈 무게 → (n, 4). 정점마다 뼈 하나뿐인 메시(눈알·눈 그림판·눈 그늘)는 무게 칸 없이 번호만 온다 — 그 뼈에 1.
+    무게가 없다고 _fill_empty 가 첫 뼈로 몰면 오른눈이 왼눈 뼈를 따라가 표정이 눈동자를 줄이거나 돌릴 때 어긋난다."""
+    if bone_w is None and bone_idx is not None:
+        w = np.zeros((n, 4), np.float32)
+        w[:, 0] = 1.0
+        return w
+    return _four(bone_w, n, np.float32, 0.0)
+
+
 def _fill_empty(idx: np.ndarray, w: np.ndarray) -> None:
     """무게가 없는 정점(모자 등 통째로 붙는 메시)은 첫 뼈에 붙인다."""
     empty = w.sum(1) <= 1e-6
@@ -225,7 +235,7 @@ def _unity_src(r, mesh, by_id, cut: bool) -> _Src | None:
     paths = [by_id.get(b.m_PathID) for b in bones]
     if bones and len(binds) == len(bones) and all(p is not None for p in paths):
         idx = _four(h.m_BoneIndices, n, np.uint16, 0)
-        w = _four(h.m_BoneWeights, n, np.float32, 0.0)
+        w = _weights(h.m_BoneIndices, h.m_BoneWeights, n)
         _fill_empty(idx, w)
         bind = np.array([[getattr(m, f"e{i}{j}") for i in range(4) for j in range(4)] for m in binds], np.float32)
         skin = (paths, idx, w, bind)

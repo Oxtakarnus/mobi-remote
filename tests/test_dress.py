@@ -138,6 +138,20 @@ class ExportHelperTest(unittest.TestCase):
         self.assertEqual(E._four(None, 2, np.float32, 0.5).tolist(), [[0.5] * 4] * 2)
         self.assertEqual(E._four([[1, 2]], 3, np.uint16, 7).tolist(), [[7] * 4] * 3)   # 정점 수가 다르면 버린다
 
+    def test_weights_one_bone(self):
+        # 뼈 하나짜리 스킨은 무게 없이 번호만 온다 — 번호를 살리고 무게 1 (눈알: 왼눈·오른눈 뼈)
+        idx = E._four([[0], [1], [1]], 3, np.uint16, 0)
+        w = E._weights([[0], [1], [1]], None, 3)
+        E._fill_empty(idx, w)
+        self.assertEqual(idx[:, 0].tolist(), [0, 1, 1])
+        self.assertEqual(w.tolist(), [[1, 0, 0, 0]] * 3)
+        # 무게가 있으면 그대로, 번호도 무게도 없으면 첫 뼈
+        self.assertEqual(E._weights([[0, 1]], [[0.75, 0.25]], 1).tolist(), [[0.75, 0.25, 0, 0]])
+        idx = E._four(None, 2, np.uint16, 0)
+        w = E._weights(None, None, 2)
+        E._fill_empty(idx, w)
+        self.assertEqual((idx[:, 0].tolist(), w[:, 0].tolist()), ([0, 0], [1, 1]))
+
     def test_cols(self):
         self.assertEqual(E._cols([[1, 2, 3, 9], [4, 5, 6, 9]], 2, 3).tolist(), [[1, 2, 3], [4, 5, 6]])   # 4칸 법선
         self.assertEqual(E._cols([1, 2, 3, 4], 2, 2).tolist(), [[1, 2], [3, 4]])                       # 납작한 목록

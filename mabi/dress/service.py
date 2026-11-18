@@ -54,7 +54,8 @@ FORMAT = 17   # 꺼낸 모델 형식 — 바뀌면 캐시를 비운다 (2: 뼈�
              # 10: 재질마다 받는 염색 칸 slots — 의상 색 6칸, 11: 옷 자르는 판 sep·겹침 순서 fit,
              # 12: 발광 emit·가장자리 빛 fresnel, 13: 모든 모델에 게임 부위 fit.slot — 백팩,
              # 14: 스타킹 stocking, 15: 보석 gem, 16: 의상 이펙트 fx·소켓 노드, 17: 재질 배정은 게임 prefab 을 따른다)
-MESH_FORMAT = 1   # 모델 json 에만 더한 것 — 바뀌면 동작 클립 밖의 모델만 비운다, 텍스처·아이콘은 둔다 (1: 옷·머리 흔들림 cloth)
+MESH_FORMAT = 2   # 모델 json 에만 더한 것 — 바뀌면 동작 클립 밖의 모델만 비운다, 텍스처·아이콘은 둔다 (1: 옷·머리 흔들림 cloth,
+                  #  2: 정점마다 뼈 하나뿐인 메시의 뼈 번호 — export._weights)
 CLIP_FORMAT = 4   # 꺼낸 동작 클립 형식 — 바뀌면 동작 클립(clip_*·anim_*)만 비운다 (2: 묶음 안 여러 클립 중 그 파일 것 — anim.pick_clip,
                   #  3: 오일러 커브를 X → Y → Z 순서로, 4: 표정 짝에 표정 키 face — xaf)
 TOOL_BODY = "Female"   # 무기 기본 자세 (모델 json 은 체형 공용 — 다른 체형 자세는 attach 표에서 뷰어가 고른다)
