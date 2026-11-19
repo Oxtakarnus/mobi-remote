@@ -1,6 +1,6 @@
 """태스크 모음. 각 태스크는 run(bot, cfg) -> str 형태이고, 반환값은 실행 요약 문자열이다.
 캐릭터 접속(login)은 run.py 가 캐릭터마다 먼저 실행하므로 여기 목록에는 없다."""
-from . import arbeit, black_hole, daily_mission, drill, field_boss, silver, tribute, vanguard, weekday, weekend
+from . import arbeit, black_hole, board, daily_mission, drill, field_boss, silver, tribute, vanguard, weekday, weekend
 
 TASKS = {
     "weekday_dungeon": ("요일 던전", weekday.run),
@@ -14,6 +14,7 @@ TASKS = {
     # 주간 숙제 — 숙제 탭의 '주간 숙제' 에서 이것만 골라 돈다 (only). 필드 보스는 열린 시간(12·18·20·22시부터 30분)에만 — READY
     "field_boss": ("필드 보스", field_boss.run),
     "vanguard": ("뱅가드 브리치", vanguard.run),
+    "board": ("임무 게시판", board.run),  # 네 마을 게시판의 제작 스크롤 사기
     # 주간 어비스·레이드 — 한 캐릭터가 둘 다 하고 다음 캐릭터로. 토·일요일엔 '주말에는 어비스!'·'주말에는 레이드!' 퀘스트로
     # 남은 판만 (요일 제한은 없다 — 2026-11-16 사용자)
     "weekend_abyss": ("주간 어비스", weekend.run_abyss),
@@ -80,6 +81,7 @@ VERIFY = {
     "drill": drill.verify,
     "field_boss": field_boss.verify,
     "vanguard": vanguard.verify,
+    "board": board.verify,
 }
 
 

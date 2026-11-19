@@ -15,10 +15,10 @@
 """
 import time
 
-from .. import gamedata as gd, keys
+from .. import gamedata as gd
 from ..bot import Bot
 from . import dialogue, ui_text
-from .arrival import go_talk
+from .arrival import go_talk, quick_nav
 from ..exceptions import CannotProceed, NotSeen
 from ..monitor import Did
 
@@ -67,30 +67,10 @@ def _leave_npc(bot: Bot) -> None:
     dialogue.leave(bot, handlers=(lambda: _close_repair_window(bot),))
 
 
-def _open_quick_nav(bot: Bot) -> tuple[int, int]:
-    """퀵 내비게이터(단축키 '.', 캐릭터를 눌렀을 때 뜨는 그 메뉴)를 열고 '대장간' 자리를 돌려준다. 몇 번 해도 안 되면 NotSeen.
-    메뉴는 마지막에 고른 탭으로 열린다 → '주요' 탭 글자가 보이면 눌러 두고(골라져 있어도 해가 없다) '대장간' 글자를 찾는다.
-    탭이 골라졌나는 따로 보지 않는다 — '대장간' 이 보이면 된 것 (2026-11-16 사용자: 아는 자리를 누르고 결과로 확인).
-    메뉴 글자 읽기에 3~4초 걸린다 → 6초까지 본다."""
-    key = keys.of(bot, "quick_nav")
-    for i in range(3):
-        _leave_npc(bot)
-        bot.key(key)
-        tab = _wait(bot, "char_menu_main", "char_menu", 6)
-        if tab:
-            bot.click(tab)
-            bot.sleep(0.6, 0.9)
-            if (hit := _wait(bot, "repair_smithy", "char_menu", 6, exact=False)):
-                return hit
-        bot.log.info(f"퀵 내비게이터가 안 열림 ({i + 1}/3) → 다시" if not tab else f"'주요' 탭에 '대장간' 이 안 보임 ({i + 1}/3) → 다시")
-        bot.key("esc")
-        bot.sleep(1.0, 1.4)
-    raise NotSeen(f"퀵 내비게이터(대장간)가 열리지 않음 → {bot.snapshot('repair_menu').name}")
-
-
 def _go_smithy(bot: Bot) -> None:
-    """퀵 내비게이터 '대장간' → 도착해 대장간 NPC 대화가 열릴 때까지 (arrival.go_talk)."""
-    go_talk(bot, lambda: bot.click(_open_quick_nav(bot)), "대장간", "repair_menu",
+    """퀵 내비게이터 '주요' 탭 '대장간' (arrival.quick_nav) → 도착해 대장간 NPC 대화가 열릴 때까지 (arrival.go_talk)."""
+    go_talk(bot, lambda: bot.click(quick_nav(bot, "char_menu_main", "repair_smithy", "repair_menu",
+                                             prepare=lambda: _leave_npc(bot))), "대장간", "repair_menu",
             bot.cfg["timing"]["smithy_travel"])
 
 

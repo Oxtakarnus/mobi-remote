@@ -1,8 +1,9 @@
 """이동을 시작한 뒤 도착·정착까지 기다리기 — '진행하기' 뒤 이동(travel), 도착 화면(wait_arrival), 메인 화면까지(wait_settled),
-NPC 에게 가서 대화 열기(go_talk)."""
+NPC 에게 가서 대화 열기(go_talk), 퀵 내비게이터 항목 찾기(quick_nav)."""
 import time
 from typing import Callable
 
+from .. import gamedata as gd, keys
 from ..bot import Bot
 from ..exceptions import CannotProceed, NotSeen, StepTimeout
 
@@ -151,3 +152,29 @@ def go_talk(bot: Bot, start: Callable[[], None], what: str, shot: str, timeout: 
     # 도착해 대화가 열리면 끝 — 메뉴는 인사말을 넘긴 뒤에 뜬다
     wait_arrival(bot, lambda: in_dialog(bot), timeout, shot + "_npc",
                  f"{what} NPC 대화가 열리지 않음", retry_fast=True, interval=(1.5, 2))
+
+
+def quick_nav(bot: Bot, tab_key: str, item_key: str, shot: str, prepare: Callable[[], None] | None = None) -> tuple[int, int]:
+    """퀵 내비게이터(단축키 '.', 캐릭터를 눌렀을 때 뜨는 그 메뉴)를 열어 tab_key 탭을 누르고 item_key 항목 자리를 돌려준다
+    (ui.json 글자 키). 메뉴는 캐릭터 둘레에 그려져 자리가 매번 조금씩 달라 탭·항목 모두 글자로 찾는다 (2026-11-19 임무 게시판).
+    메뉴는 마지막에 고른 탭으로 열린다 → 탭 글자가 보이면 눌러 두고(골라져 있어도 해가 없다) 항목 글자를 찾는다.
+    탭이 골라졌나는 따로 보지 않는다 — 항목이 보이면 된 것 (2026-11-16 사용자: 아는 자리를 누르고 결과로 확인).
+    메뉴 글자 읽기에 3~4초 걸린다 → 6초까지 본다. prepare: 열기 전에 할 일 (기본은 메인 화면으로).
+    몇 번 해도 안 되면 NotSeen (스크린샷 shot). 대장간 수리 · 임무 게시판이 같이 쓴다."""
+    from . import ui_text
+    region = gd.region("char_menu")
+    tab, item = gd.text(tab_key), gd.text(item_key)
+    for i in range(3):
+        (prepare or bot.to_main)()
+        bot.key(keys.of(bot, "quick_nav"))
+        at = ui_text.wait(bot, tab, region, 6)
+        if at:
+            bot.click(at)
+            bot.sleep(0.6, 0.9)
+            if (hit := ui_text.wait(bot, item, region, 6, exact=False)):
+                return hit
+        bot.log.info(f"퀵 내비게이터가 안 열림 ({i + 1}/3) → 다시" if not at
+                     else f"퀵 내비 '{tab}' 탭에 '{item}' 이 안 보임 ({i + 1}/3) → 다시")
+        bot.key("esc")
+        bot.sleep(1.0, 1.4)
+    raise NotSeen(f"퀵 내비게이터({item})가 열리지 않음 → {bot.snapshot(shot).name}")

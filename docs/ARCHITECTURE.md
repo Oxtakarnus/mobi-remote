@@ -45,14 +45,14 @@ mabi/
     ├ days.py                 하루 기록 (게임 날짜별 logs\packets — 오늘 이 신호가 있었나, 필요한 이벤트만)
     └ monitor.py              PacketMonitor 본체 (캡처 스레드, wait·find·saw·mark·today …, 종류별 기억 by_key) · shared · current
   tasks/                      숙제·콘텐츠 하나씩 — 일일(weekday·silver·tribute·black_hole·daily_mission·arbeit), 주간·기타
-                              (field_boss·vanguard·weekend·drill·enhance), 반복(repeat·abyss·raid). 공통 부품은 아래 표.
+                              (field_boss·vanguard·board·weekend·drill·enhance), 반복(repeat·abyss·raid). 공통 부품은 아래 표.
                               던전·사냥터 공용(예전 content.py)은 맡은 일별로:
     dungeon.py                던전·사냥터 한 판 (단계 고르기·입장·더블 루팅 확인 → 진행 → 클리어 뒤)
     clear.py                  클리어 순간·연출·보상 메뉴(추가 루팅·다시 하기·나가기)·막는 화면 넘기기·'확인'·'화면 터치'
     fight.py                  안에서 지켜보기 (watch·자동 전투·Fight 뼈대)
     space.py                  지금 장소·던전 상태·사냥터 퀘스트 읽기
-    arrival.py                이동 시작 뒤 도착·정착 기다리기 (travel·wait_arrival·wait_settled·go_talk)
-    worldmap.py               지도(M)·월드맵에서 장소 골라 가기 (go_to_place)
+    arrival.py                이동 시작 뒤 도착·정착 기다리기 (travel·wait_arrival·wait_settled·go_talk), 퀵 내비게이터 항목 (quick_nav)
+    worldmap.py               지도(M)·월드맵에서 장소 골라 가기 (go_to_place · 지역 맵 아이콘 pick_icon), 지금 마을 (current_town)
     guide.py                  '/' 콘텐츠 가이드 (달성 체크·CLI 성장 가이드·카드 바로 가기)
     questwin.py               퀘스트 창(J) 버튼·아르바이트 탭
     steps.py                  막히면 다시 하기·조건까지 기다리기·스크롤 목록 (글자 도우미 has_word·read_button 은 ui_text)
@@ -110,6 +110,9 @@ web/                          화면 (빌드 없이 <script> 여러 개가 같�
 | 콘텐츠 안에서 끝날 때까지 지켜보기 (패킷으로 깨며 기다림 → 끝났나 → 쓰러짐·끼어든 창 → 부활 → 먹기·궁극기 → 시간 상한) | `tasks/fight.Fight` 를 상속해 `wake`·`packet_end`·`dead_end`·`screen_end` … 만 덮어씀 | `abyss.AbyssPlay`, `raid.RaidPlay`, `drill.ZoneFight` |
 | 메뉴(ESC)에서 콘텐츠 열기 (ESC 를 먹은 창은 넘기고 다시) | `ui_text.open_menu(bot, 글자 키, …)` | 어비스·레이드·나이트메어 드릴·필드 보스 |
 | '이동하기'·'바로 가기' 뒤 도착 화면(입장 창·NPC 대화)이 뜰 때까지 (로딩 동안 안 봄, 멈춤 n번 = 창 없이 멈춤, 늦은 빠른 이동) | `arrival.wait_arrival` (시간 상한은 각자 설정 키) | 어비스·레이드 입구, 드릴, 뱅가드, 필드 보스, `arrival.go_talk` |
+| 퀵 내비게이터('.')에서 탭 → 항목 (자리가 캐릭터 따라 달라 글자로 찾음) | `arrival.quick_nav(bot, 탭 글자 키, 항목 글자 키, …)` | 대장간 수리, 임무 게시판 |
+| 지금 마을 (CLI `ChannelDisplayName` 먼저, 답이 없으면 패킷) · 이름 비교(띄어쓰기 무시) | `worldmap.current_town` · `same_town` · `other_town` | 지도 장소 가기, 임무 게시판 |
+| 월드맵 → 마을 → 지역 맵 아이콘(그림)으로 '여기로 가기' 창까지 | `worldmap.pick_icon` | 임무 게시판 |
 | 로딩이면 끝날 때까지 '어디인가' · 메인 화면까지 기다리기 | `arrival.where_settled(bot, where)` · `arrival.wait_settled` | 어비스·레이드 |
 | 게임을 뒤로 보내고 하던 창 돌려주기 | `Bot.to_back` · 구간만이면 `with bot.behind_while(설정)` | `Repeat.to_back`, 드릴, 뱅가드 |
 | 초록 체크·켜진 스위치 (화면 조각의 초록 비율) | `vision.green` · `green_ratio` (기준값은 자리마다 인자로) | 콘텐츠 가이드 달성 체크, 우연한 만남 스위치 |

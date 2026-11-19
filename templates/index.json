@@ -301,6 +301,9 @@
       20
     ]
   },
+  "map_board": {
+    "threshold": 0.85
+  },
   "map_castle": {
     "threshold": 0.75
   },

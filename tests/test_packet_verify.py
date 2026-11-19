@@ -14,7 +14,9 @@ CFG = {"black_hole": {"achieved": "x"}, "weekday_dungeon": {"achieved": "y"}}
 
 def bot_with(**state):
     st = PacketState(**state)
-    return SimpleNamespace(packets=SimpleNamespace(ok=True, state=st), log=logging.getLogger("test"))
+    # CLI 는 답하지 않는 것으로 — 패킷만으로 판단하는 길을 본다
+    return SimpleNamespace(packets=SimpleNamespace(ok=True, state=st), state=SimpleNamespace(available=lambda: False),
+                           log=logging.getLogger("test"))
 
 
 class DayStartTest(unittest.TestCase):

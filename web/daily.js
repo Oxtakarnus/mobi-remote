@@ -25,6 +25,7 @@ async function loadDaily() {
   paintDrillChars();
   paintFieldBoss();
   paintPick('vg', 'vgChars');
+  paintPick('bd', 'bdChars');
   paintWeekend();
   paintDailyRunning(dl.st.running);
   paintDailySettings();
@@ -231,6 +232,12 @@ function vanguardSpec() {
   return chars.length ? { kind: 'daily', label: '뱅가드 브리치', chars: chars, only: ['vanguard'], force: true } : null;
 }
 
+/* 주간 숙제 — 임무 게시판 제작 스크롤. 이번 주에 다 산 마을은 파이썬이 기록해 두고 넘기므로 늘 force */
+function boardSpec() {
+  const chars = pickedSlots('bdChars');
+  return chars.length ? { kind: 'daily', label: '임무 게시판', chars: chars, only: ['board'], force: true } : null;
+}
+
 /* 주간 숙제 — 필드 보스. 일일 숙제 카드(kind 'daily')에 only=['field_boss'] 로, 고른 보스·난이도는 카드의 fieldBoss.
  * 이번 주에 잡았는지는 들어가기 전에 게임(성장 가이드)으로 보므로 늘 force. 열린 시간(12·18·20·22시부터 30분)이
  * 아니면 큐에서 비켜 있다가 열리면 돈다 (gui_app DailyKind.ready).
@@ -354,7 +361,7 @@ function weekendAmount(x) {
 
 function dailyAmount(x) {
   if (x.only && x.only.length && x.only.every((t) => t.startsWith('weekend_'))) return weekendAmount(x);
-  if (x.only && x.only.length === 1 && ['drill', 'vanguard'].includes(x.only[0])) return (x.chars || []).length + '명';
+  if (x.only && x.only.length === 1 && ['drill', 'vanguard', 'board'].includes(x.only[0])) return (x.chars || []).length + '명';
   if (x.only && x.only.length === 1 && x.only[0] === 'field_boss') {
     return (x.chars || []).length + '명' + (x.fieldBoss ? ' · ' + x.fieldBoss.difficulty : '');
   }
@@ -770,6 +777,8 @@ $('#fb-level').addEventListener('change', fieldBossPick);
 bindStartQueue('fb', fieldBossSpec, startHomework);
 bindPick('vg', 'vgChars');
 bindStartQueue('vg', vanguardSpec, startHomework);
+bindPick('bd', 'bdChars');
+bindStartQueue('bd', boardSpec, startHomework);
 bindPick('wk', 'wkChars');
 $('#wk-ab-mode').addEventListener('change', () => paintWeekendAbyss($('#wk-ab-dungeon').value, $('#wk-ab-level').value));
 $('#wk-ab-dungeon').addEventListener('change', () => paintWeekendAbyss($('#wk-ab-dungeon').value, $('#wk-ab-level').value));

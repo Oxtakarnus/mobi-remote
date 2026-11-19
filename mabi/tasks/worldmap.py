@@ -1,9 +1,12 @@
-"""지도(M)·월드맵에서 장소를 골라 '여기로 가기' — 마을 찾기, 지역 맵 목록 칸 고르기, 도착까지 (go_to_place)."""
+"""지도(M)·월드맵에서 장소를 골라 '여기로 가기' — 마을 찾기, 지역 맵 목록 칸 고르기, 도착까지 (go_to_place),
+지역 맵 아이콘으로 고르기 (pick_icon). 지금 마을은 패킷 (current_town)."""
 import difflib
+import time
 
 from .. import keys
 from ..bot import Bot
 from ..exceptions import CannotProceed, NotSeen, StepTimeout
+from ..game_state import Activity
 from ..place import OPEN_FIELD
 from .arrival import travel
 from .steps import STEP_RETRIES, with_retries
@@ -149,16 +152,75 @@ def _pick_from_list(bot: Bot, place: dict, name: str) -> bool:
     return True
 
 
-def other_town(bot: Bot, town: str) -> bool:
-    """패킷: 지금 다른 마을(Field 맵)에 있나. 모르거나 마을이 아닌 곳(사냥터·던전)이면 False."""
+def same_town(a: str | None, b: str | None) -> bool:
+    """마을 이름이 같은가 — 패킷은 '이멘 마하', 설정은 '이멘마하' 라 띄어쓰기를 빼고 본다."""
+    return bool(a and b) and a.replace(" ", "") == b.replace(" ", "")
+
+
+def current_town(bot: Bot) -> str | None:
+    """지금 있는 마을 이름. CLI(get_current_environment 의 ChannelDisplayName — '이멘마하')가 기준이고, CLI 가 답하지 않을 때만
+    패킷(맵 진입 때 온 Field 맵 이름 — '이멘 마하'). 사냥터·던전·마이 홈 안이거나 모르면 None."""
+    env = bot.environment() if bot.state.available() else None
+    if env is not None:
+        a = Activity.of(bot.activity())
+        if a.in_field or a.in_dungeon or (env.get("Housing") or {}).get("IsInHousing"):
+            return None
+        return env.get("ChannelDisplayName") or None
     st = bot.packets.state if bot.packets.ok else None
     if not st or st.loading or st.channel_type != OPEN_FIELD or not st.channel_name:
-        return False
-    here = st.channel_name.replace(" ", "")
-    if here != town.replace(" ", ""):
-        bot.log.debug(f"패킷: 지금 마을 '{st.channel_name}' ≠ '{town}' → 월드맵으로")
+        return None
+    return st.channel_name
+
+
+def other_town(bot: Bot, town: str) -> bool:
+    """지금 다른 마을에 있나 (current_town). 모르거나 마을이 아닌 곳(사냥터·던전)이면 False."""
+    here = current_town(bot)
+    if here and not same_town(here, town):
+        bot.log.debug(f"지금 마을 '{here}' ≠ '{town}' → 월드맵으로")
         return True
     return False
+
+
+def _icon_on_map(bot: Bot, icon: str, shot: str) -> tuple[int, int]:
+    """지역 맵에 보이는 아이콘(그림 icon) 자리. 화면 가장자리·오른쪽 아래 패널 밑이면 지도를 끌어 가운데로 옮긴 뒤 다시 찾는다
+    (반호르 게시판은 마을을 눌렀을 때 맨 위 끝 y 47 — 2026-11-19). 끝내 못 찾으면 NotSeen."""
+    mc = bot.cfg["map"]
+    x0, y0, x1, y1 = mc["safe_area"]
+    (cx, cy), lim = mc["center"], mc["max_drag"]
+    for _ in range(3):
+        found = bot.find_all(icon)
+        if not found:
+            break
+        x, y = max(found, key=lambda m: m.score).center
+        if x0 <= x <= x1 and y0 <= y <= y1 and not (x > mc["panel_from"][0] and y > mc["panel_from"][1]):
+            return x, y
+        dx, dy = max(-lim, min(lim, cx - x)), max(-lim, min(lim, cy - y))
+        bot.log.debug(f"지도 아이콘 {icon} 이 가장자리 ({x}, {y}) → 끌어 옮김")
+        bot.drag(cx, cy, cx + dx, cy + dy, steps=30)
+        bot.sleep(1.2, 1.5)
+    raise NotSeen(f"지역 맵에서 아이콘 {icon} 을 찾지 못함 → {bot.snapshot(shot).name}")
+
+
+def pick_icon(bot: Bot, town: str, icon: str, name: str, shot: str) -> None:
+    """지도 → 월드맵 → town → 그 지역 맵의 아이콘(그림 icon)을 눌러 '여기로 가기' 정보 창까지. 정보 창 이름이 name 으로
+    안 보이면 NotSeen (다른 아이콘을 눌렀거나 창이 안 뜸). '여기로 가기'(Space)는 부르는 쪽이 누른다.
+    마을 안에서 지도(M)를 열면 캐릭터 둘레만 보여 아이콘이 화면 밖일 수 있어, 늘 월드맵에서 마을을 눌러 연 지역 맵에서 찾는다
+    (마을을 누르면 늘 같은 화면 — 2026-11-19 네 마을)."""
+    open_world_map(bot)
+    bot.click(find_town(bot, town))
+    bot.sleep(2, 2.5)
+    bot.click(_icon_on_map(bot, icon, shot))
+    # 아이콘을 누르면 뜨는 정보 창은 목록 칸을 눌렀을 때 창과 달라(설명·거리가 붙은 큰 창) '여기로 가기' 그림(map_go_here)이
+    # 0.73 으로 안 맞는다 (2026-11-19 반호르) → 창의 이름 글자가 name 으로 보일 때까지 (이름 확인과 같은 신호 하나로)
+    end = time.monotonic() + 6
+    score, shown = 0.0, ""
+    while time.monotonic() < end:
+        bot.sleep(0.5, 0.8)
+        score, shown = _read_best(bot.frame(), bot.cfg["map"]["info_name_region"], name)
+        if score >= 0.6:
+            bot.log.debug(f"정보 창 '{shown}' ↔ '{name}' ({score:.2f})")
+            return
+    raise NotSeen(f"지도 아이콘을 눌렀는데 '{name}' 정보 창이 안 뜸 ('{shown}') → {bot.snapshot(shot).name}")
 
 
 def go_to_place(bot: Bot, name: str, arrive: list[str], timeout: float, tries: int = STEP_RETRIES + 1):

@@ -10,6 +10,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 
 RESET_HOUR = 6
+WEEK_START = 0  # 주간 초기화 요일 (월요일, RESET_HOUR 시) — 임무 게시판 재입고가 목요일 21시에 '3일 이후' (2026-11-19)
 KEEP_DAYS = 7  # 하루 기록 파일(state/날짜.json)을 며칠치 남길지
 
 
@@ -63,6 +64,12 @@ def chars(paths) -> list[dict]:
 def game_date(now: datetime | None = None) -> str:
     now = now or datetime.now()
     return (now - timedelta(hours=RESET_HOUR)).strftime("%Y-%m-%d")
+
+
+def game_week(now: datetime | None = None) -> str:
+    """이번 게임 주가 시작된 날 (월요일 게임 날짜, 'YYYY-MM-DD') — 주간 기록의 열쇠."""
+    day = datetime.strptime(game_date(now), "%Y-%m-%d")
+    return (day - timedelta(days=(day.weekday() - WEEK_START) % 7)).strftime("%Y-%m-%d")
 
 
 def game_day_start(now: datetime | None = None) -> datetime:
