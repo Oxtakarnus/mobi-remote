@@ -253,17 +253,42 @@ class KeysTest(unittest.TestCase):
               mock.patch.object(SpearDodge, "camera_due", return_value=False),
               mock.patch("mabi.tasks.spear.time.sleep")):
             sd.run()
-        return [c.args for c in bot.key.call_args_list]
+        self.assertEqual(bot.key.call_count, 0)
+        return bot.click_xy.call_count
 
-    def test_fight_key_after_return(self):
-        """투창병 쪽으로 돌아온 뒤 Space 한 번 — 지금 '목표' 진행으로 바로 전투로 (사용자 11-19, 전엔 스킬 1 을 3번)."""
-        self.assertEqual(self.spear_run({"x": 10, "y": 142, "at": time.monotonic(), "shaman": 1, "attr": "불"}),
-                         [("space",)])
+    def test_quest_after_return(self):
+        """투창병 쪽으로 돌아온 뒤 퀘스트 추적 칸을 한 번 눌러 목표 진행으로 (사용자 11-19 — Space 는 아무 일도 안 했다)."""
+        self.assertEqual(self.spear_run({"x": 10, "y": 142, "at": time.monotonic(), "shaman": 1, "attr": "불"}), 1)
 
-    def test_space_even_when_not_moved(self):
-        """투창 대상인데 주술사를 몰라 그만둬도 마지막엔 Space (사용자 11-19). 쓰러졌거나 맵을 떠났으면 안 누른다."""
-        self.assertEqual(self.spear_run(None), [("space",)])
-        self.assertEqual(self.spear_run(None, ok=False), [])
+    def test_quest_even_when_not_moved(self):
+        """투창 대상인데 주술사를 몰라 그만둬도 마지막엔 추적 칸 (사용자 11-19). 쓰러졌거나 맵을 떠났으면 안 누른다."""
+        self.assertEqual(self.spear_run(None), 1)
+        self.assertEqual(self.spear_run(None, ok=False), 0)
+
+    def test_quest_when_spear_ends_or_fang_dies(self):
+        """투창 패턴이 끝나거나(주술사 모두 쓰러짐) 송곳니가 쓰러지면 추적 칸을 한 번씩 (사용자 11-19). 카메라 맞춤보다 먼저."""
+        from unittest import mock
+        m = PacketMonitor(None)
+        m.state.me = ME
+        m.apply("channel.entering", {"channel": 1, "channel_type": "InstanceAbyssDungeon",
+                                     "channel_name": "흩어진 물길 (어비스 시즌2 3구역 매우 어려움2 솔로)"})
+        bot = mock.MagicMock(packets=m)
+        sd = SpearDodge(bot)
+        m._spear("spear.monster", {"actor": 77, "x": 0.0, "y": 0.0, "kind": FANG_KIND})
+        m.spear.shaman = {5: (10.0, 142.0)}
+        self.assertFalse(sd.quest_due())
+        m.apply("actor.dead", {"actor": 5, "dead": True})
+        self.assertTrue(m.spear.finished)
+        self.assertTrue(sd.quest_due() and sd.wanted())
+        sd.run()
+        self.assertEqual(bot.click_xy.call_count, 1)
+        self.assertFalse(sd.quest_due())
+        m.apply("actor.dead", {"actor": 77, "dead": True})
+        self.assertTrue(sd.quest_due() and sd.camera_due())
+        with mock.patch("mabi.tasks.spear.time.sleep"):
+            sd.run()
+        self.assertEqual((bot.click_xy.call_count, bot.key.call_count), (2, 0))  # 추적 칸 먼저, 카메라는 다음 차례
+        self.assertFalse(sd.quest_due())
 
     def test_camera_when_fang_dies(self):
         """비틀린 송곳니가 쓰러지면 (보스방으로 걸어감) 카메라를 한 번 더 맞춘다 — 혼자하기도 (사용자 11-03).
@@ -655,7 +680,7 @@ class RiftTest(unittest.TestCase):
         self.assertTrue(self.logged(bot, "격류: 균열로 넘어감"))
         self.assertEqual(moves[2][0], (-10.0, 230.0))  # 넘어온 북쪽 균열 (-10, 235) 에서 안쪽으로 5칸 (송곳니 자리 모름) (11-19 16:14:05)
         self.assertEqual(len(moves), 3)
-        self.assertEqual([c.args for c in bot.key.call_args_list], [("space",)])  # 비켜 선 뒤 바로 전투로 (사용자 11-19)
+        self.assertEqual((bot.click_xy.call_count, bot.key.call_count), (1, 0))  # 비켜 선 뒤 추적 칸으로 바로 전투로 (사용자 11-19)
 
     def test_step_off_toward_fang(self):
         """넘어오면 송곳니 쪽으로 5칸 비켜 선다 (사용자 11-19) — 송곳니가 가장자리 쪽이면 안쪽으로."""
@@ -691,13 +716,14 @@ class RiftTest(unittest.TestCase):
         self.assertLess(moves[1][1], 12.0)
         self.assertIsNotNone(warped)
 
-    def test_space_when_stopped(self):
-        """균열로 못 넘어가고 그만둬도 (송곳니가 먼저 쓰러짐) 마지막엔 Space (사용자 11-19)."""
+    def test_quest_when_stopped(self):
+        """균열로 못 넘어가고 그만둬도 (송곳니가 먼저 쓰러짐) 마지막엔 추적 칸 (사용자 11-19)."""
         def kill(dt):
             if dt >= 5:
                 self.m.apply("actor.dead", {"actor": 77, "dead": True})
         _, _, bot = self.dodge((0.0, 217.5), kill)
-        self.assertEqual([c.args for c in bot.key.call_args_list], [("space",)])
+        self.assertEqual((bot.click_xy.call_count, bot.key.call_count), (1, 0))
+        self.assertFalse(SpearDodge(bot).quest_due())  # 송곳니가 쓰러져 누른 것으로 친다 — 또 누르지 않는다
 
     def test_fang_down_stops(self):
         """기다리는 동안 송곳니가 쓰러지면 그만둔다 (사용자 11-19)."""

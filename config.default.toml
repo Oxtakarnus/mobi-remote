@@ -115,6 +115,7 @@ dungeon_touch = "dungeon_touch"       # 클리어 후 '화면을 터치해 주�
 scene_skip = "scene_skip"             # 연출 '장면 넘기기'
 camera_manual = "camera_manual"       # 오른쪽 위 카메라 아이콘 — 수동 카메라 (카메라에 손가락)
 camera_auto = "camera_auto"           # 오른쪽 위 카메라 아이콘 — 자동 카메라 (카메라만)
+quest_tracker = "quest_tracker"       # 오른쪽 퀘스트 추적 칸 머리 '퀘스트 +' (그 아래 첫 퀘스트를 눌러 목표 진행)
 reward_exit = "reward_exit"           # 보상 화면 '나가기'
 field_new_mission = "field_new_mission"  # 사냥터 보상 화면의 '새 임무 선택' (반복 플레이)
 field_recommend = "field_recommend"    # 사냥터 창 난이도 버튼 아래 '추천' 표시

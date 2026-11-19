@@ -37,6 +37,7 @@ CAMERA_AUTO = 4.0  # 자동 카메라로 이만큼 둔 뒤 수동으로 — 2초
 CAMERA_ICON_MIN = 0.7   # 카메라 아이콘 그림 점수가 이보다 낮으면 모름 (HUD 가 없을 때 등)
 CAMERA_ICON_GAP = 0.15  # 수동·자동 두 그림 점수가 이만큼은 벌어져야 한쪽으로 본다 (서로 다른 쪽엔 0.5 안팎)
 CAMERA_SWITCH = 0.5     # 자동 → 수동으로 바꾸고 아이콘을 다시 보기까지
+QUEST_AT = (8, 52)  # '퀘스트 +' 머리 그림 왼쪽 위 → 추적 칸 첫 퀘스트 제목 끝쪽 (제목은 오른쪽 맞춤이라 길이와 상관없이 글자 위)
 CAMP_AUTO = 6.0    # 보스방 갈 때는 더 길게 — 4초로는 덜 돌아간 채 고정될 때가 있었다 (사용자 11-03). 8초는 빠른 캐릭터가
                    # 그 안에 보스방에 들어가 두 번째 Z 가 보스 등장 연출에 묻혀 자동 카메라로 남았다 (11-04 14:34, 사용자)
 SCENE_FIND = 10.0  # 보스 등장 연출의 넘기기 버튼을 찾는 상한 — 버튼이 늦게 뜰 때가 있다 (11-19 14:00 5초로는 못 찾음)
@@ -85,6 +86,8 @@ class SpearDodge:
     calib_tried = _per_map("calib_tried")   # 보정을 해 봤나
     camera_set = _per_map("camera_set")     # 카메라를 맞췄나
     camp_camera = _per_map("camp_camera")   # 보스방 갈 때 카메라를 다시 맞췄나
+    quest_spear = _per_map("quest_spear")   # 투창 패턴이 끝나 추적 칸을 눌렀나
+    quest_fang = _per_map("quest_fang")     # 송곳니가 쓰러져 추적 칸을 눌렀나
     camera_half = _per_map("camera_half")   # 첫 카메라 키만 누르고 연출이 시작돼 두 번째가 남았나
     scene_tried = _per_map("scene_tried")   # 보스 등장 연출을 넘겨 봤나 (넘기기를 눌렀다)
     scene_seen = _per_map("scene_seen")     # 넘기기 버튼을 찾아본 연출 (그 연출이 시작된 때)
@@ -122,7 +125,7 @@ class SpearDodge:
         st = getattr(self.bot.packets, "spear", None)
         if not isinstance(st, SpearState) or not st.active:
             return False
-        if self.camera_due() or self.scene_due():
+        if self.camera_due() or self.scene_due() or self.quest_due():
             return True
         if st.ttt.due() or st.wave_due():
             return True
@@ -267,6 +270,9 @@ class SpearDodge:
         if self.scene_due():
             self._with_focus(self.skip_scene)
             return
+        if self.quest_due():  # 카메라 맞춤보다 먼저 — 보스방으로 걷기 시작해야 자동 카메라가 캐릭터 뒤로 돈다
+            self.resume("투창 패턴 끝" if self.quest_spear != self.bot.packets.state.entered_at else "송곳니 쓰러짐")
+            return
         if self.camera_due():
             self.set_camera()  # Z 만 누른다 — 뒤에서도 창에 직접 보내지므로 게임을 앞으로 가져오지 않는다 (사용자 11-03)
             return
@@ -276,7 +282,7 @@ class SpearDodge:
                 self._with_focus(self.calibrate)
             if w and self.calib is not None:
                 self.rift(w)  # 움직일 때만 게임 창을 앞으로
-            self.resume()
+            self.resume("격류")
             return
         if st.ttt.due():
             job = st.ttt.take(self.my_pos())  # 크게 차이 나지 않으면 가까운 칸
@@ -297,7 +303,7 @@ class SpearDodge:
                 self._with_focus(self.calibrate)
             if self.calib is not None:
                 self._with_focus(lambda: self.dodge(job))
-        self.resume()
+        self.resume("투창")
 
     # ── 순서 ──
     def dodge(self, job: dict) -> None:
@@ -395,12 +401,32 @@ class SpearDodge:
         if st.warped_at > w["at"] and self.ok(pattern=False):
             self._step_off(u)
 
-    def resume(self) -> None:
-        """투창·격류 처리가 끝나면 — 해냈든 그만뒀든 — 마지막에 Space 로 바로 싸움으로 (사용자 11-19). 아무 것도 안 하는 상태의
-        Space 는 지금 '목표' 진행이다 (자동 전투 켜기·끄기는 H, 리모콘이 도는 동안은 늘 켜져 있다).
-        쓰러졌거나 맵을 떠났으면 안 누른다. 사용자가 멈춰 예외로 빠져나갈 때도 안 누른다."""
-        if self.ok(pattern=False):
-            self.bot.key("space")
+    def quest_due(self) -> bool:
+        """투창 패턴이 끝났거나(주술사 모두 쓰러짐) 송곳니가 쓰러졌는데 이 맵에서 아직 추적 칸을 안 눌렀다."""
+        s = self.bot.packets.state
+        if not s.entered_at or s.loading or s.dead or s.cutscene or not self.st.active:
+            return False
+        return ((self.st.finished and self.quest_spear != s.entered_at)
+                or (self.st.fang_down and self.quest_fang != s.entered_at))
+
+    def resume(self, why: str) -> None:
+        """오른쪽 퀘스트 추적 칸의 첫 퀘스트('흩어진 물길 클리어')를 눌러 목표 진행으로 돌아간다 (사용자 11-19).
+        투창·격류 처리가 끝나면 — 해냈든 그만뒀든 —, 그리고 투창 패턴이 끝나거나 송곳니가 쓰러지면 누른다.
+        Space(메인 버튼)는 이때 아무 일도 안 했고 (11-19 17:00), 게임 조작키에도 추적 퀘스트를 진행하는 키는 없다
+        (ControlKey 목록 — 추적 칸 위아래 고르기뿐). 쓰러졌거나 맵을 떠났으면 안 누른다. 사용자가 멈춰 예외로 빠져나갈 때도 안 누른다."""
+        st, s, bot = self.st, self.bot.packets.state, self.bot
+        if st.finished:
+            self.quest_spear = s.entered_at
+        if st.fang_down:
+            self.quest_fang = s.entered_at
+        if not self.ok(pattern=False):
+            return
+        m = bot.vision.find(bot.frame(), bot.ui.get("quest_tracker", "quest_tracker"))
+        if m is None:
+            bot.log.info(f"물길: {why} 뒤 — 퀘스트 추적 칸이 안 보여 못 누름")
+            return
+        bot.log.info(f"물길: {why} 뒤 — 퀘스트 추적 칸을 눌러 목표 진행")
+        bot.click_xy(m.x + QUEST_AT[0], m.y + QUEST_AT[1])
 
     def _step_off(self, u) -> None:
         """넘어온 균열에서 비켜 선다. 송곳니 쪽으로 RIFT_OFF 칸 (사용자 11-19) — 자동 전투가 균열 위가 아니라 그 앞에서 이어진다.
