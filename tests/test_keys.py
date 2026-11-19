@@ -51,8 +51,9 @@ class KeysTest(unittest.TestCase):
         from mabi import inputs
         self.assertEqual(inputs.combo("shift+esc"), [0x10, 0x1B])
         self.assertEqual(inputs.combo("Z"), [ord("Z")])
+        self.assertEqual(inputs.combo("shift"), [0x10])  # 보조 키 하나만 — Bot.ensure_focus (11-19 이걸 막아 어비스가 멈췄다)
         self.assertEqual(inputs.combo_name({"shift", "ctrl"}, "5"), "ctrl+shift+5")
-        for bad in ("", "+", "esc+shift", "shift+", "hyper+a"):
+        for bad in ("", "+", "esc+shift", "shift+", "hyper+a", "ctrl+shift"):
             with self.assertRaises(ValueError):
                 inputs.combo(bad)
 

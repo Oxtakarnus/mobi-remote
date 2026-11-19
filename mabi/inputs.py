@@ -63,9 +63,11 @@ MODIFIERS = ("ctrl", "alt", "shift")  # 조합 키에서 먼저 누르는 키 �
 
 
 def combo(key: str) -> list[int]:
-    """'shift+esc' 같은 조합 키 → 누를 순서대로 가상 키 (보조 키 먼저, 마지막이 본 키). 한 키면 하나."""
+    """'shift+esc' 같은 조합 키 → 누를 순서대로 가상 키 (보조 키 먼저, 마지막이 본 키). 한 키면 하나 —
+    보조 키 하나만('shift')도 된다 (Bot.ensure_focus 가 초점을 잡으려고 Shift 만 누른다)."""
     parts = [p.strip() for p in key.lower().split("+")]
-    if not all(parts) or any(p not in MODIFIERS for p in parts[:-1]) or parts[-1] in MODIFIERS:
+    if (not all(parts) or any(p not in MODIFIERS for p in parts[:-1])
+            or (len(parts) > 1 and parts[-1] in MODIFIERS)):
         raise ValueError(f"알 수 없는 키: {key}")
     return [vk_of(p) for p in parts]
 

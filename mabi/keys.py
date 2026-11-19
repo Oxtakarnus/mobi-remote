@@ -4,7 +4,7 @@
 게임 조작키 설정에서 바꾼 키는 따라간다 (mabi.gamebinds, 사용자 11-19). 정하는 순서:
   리모콘 옵션에서 기본값과 다르게 정한 키 > 게임에서 바꾼 키 > 기본 키(게임 기본 주 키와 같다).
 게임 키 읽기는 앱이 켤 때 follow_game() 으로 켠다 — 시험·도구에서는 꺼져 있어 기본 키만 쓴다."""
-from .inputs import combo
+from .inputs import MODIFIERS, combo
 
 # 이름: (기본 키, 옵션 창 설명). 순서대로 옵션 창에 나온다. 조합 키는 'shift+esc' 처럼 적는다
 GAME_KEYS = {
@@ -74,4 +74,6 @@ def check(name: str, key: str) -> str | None:
         combo(key)
     except ValueError:
         return f"쓸 수 없는 키: {key}"
+    if key.lower() in MODIFIERS:
+        return f"보조 키만으로는 쓸 수 없습니다: {key}"
     return None
