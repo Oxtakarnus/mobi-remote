@@ -303,6 +303,36 @@ class KeysTest(unittest.TestCase):
         self.assertEqual(bot.key.call_count, 2)
         self.assertFalse(sd.camera_due())
 
+    def test_party_entry_camera_after_moving(self):
+        """함께하기 들어올 때 카메라는 내 캐릭터가 움직이기 시작한 뒤 — 맵 진입 패킷 2초 뒤로는 아직 로딩 화면일 때가 있었다
+        (사용자 11-19). 움직임을 못 봐도 CAMERA_LATE 뒤엔 맞춘다."""
+        from unittest import mock
+        from mabi.tasks import spear as sp
+        m = PacketMonitor(None)
+        m.state.me = ME
+        m.apply("channel.entering", {"channel": 1, "channel_type": "InstanceAbyssDungeon",
+                                     "channel_name": "흩어진 물길 (어비스 시즌2 3구역 매우 어려움2)"})
+        bot = mock.MagicMock(packets=m)
+        sd = SpearDodge(bot)
+        m.state.entered_at -= 3  # 들어오고 3초
+        self.assertFalse(sd.camera_due())  # 아직 안 움직임
+        m._spear("spear.move_location", {"actor": ME, "x": 0.0, "y": 100.0})  # 처음 받은 자리
+        self.assertFalse(sd.camera_due())
+        m._spear("spear.move_update", {"actor": ME, "x": 0.5, "y": 100.2})   # 제자리 흔들림
+        self.assertFalse(sd.camera_due())
+        m._spear("spear.move_update", {"actor": ME, "x": 0.0, "y": 103.0})   # 걷기 시작
+        self.assertTrue(sd.camera_due())
+        with mock.patch("mabi.tasks.spear.time.sleep"):
+            sd.set_camera()
+        self.assertFalse(sd.camera_due())
+        m.apply("channel.leaving", {})
+        m.apply("channel.entering", {"channel": 1, "channel_type": "InstanceAbyssDungeon",
+                                     "channel_name": "흩어진 물길 (어비스 시즌2 3구역 매우 어려움2)"})
+        m.state.entered_at -= 3
+        self.assertFalse(sd.camera_due())  # 새 맵 — 움직임을 다시 본다
+        m.state.entered_at -= sp.CAMERA_LATE
+        self.assertTrue(sd.camera_due())   # 못 봐도 늦게는 맞춘다
+
     def test_camera_once_per_map_across_calls(self):
         """판 진행을 다시 불러 SpearDodge 가 새로 생겨도 같은 맵에서 카메라를 또 돌리지 않는다 (11-03 19:26)."""
         from unittest import mock

@@ -29,7 +29,9 @@ LAG = 0.22
 GO_LIMIT = 8.0     # 한 번 가는 데 상한 (가장 먼 주술사가 약 24칸)
 CALIB_FILE = "spear_calib.json"
 SOLO = "솔로"        # 맵 이름 끝 '(… 솔로)' — 혼자하기
-CAMERA_WAIT = 2.0  # 맵에 들어오고 이만큼 뒤 카메라를 맞춘다
+CAMERA_WAIT = 2.0  # 맵에 들어오고 적어도 이만큼 뒤, 내 캐릭터가 움직이기 시작하면 카메라를 맞춘다
+CAMERA_LATE = 8.0  # 움직임을 못 봐도 들어오고 이만큼 지나면 맞춘다
+CAMERA_MOVED = 1.0  # 맵에 들어와 처음 받은 내 자리에서 이만큼 넘게 가면 움직이기 시작한 것
 CAMERA_AUTO = 4.0  # 자동 카메라로 이만큼 둔 뒤 수동으로 — 2초로는 덜 돌아간 채 고정됐다 (사용자 11-03)
 CAMP_AUTO = 6.0    # 보스방 갈 때는 더 길게 — 4초로는 덜 돌아간 채 고정될 때가 있었다 (사용자 11-03). 8초는 빠른 캐릭터가
                    # 그 안에 보스방에 들어가 두 번째 Z 가 보스 등장 연출에 묻혀 자동 카메라로 남았다 (11-04 14:34, 사용자)
@@ -103,8 +105,24 @@ class SpearDodge:
             return not s.cutscene
         if self.camp_camera != s.entered_at and (self.st.fang_down or s.boss_scene):
             return not s.cutscene
-        return (self.camera_set != s.entered_at and SOLO not in (s.channel_name or "")
-                and time.monotonic() - s.entered_at > CAMERA_WAIT)
+        if self.camera_set == s.entered_at or SOLO in (s.channel_name or ""):
+            return False
+        # 맵 진입 패킷은 로딩 화면이 걷히기 전에 와서, 2초 뒤에 눌러도 첫 키를 게임이 못 받을 때가 있었다 → 첫 키만 먹고
+        # 자동 카메라로 남음 (사용자 11-19). 내 캐릭터가 움직이기 시작한 뒤 (= 조작을 받는다) 누른다
+        since = time.monotonic() - s.entered_at
+        return since > CAMERA_WAIT and (self.moved_since_entry() or since > CAMERA_LATE)
+
+    def moved_since_entry(self) -> bool:
+        """맵에 들어와 내 캐릭터가 움직이기 시작했나 — 패킷 내 이동으로, 들어와 처음 받은 자리에서 CAMERA_MOVED 넘게."""
+        s = self.bot.packets.state
+        p = self.st.pos.get(s.me) if s.me is not None else None
+        if not p or p[2] < s.entered_at:
+            return False
+        start = getattr(self.st, "camera_from", None)
+        if not start or start[0] != s.entered_at:
+            self.st.camera_from = (s.entered_at, p[0], p[1])
+            return False
+        return abs(p[0] - start[1]) + abs(p[1] - start[2]) > CAMERA_MOVED
 
     def set_camera(self) -> None:
         """카메라 토글(자동 카메라) → 몇 초 뒤 캐릭터 뒤로 돌아오면 한 번 더(수동 카메라)로 고정 (사용자).
