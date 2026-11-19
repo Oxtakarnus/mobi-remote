@@ -350,6 +350,45 @@ class KeysTest(unittest.TestCase):
             sd.set_camera()
         self.assertFalse(SpearDodge(bot).camera_due())
 
+    def scene_bot(self):
+        from unittest import mock
+        m = PacketMonitor(None)
+        m.state.me = ME
+        m.apply("channel.entering", {"channel": 1, "channel_type": "InstanceAbyssDungeon",
+                                     "channel_name": "흩어진 물길 (어비스 시즌2 3구역 매우 어려움2)"})
+        m.apply("abyss.campfire", {})
+        m.apply("cutscene.play", {})
+        bot = mock.MagicMock(packets=m)
+        return m, bot
+
+    def test_scene_clicked_again_when_it_goes_on(self):
+        """눌러도 연출이 이어지고 버튼이 남아 있으면 다시 누른다 (사용자 11-19 — 넘어갈 때도 있고 아닐 때도)."""
+        from unittest import mock
+        m, bot = self.scene_bot()
+        bot.skip_button.return_value = ("scene", "hit")
+        bot.wait_packet.side_effect = [False, True]  # 첫 번째는 안 먹음
+        sd = SpearDodge(bot)
+        with mock.patch("mabi.tasks.spear.time.sleep"):
+            sd.skip_scene()
+        self.assertEqual(bot.click.call_count, 2)
+        self.assertIn("2번 누름", bot.log.info.call_args.args[0])
+
+    def test_scene_without_button_tries_next_scene(self):
+        """넘기기 버튼이 없는 연출이 먼저 오면 그 연출만 넘어가고 다음 연출에서 또 찾는다."""
+        from unittest import mock
+        m, bot = self.scene_bot()
+        bot.skip_button.return_value = None
+        sd = SpearDodge(bot)
+        clock = iter(range(0, 1000, 3))
+        with mock.patch("mabi.tasks.spear.time.sleep"),                 mock.patch("mabi.tasks.spear.time.monotonic", side_effect=lambda: next(clock)):
+            sd.skip_scene()
+        bot.click.assert_not_called()
+        self.assertFalse(sd.scene_due())  # 같은 연출은 다시 안 본다
+        m.apply("cutscene.end", {})
+        m.apply("cutscene.play", {})
+        m.state.changed_at["cutscene"] += 1  # 다음 연출 (시계가 거칠어 같은 값이 나올 수 있다)
+        self.assertTrue(sd.scene_due())   # 다음 연출은 본다
+
     def test_camera_after_boss_scene_without_fang(self):
         """송곳니를 못 봤으면 (판 도중에 켬 등) 보스 등장 연출을 넘긴 뒤 맞춘다."""
         from unittest import mock
@@ -369,6 +408,9 @@ class KeysTest(unittest.TestCase):
         sd.skip_scene()
         bot.click.assert_called_once_with("hit")
         self.assertFalse(sd.scene_due())   # 한 맵에 한 번
+        m.apply("cutscene.end", {})
+        m.apply("cutscene.play", {})
+        self.assertFalse(sd.scene_due())   # 넘긴 뒤 다음 연출은 그대로 둔다
         m.apply("cutscene.end", {})
         self.assertTrue(sd.camera_due())
         with mock.patch("mabi.tasks.spear.time.sleep"):

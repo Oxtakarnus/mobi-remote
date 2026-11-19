@@ -36,6 +36,9 @@ CAMERA_AUTO = 4.0  # 자동 카메라로 이만큼 둔 뒤 수동으로 — 2초
 CAMP_AUTO = 6.0    # 보스방 갈 때는 더 길게 — 4초로는 덜 돌아간 채 고정될 때가 있었다 (사용자 11-03). 8초는 빠른 캐릭터가
                    # 그 안에 보스방에 들어가 두 번째 Z 가 보스 등장 연출에 묻혀 자동 카메라로 남았다 (11-04 14:34, 사용자)
 FIGHT_PRESS = 3   # 투창병 쪽으로 돌아온 뒤 스킬 1 을 이만큼 눌러 전투로 빨리 돌아가게 (사용자)
+SCENE_FIND = 10.0  # 보스 등장 연출의 넘기기 버튼을 찾는 상한 — 버튼이 늦게 뜰 때가 있다 (11-19 14:00 5초로는 못 찾음)
+SCENE_TAKES = 2.0  # 누른 뒤 연출이 끝나길(패킷) 기다리는 초 — 안 끝나고 버튼이 남아 있으면 다시 누른다
+SCENE_CLICKS = 3
 
 
 def _per_map(name: str):
@@ -50,7 +53,8 @@ class SpearDodge:
     camera_set = _per_map("camera_set")     # 카메라를 맞췄나
     camp_camera = _per_map("camp_camera")   # 보스방 갈 때 카메라를 다시 맞췄나
     camera_half = _per_map("camera_half")   # 첫 카메라 키만 누르고 연출이 시작돼 두 번째가 남았나
-    scene_tried = _per_map("scene_tried")   # 보스 등장 연출을 넘겨 봤나
+    scene_tried = _per_map("scene_tried")   # 보스 등장 연출을 넘겨 봤나 (넘기기를 눌렀다)
+    scene_seen = _per_map("scene_seen")     # 넘기기 버튼을 찾아본 연출 (그 연출이 시작된 때)
 
     def __init__(self, bot: Bot):
         self.bot = bot
@@ -154,22 +158,41 @@ class SpearDodge:
         """보스 등장 연출 중이고 이 맵에서 아직 안 넘겼다. 물결은 어차피 게임을 앞에 두고 돌아 넘겨도 된다 (사용자 11-03)
         — 다른 어비스는 연출을 기다린다 (Bot.scene_skip)."""
         s = self.bot.packets.state
-        return bool(s.entered_at and s.cutscene and s.boss_scene and self.scene_tried != s.entered_at)
+        return bool(s.entered_at and s.cutscene and s.boss_scene and self.scene_tried != s.entered_at
+                    and self.scene_seen != s.changed_at.get("cutscene"))
 
     def skip_scene(self) -> None:
-        """'장면 넘기기' 를 누른다. 버튼이 연출 시작보다 조금 늦게 뜰 수 있어 잠깐 찾는다."""
+        """'장면 넘기기' 를 누르고 연출이 끝나는지(패킷 cutscene.end·abort) 본다. 버튼은 연출 시작보다 늦게 뜰 수 있고,
+        눌러도 연출이 이어질 때가 있어 (사용자 11-19 '될 때도 있고 아닐 때도') 버튼이 남아 있으면 다시 누른다 — 버튼이
+        보일 때만 누르므로 연출이 끝난 뒤 그 자리(오른쪽 위 메뉴)를 누르지 않는다.
+        버튼을 못 찾은 연출은 그 연출만 넘어가고, 같은 맵에서 다음 연출이 오면 또 찾는다 — 보스 연출 앞에 넘기기 없는
+        연출이 끼면 그것만 보고 끝내 정작 보스 연출을 못 넘길 수 있다."""
         bot = self.bot
-        self.scene_tried = bot.packets.state.entered_at
-        end = time.monotonic() + 5
-        while bot.packets.state.cutscene and time.monotonic() < end:
+        self.scene_seen = bot.packets.state.changed_at.get("cutscene", 0.0)
+        start = time.monotonic()
+        clicks = 0
+        while bot.packets.state.cutscene and time.monotonic() < start + SCENE_FIND and clicks < SCENE_CLICKS:
             hit = bot.skip_button()
-            if hit and hit[0] == "scene":
-                bot.log.info("물결: 보스 등장 연출 넘기기")
-                bot.click(hit[1])
+            if not (hit and hit[0] == "scene"):
+                time.sleep(0.5)
+                continue
+            clicks += 1
+            found = time.monotonic() - start
+            self.scene_tried = bot.packets.state.entered_at
+            bot.click(hit[1])
+            if bot.wait_packet(lambda st: not st.cutscene, SCENE_TAKES):
+                again = f" · {clicks}번 누름" if clicks > 1 else ""
+                bot.log.info(f"물결: 보스 등장 연출 넘김 (버튼 {found:.1f}초 · 끝남 {time.monotonic() - start:.1f}초{again})")
                 return
-            time.sleep(0.5)
-        if bot.packets.state.cutscene:
-            bot.log.info("물결: 보스 등장 연출의 넘기기 버튼을 못 찾음 — 끝나길 기다림")
+        if not bot.packets.state.cutscene:
+            if clicks:
+                bot.log.info(f"물결: 보스 등장 연출 넘김 ({clicks}번 누름 · 끝난 것은 화면으로)")
+            return
+        if clicks:
+            bot.log.warning(f"물결: 넘기기를 {clicks}번 눌러도 보스 등장 연출이 이어짐 → 끝나길 기다림 "
+                            f"({bot.snapshot('spear_scene').name})")
+        else:
+            bot.log.info(f"물결: 보스 등장 연출의 넘기기 버튼을 못 찾음 — 끝나길 기다림 ({bot.snapshot('spear_scene').name})")
 
     def run(self) -> None:
         st = self.st
