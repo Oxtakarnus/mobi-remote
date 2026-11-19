@@ -119,5 +119,25 @@ class DungeonEnterTest(unittest.TestCase):
         self.assertIsInstance(self.play(FIELD), StepTimeout)
 
 
+class AbyssLeftoverTest(unittest.TestCase):
+    def test_reward_at_start_not_counted(self):
+        """보상 화면에서 시작하면 그 판은 이미 센 판 — 보상만 받고 한 판을 더 돈다 (11-19 보상 화면 멈춤 뒤 ▶ 로 두 번 셈)."""
+        import time
+        from mabi.tasks import abyss
+        r = abyss.AbyssRepeat.__new__(abyss.AbyssRepeat)
+        r.bot = mock.MagicMock()
+        r.a = {"dungeon": "흩어진 물길", "match_timeout": 60, "run_timeout": 600}
+        r.runs, r.minutes, r.t0, r.on_event, r.behind = 1, 0, time.monotonic(), lambda e: None, False
+        r.stat = {"clears": 0, "deaths": 0, "retries": 0, "revives": 0}
+        rounds = []
+        r.play_round = lambda play, step: rounds.append(step) or "clear"
+        r.recheck = lambda at: False
+        r.yield_between = r.repair_between = lambda go_out: False
+        r._again = lambda: None
+        with mock.patch.object(abyss, "to_reward", return_value="reward"), mock.patch.object(abyss, "exit_reward"),                 mock.patch.object(abyss, "inside", return_value=True),                 mock.patch.object(abyss, "entered_since", return_value=True):
+            r.loop("reward")
+        self.assertEqual((r.stat["clears"], len(rounds)), (1, 1))
+
+
 if __name__ == "__main__":
     unittest.main()

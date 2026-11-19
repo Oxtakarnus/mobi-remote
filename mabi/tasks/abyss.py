@@ -606,6 +606,9 @@ class AbyssRepeat(Repeat):
         bot, a = self.bot, self.a
         bot.background = self.behind
         stage = {"play": "play", "reward": "reward", "matching": "match"}.get(at, "entry")
+        # 시작 전에 이미 끝난 판 — 보상만 받고 판 수에는 넣지 않는다 (레이드와 같다). 그 판은 결과가 온 순간 이미 셌다 —
+        # 보상 화면에서 멈췄다가 ▶ 하면 두 번 세어 7판 카드가 4판 만에 끝났다 (11-19 16:23·16:37·16:43)
+        leftover = stage == "reward"
         if at != "main":
             bot.log.info({"play": "이미 어비스 안 → 이 판부터 이어서", "reward": "어비스 클리어 화면 → 보상부터",
                           "matching": "매칭 중 → 들어가길 기다림", "entry": "어비스 입장 화면 → 그 자리부터",
@@ -644,7 +647,11 @@ class AbyssRepeat(Repeat):
                 self.stat["deaths" if r == "dead" else "retries"] += 1
                 stage = "entry"
             else:
-                self.cleared()  # 결과가 온 순간 센다 — 보상 화면 정리를 기다리지 않는다
+                if leftover:
+                    bot.log.info("시작 전에 끝나 있던 판 → 보상만 받음 (판 수에 넣지 않음)")
+                    leftover = False
+                else:
+                    self.cleared()  # 결과가 온 순간 센다 — 보상 화면 정리를 기다리지 않는다
                 got = to_reward(bot)
                 if got == "matching" and not self.done():
                     self.match_at = bot.packets.state.entered_at  # 지난 판 맵 뒤에 들어가는 맵이 다음 판
