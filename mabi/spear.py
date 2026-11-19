@@ -8,8 +8,13 @@
 - 두 번 파훼하면 속성 패턴을 더 안 쓰고, 투창병이 쓰러지면 1초 안에 주술사 6마리도 쓰러진다 → 이 맵의 패턴 끝.
 - 그 다음 방의 비틀린 송곳니(판마다 한 마리)가 쓰러지면 모닥불이 나오고 곧바로 보스방으로 걸어간다 (11-03 party2 10판).
 보스 테로사의 틱택토 패턴도 같은 맵이라 여기서 쌓는다 (판은 tictactoe.TicTacToe).
+비틀린 송곳니의 격류(2026-11-19 caps/fang1119, 사용자 설명): 경기장 가장자리 가운데에서 격류가 나와 2초 뒤 맞은편 끝까지
+20초에 밀고 간다. 바깥 면마다 균열이 2개씩 (8개, 자리 고정) 있고 밟으면 맞은편 면 균열로 옮겨진다 (5초 재사용 대기 버프).
+격류가 가운데를 넘었거나 내 가까이 왔을 때 격류가 가는 쪽 면의 균열을 밟아 격류 뒤로 넘어간다 — 너무 일찍 타면 건너편이
+아직 격류라 맞는다. 상태는 SpearState.wave·warped_at, 계산은 wave_line·exits, 움직임은 tasks/spear.SpearDodge.rift.
 패킷은 받기만 한다. 움직이는 쪽은 tasks/spear.py.
 """
+import math
 import threading
 import time
 
@@ -26,6 +31,41 @@ SPEAR_HOME = (0.0, 163.0)
 FRESH = 3.0               # 대상 표시를 이만큼 지나서 보면 늦었다 (투창은 7~8초 뒤)
 TTT = ("spear.timeline", "spear.path", "spear.breakpoint")
 MOVES = ("spear.move_update", "spear.move_ensure", "spear.move_end", "spear.move_manual", "spear.move_location")
+# 비틀린 송곳니 격류·균열 (caps/fang1119)
+WAVE_KIND = 0x76fcd878   # 기술 물체 종류 — 격류
+RIFT_PASS = 0x3efd9bea   # 균열을 지난 캐릭터에 붙는 버프 (5초 재사용 대기, 시전자 = 밟은 균열)
+RIFTS = ((-18.0, 208.0), (-18.0, 228.0), (18.0, 208.0), (18.0, 228.0),
+         (-10.0, 200.0), (10.0, 200.0), (-10.0, 235.0), (10.0, 235.0))  # 서·동·남·북 면에 둘씩
+WAVE_LEN = 40.0          # 격류가 가는 거리 (경로를 못 받았을 때)
+WAVE_SECS = 20.0         # 그 거리를 가는 시간
+WAVE_DELAY = 2.0         # 나오고 이만큼 뒤에 움직이기 시작
+WARP_JUMP = 12.0         # 내 자리가 이만큼 넘게 한 번에 바뀌면 균열로 넘어간 것
+
+
+def wave_line(w: dict, now: float) -> tuple[tuple[float, float], tuple[float, float], float, float]:
+    """격류 w 의 (출발점, 가는 방향 단위벡터, 갈 거리, 지금 앞머리가 출발점에서 간 거리).
+    경로 패킷을 받았으면 그것으로, 아니면 나온 자리·방향과 WAVE_DELAY 뒤 출발·WAVE_SECS 로 어림한다.
+    방향 0 은 +Y, π/2 는 +X 쪽으로 간다 (북 (0, 237.5) π → 남, 서 (-19.9, 217.5) π/2 → 동)."""
+    path = w.get("path")
+    if path:
+        x1, y1, x2, y2, secs, t_move = path
+        length = math.hypot(x2 - x1, y2 - y1) or WAVE_LEN
+        u, start = ((x2 - x1) / length, (y2 - y1) / length), (x1, y1)
+        secs = secs if secs and secs > 0 else WAVE_SECS
+    else:
+        u, start, length = (math.sin(w["dir"]), math.cos(w["dir"])), (w["x"], w["y"]), WAVE_LEN
+        t_move, secs = w["at"] + WAVE_DELAY, WAVE_SECS
+    return start, u, length, length * min(1.0, max(0.0, (now - t_move) / secs))
+
+
+def along(p: tuple[float, float], start: tuple[float, float], u: tuple[float, float]) -> float:
+    """출발점에서 격류가 가는 쪽으로 p 까지 간 거리."""
+    return (p[0] - start[0]) * u[0] + (p[1] - start[1]) * u[1]
+
+
+def exits(start: tuple[float, float], u: tuple[float, float], length: float, rifts=RIFTS) -> list[tuple[float, float]]:
+    """격류가 가는 쪽 면의 균열 (밟으면 격류가 나온 쪽으로 넘어간다)."""
+    return [r for r in rifts if along(r, start, u) > length - 6.0]
 
 
 class SpearState:
@@ -52,6 +92,9 @@ class SpearState:
             self.fang_down = 0.0               # 비틀린 송곳니가 쓰러진 때 (보스방으로 감)
             self.taken_at = 0.0                # 봇이 그 표시를 맡은 때
             self.ttt = TicTacToe()             # 보스 틱택토
+            self.wave: dict | None = None      # 지금 격류 {'id', 'x', 'y', 'dir', 'at', 'path'}
+            self.wave_taken = 0.0              # 봇이 맡은 격류 (그 격류가 나온 때)
+            self.warped_at = 0.0               # 내가 균열로 넘어간 때
 
     @property
     def finished(self) -> bool:
@@ -70,7 +113,22 @@ class SpearState:
             if key in MOVES:
                 x, y = v.get("x"), v.get("y")
                 if x is not None and y is not None and abs(x) < 1e5 and abs(y) < 1e5:
+                    prev = self.pos.get(a)
                     self.pos[a] = (x, y, now)
+                    if (me is not None and a == me and self.wave and prev and now - prev[2] < 10.0
+                            and math.dist(prev[:2], (x, y)) > WARP_JUMP):
+                        return self._warped(now, f"({prev[0]:.0f}, {prev[1]:.0f}) → ({x:.0f}, {y:.0f})")
+                return None
+            if key == "spear.object":
+                if v.get("kind") != WAVE_KIND:
+                    return None
+                self.wave = {"id": a, "x": v.get("x", 0.0), "y": v.get("y", 0.0), "dir": v.get("dir", 0.0), "at": now,
+                             "path": None}
+                return f"격류 나옴 ({self.wave['x']:.0f}, {self.wave['y']:.0f})"
+            if key == "spear.object_path":
+                if self.wave and a == self.wave["id"]:
+                    self.wave["path"] = (v.get("x1", 0.0), v.get("y1", 0.0), v.get("x2", 0.0), v.get("y2", 0.0),
+                                         v.get("secs", WAVE_SECS), now)
                 return None
             if key == "spear.monster":
                 self.appeared[a] = (v.get("x", 0.0), v.get("y", 0.0))
@@ -104,6 +162,8 @@ class SpearState:
             if key != "spear.buff":
                 return None
             b = v.get("buff")
+            if b == RIFT_PASS:
+                return self._warped(now, "버프") if me is not None and a == me else None
             if b == SPEAR_MARK:
                 self.spears.add(a)
             elif b in SHAMAN_ATTR and a in self.appeared:
@@ -124,7 +184,32 @@ class SpearState:
                 return f"투창 대상 = 다른 캐릭터 (번호 {a}, 나 {me})"
         return None
 
+    def _warped(self, now: float, how: str) -> str | None:
+        """내가 균열로 넘어감 (자리 튐·재사용 대기 버프 — 둘 다 오므로 한 번만 알린다)."""
+        first = now - self.warped_at > 3.0
+        self.warped_at = now
+        return f"균열로 넘어감 ({how})" if first else None
+
     # 봇이 쓰는 것 ──────────────────────────────────
+
+    def wave_due(self) -> bool:
+        """새 격류가 나왔고 아직 안 맡았다 (송곳니가 쓰러졌으면 아님)."""
+        w = self.wave
+        return bool(self.active and w and w["at"] > self.wave_taken and not self.fang_down
+                    and time.monotonic() - w["at"] < WAVE_DELAY + WAVE_SECS)
+
+    def take_wave(self) -> dict | None:
+        with self.lock:
+            w = self.wave
+            if w:
+                self.wave_taken = w["at"]
+            return w
+
+    def rifts(self, max_age: float = 5.0) -> list[tuple[float, float]]:
+        """지금 보이는 균열 자리 — 패킷으로 RIFTS 자리(1칸 안)에 있는 오브젝트. 균열은 자리를 계속 보낸다 (2분에 196번)."""
+        now = time.monotonic()
+        live = [(x, y) for x, y, t in list(self.pos.values()) if now - t <= max_age]
+        return [r for r in RIFTS if any(math.dist(r, p) < 1.0 for p in live)]
 
     def due(self) -> bool:
         """내게 대상 표시가 새로 붙었고 맡을 일이 있다."""

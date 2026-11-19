@@ -1,10 +1,13 @@
 """흩어진 물길 투창병 속성 패턴 — 패킷 상태(spear.SpearState)와 이동 키 고르기."""
+import math
 import time
 import unittest
 from types import SimpleNamespace
+from unittest import mock
 
 from mabi.packet_monitor import PacketMonitor
-from mabi.spear import FANG_KIND, SHAMAN_ATTR, SPEAR_ATTR, SPEAR_MARK, TARGET_MARK
+from mabi.spear import (FANG_KIND, RIFT_PASS, RIFTS, SHAMAN_ATTR, SPEAR_ATTR, SPEAR_MARK, TARGET_MARK, WAVE_KIND,
+                        exits, wave_line)
 from mabi.tasks.spear import SpearDodge
 from mabi.tictactoe import FORECAST, choose
 
@@ -458,6 +461,169 @@ class KeysTest(unittest.TestCase):
         m.apply("channel.entering", {"channel": 1, "channel_type": "InstanceAbyssDungeon", "channel_name": "흩어진 물길"})
         m._spear("spear.buff", {"actor": ME, "buff": TARGET_MARK, "caster": SPEAR})
         self.assertTrue(sd.wanted())
+
+
+
+class RiftTest(unittest.TestCase):
+    """비틀린 송곳니 격류 → 격류가 가는 쪽 면의 균열로 (2026-11-19 caps/fang1119 · 사용자 설명).
+    북 (0, 237.5) 방향 π 에서 나온 격류는 남쪽으로 40칸을 20초에 — 남쪽 균열 (±10, 200) 을 밟아 북쪽으로 넘어간다."""
+    NORTH = {"x": 0.0, "y": 237.5, "dir": math.pi}
+
+    def setUp(self):
+        self.t = [1000.0]
+        p = mock.patch.object(time, "monotonic", lambda: self.t[0])
+        p.start()
+        self.addCleanup(p.stop)
+        self.m = PacketMonitor(None)
+        self.m.status = "running"
+        self.m.state.me = ME
+        self.m.apply("channel.entering", {"channel": 1, "channel_type": "InstanceAbyssDungeon",
+                                          "channel_name": "흩어진 물길 (어비스 시즌2 3구역 매우 어려움2 솔로)"})
+        self.m._spear("spear.monster", {"actor": 77, "x": 0.0, "y": 0.0, "kind": FANG_KIND})
+        for i, (x, y) in enumerate(RIFTS):
+            self.m._spear("spear.move_ensure", {"actor": 900 + i, "x": x, "y": y})
+
+    @property
+    def st(self):
+        return self.m.spear
+
+    def wave(self, w=None):
+        self.m._spear("spear.object", {"actor": 555, "kind": WAVE_KIND, **(w or self.NORTH)})
+
+    def test_state(self):
+        self.m._spear("spear.object", {"actor": 554, "kind": 1234, **self.NORTH})  # 다른 기술 물체
+        self.assertFalse(self.st.wave_due())
+        self.assertEqual(self.st.feed("spear.object", {"actor": 555, "kind": WAVE_KIND, **self.NORTH}, ME),
+                         "격류 나옴 (0, 238)")
+        self.assertTrue(self.st.wave_due())
+        self.assertEqual(len(self.st.rifts()), 8)
+        self.st.take_wave()
+        self.assertFalse(self.st.wave_due())  # 한 번만 맡는다
+        self.t[0] += 1
+        self.wave()
+        self.assertTrue(self.st.wave_due())
+        self.m.apply("actor.dead", {"actor": 77, "dead": True})
+        self.assertFalse(self.st.wave_due())  # 송곳니가 쓰러지면 안 맡는다
+
+    def test_warp_signals(self):
+        """균열을 지나면 재사용 대기 버프와 자리 튐이 둘 다 온다 — 한 번만 알린다."""
+        self.wave()
+        self.m._spear("spear.move_update", {"actor": ME, "x": -10.0, "y": 200.5})
+        self.t[0] += 0.3
+        self.assertEqual(self.st.feed("spear.buff", {"actor": ME, "buff": RIFT_PASS, "caster": 904}, ME),
+                         "균열로 넘어감 (버프)")
+        self.assertIsNone(self.st.feed("spear.move_update", {"actor": ME, "x": -10.0, "y": 235.0}, ME))
+        self.assertIsNone(self.st.feed("spear.buff", {"actor": OTHER, "buff": RIFT_PASS, "caster": 904}, ME))
+        self.t[0] += 5
+        self.assertEqual(self.st.feed("spear.move_update", {"actor": ME, "x": -10.0, "y": 201.0}, ME),
+                         "균열로 넘어감 ((-10, 235) → (-10, 201))")  # 버프를 못 받아도 자리 튐으로
+
+    def test_exit_edge(self):
+        """격류가 가는 쪽 면의 균열만 — 경로 패킷이 없으면 나온 자리·방향으로 어림한다."""
+        cases = [(self.NORTH, {(-10.0, 200.0), (10.0, 200.0)}),
+                 ({"x": -19.9, "y": 217.5, "dir": math.pi / 2}, {(18.0, 208.0), (18.0, 228.0)}),
+                 ({"x": 0.0, "y": 197.5, "dir": 0.0}, {(-10.0, 235.0), (10.0, 235.0)}),
+                 ({"x": 19.9, "y": 217.5, "dir": 3 * math.pi / 2}, {(-18.0, 208.0), (-18.0, 228.0)})]
+        for w, want in cases:
+            start, u, length, front = wave_line({**w, "at": 0.0, "path": None}, 12.0)
+            self.assertEqual(set(exits(start, u, length)), want)
+            self.assertAlmostEqual(front, 20.0)  # 2초 뒤 출발 · 10초에 반
+        path = {**self.NORTH, "at": 0.0, "path": (0.0, 237.5, 0.0, 197.5, 20.0, 3.0)}
+        self.assertAlmostEqual(wave_line(path, 13.0)[3], 20.0)  # 경로를 받은 때부터
+
+    def dodge(self, me, on_sleep=None, stuck=False):
+        """격류가 나온 때 run 을 부른다. 2초 뒤 경로 패킷. 가짜 이동: 5.5칸/초로 가고, 균열 1칸 안에 서면 넘어간다.
+        stuck: 균열 말고는 못 움직임 (밀리거나 묶임). 돌려줌: ([(목표, 출발 초)], 넘어간 초 또는 None, bot)."""
+        pos, moves = [me], []
+        bot = mock.MagicMock(packets=self.m)
+        sd = SpearDodge(bot)
+        sd.calib = ((0.0, 1.0), (1.0, 0.0))
+        sd.my_pos = sd.pos_loose = lambda *a, **k: pos[0]
+        sd._with_focus = lambda fn: fn()
+        start = self.t[0]
+
+        def sleep(sec):
+            self.t[0] += sec
+            w = self.st.wave
+            if w and w["path"] is None and self.t[0] - start >= 2.0:
+                self.m._spear("spear.object_path", {"actor": 555, "x1": 0.0, "y1": 237.5, "x2": 0.0, "y2": 197.5,
+                                                    "secs": 20.0})
+            if on_sleep:
+                on_sleep(self.t[0] - start)
+
+        def go(target, tol, until, done, pattern=True):
+            moves.append((target, round(self.t[0] - start, 1)))
+            rift = any(math.dist(target, r) < 1.0 for r in RIFTS)
+            if stuck and not rift:
+                return False
+            sleep(math.dist(pos[0], target) / 5.5)
+            pos[0] = target
+            if rift:
+                self.m._spear("spear.buff", {"actor": ME, "buff": RIFT_PASS, "caster": 904})
+            return True
+
+        def hold(target, until, done, pattern=True):
+            while not done() and self.t[0] < until:
+                sleep(0.1)
+
+        sd.go, sd.hold = go, hold
+        with (mock.patch.object(SpearDodge, "ok", return_value=True), mock.patch.object(time, "sleep", sleep),
+              mock.patch.object(SpearDodge, "camera_due", return_value=False),
+              mock.patch.object(SpearDodge, "scene_due", return_value=False)):
+            self.wave()
+            self.assertTrue(sd.wanted())
+            sd.run()
+        warped = round(self.st.warped_at - start, 1) if self.st.warped_at else None
+        return moves, warped, bot
+
+    def logged(self, bot, text):
+        return any(text in str(c.args[0]) for c in bot.log.info.call_args_list + bot.log.warning.call_args_list)
+
+    def test_center_waits_for_half(self):
+        """가운데에 있으면 격류가 6칸 안으로 올 때 출발해 남쪽 균열 앞에서 기다렸다가 가운데를 넘은 뒤 밟는다."""
+        moves, warped, bot = self.dodge((0.0, 217.5))
+        self.assertEqual(moves[0][0], (-10.0, 205.0))       # 균열 5칸 앞
+        self.assertAlmostEqual(moves[0][1], 9.0, delta=0.2)  # 앞머리 14칸 = 나와 6칸
+        self.assertEqual(moves[1][0], (-10.0, 200.0))
+        self.assertGreaterEqual(moves[1][1], 12.0)           # 경로 받고 10초 = 가운데
+        self.assertLess(warped, 14.0)
+        self.assertTrue(self.logged(bot, "격류: 균열로 넘어감"))
+
+    def test_near_start_edge_leaves_early(self):
+        """격류가 나온 면 가까이 있으면 바로 출발하지만, 밟는 건 가운데를 넘은 뒤 (일찍 타면 건너편이 아직 격류)."""
+        moves, warped, _ = self.dodge((8.0, 233.0))
+        self.assertEqual(moves[0], ((10.0, 205.0), 0.0))
+        self.assertGreaterEqual(moves[1][1], 12.0)
+        self.assertIsNotNone(warped)
+
+    def test_inside_wave_still_waits(self):
+        """격류에 붙어 있어도 가운데 전이면 바로 타지 않고 앞질러 균열 앞에서 기다린다."""
+        moves, warped, _ = self.dodge((0.0, 236.5))
+        self.assertEqual(moves[0], ((-10.0, 205.0), 0.0))
+        self.assertGreaterEqual(moves[1][1], 12.0)
+
+    def test_caught_steps_early(self):
+        """균열 앞까지 못 가고 격류가 2.5칸 안으로 붙으면 가운데 전이라도 밟는다 (밀리며 맞느니)."""
+        moves, warped, _ = self.dodge((-10.0, 216.0), stuck=True)
+        self.assertEqual([m[0] for m in moves], [(-10.0, 205.0), (-10.0, 200.0)])
+        self.assertLess(moves[1][1], 12.0)
+        self.assertIsNotNone(warped)
+
+    def test_fang_down_stops(self):
+        """기다리는 동안 송곳니가 쓰러지면 그만둔다 (사용자 11-19)."""
+        def kill(dt):
+            if dt >= 5:
+                self.m.apply("actor.dead", {"actor": 77, "dead": True})
+        moves, warped, bot = self.dodge((0.0, 217.5), kill)
+        self.assertEqual(moves, [])
+        self.assertIsNone(warped)
+        self.assertTrue(self.logged(bot, "송곳니가 쓰러짐"))
+
+    def test_no_rifts_seen(self):
+        self.t[0] += 10  # 균열 자리가 오래돼 안 보임
+        moves, _, bot = self.dodge((0.0, 217.5))
+        self.assertEqual(moves, [])
+        self.assertTrue(self.logged(bot, "균열이 안 보임"))
 
 
 if __name__ == "__main__":

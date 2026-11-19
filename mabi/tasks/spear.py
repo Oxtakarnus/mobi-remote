@@ -1,4 +1,5 @@
 """흩어진 물길 투창병 속성 패턴 — 내게 대상 표시가 붙으면 같은 속성 주술사 옆으로 WASD 로 간다 (상태는 mabi/spear.py).
+비틀린 송곳니의 격류도 여기서 피한다 (SpearDodge.rift — 격류가 가는 쪽 면의 균열을 밟아 격류 뒤로).
 
 이 어비스만의 예외다. 어비스 판 진행(abyss.play)이 기다리는 사이 패킷이 깨우면 부른다.
 1. 같은 속성 주술사 옆 (주술사에서 가운데 쪽으로 1.5) 으로 이동. 도착은 1칸 안 — 투창 범위 반지름이 약 2.5 라 주술사가 들어간다.
@@ -18,7 +19,7 @@ import time
 
 from .. import keys
 from ..bot import Bot
-from ..spear import SpearState
+from ..spear import WAVE_DELAY, WAVE_SECS, SpearState, along, exits, wave_line
 from ..tictactoe import O_AT, O_WINDOW
 
 TOL = 1.0          # 도착 (목표점에서)
@@ -45,6 +46,12 @@ SCENE_CLICKS = 3
 SCENE_SPOT_AFTER = 1.5
 # '장면 넘기기' 자리 (기준 1920x1080, 11-19 13:30 버튼을 찾아 누른 자리). 평소 화면에선 미니맵 위라 HUD 가 사라진 뒤에만 누른다
 SCENE_SKIP_XY = (1805, 44)
+# 격류 피하기 (사용자 11-19: 격류가 가운데를 넘었거나 캐릭터 가까이 왔을 때 가까운 균열로 — 일찍 타면 건너편이 아직 격류)
+NEAR_HIT = 6.0    # 격류 앞머리가 이만큼 가까이 오면 균열로 출발 (가운데 전이라도)
+NEAR_STEP = 2.5   # 균열 앞에서 기다리는데 격류가 이만큼 붙으면 가운데 전이라도 밟는다 (밀리며 맞느니)
+RIFT_STAGE = 5.0  # 가운데 전에 균열에 닿으면 이만큼 안쪽에서 기다린다 (밟히는 범위를 아직 못 재서 넉넉히)
+RIFT_TOL = 0.5
+RIFT_WAIT = 1.5   # 균열 자리에 닿고 넘어가길 기다리는 초 — 안 넘어가면 같은 면 다른 균열로
 
 
 def _per_map(name: str):
@@ -65,6 +72,7 @@ class SpearDodge:
     def __init__(self, bot: Bot):
         self.bot = bot
         self._calib = False     # 처음 쓸 때 파일에서 (흩어진 물길이 아니면 읽지도 않는다)
+        self._cli_pos, self._cli_at = None, -1e9  # pos_loose 가 CLI 로 본 내 자리
 
     @property
     def file(self):
@@ -89,13 +97,14 @@ class SpearDodge:
         return self.bot.packets.spear
 
     def wanted(self) -> bool:
-        """지금 맡을 일이 있나 — 내가 투창 대상이거나 틱택토 O 담당, 또는 주술사가 나왔는데 W·D 방향을 아직 모름."""
+        """지금 맡을 일이 있나 — 내가 투창 대상이거나 틱택토 O 담당, 비틀린 송곳니 격류가 나옴,
+        또는 주술사가 나왔는데 W·D 방향을 아직 모름."""
         st = getattr(self.bot.packets, "spear", None)
         if not isinstance(st, SpearState) or not st.active:
             return False
         if self.camera_due() or self.scene_due():
             return True
-        if st.ttt.due():
+        if st.ttt.due() or st.wave_due():
             return True
         if st.finished:
             return False
@@ -222,6 +231,13 @@ class SpearDodge:
         if self.camera_due():
             self.set_camera()  # Z 만 누른다 — 뒤에서도 창에 직접 보내지므로 게임을 앞으로 가져오지 않는다 (사용자 11-03)
             return
+        if st.wave_due():
+            w = st.take_wave()
+            if w and self.calib is None:
+                self._with_focus(self.calibrate)
+            if w and self.calib is not None:
+                self.rift(w)  # 움직일 때만 게임 창을 앞으로
+            return
         if st.ttt.due():
             job = st.ttt.take(self.my_pos())  # 크게 차이 나지 않으면 가까운 칸
             if job and self.calib is None:
@@ -281,6 +297,79 @@ class SpearDodge:
         if not done():
             self.bot.log.info("틱택토: 보스가 O 를 새기러 오는 것을 못 봄")
 
+    def rift(self, w: dict) -> None:
+        """격류 피하기 (사용자 11-19: 격류가 나오면 시작해 균열을 탔거나 송곳니가 쓰러지면 끝).
+        앞머리가 가운데를 넘거나 내 가까이(NEAR_HIT) 올 때까지는 자동 전투 그대로 두고 (게임 창도 앞으로 안 가져온다),
+        그때 격류가 가는 쪽 면의 균열 가운데 가까운 것으로 간다. 가운데 전이면 균열 앞(RIFT_STAGE)에서 기다렸다가
+        가운데를 넘거나 거기까지 격류가 붙으면(NEAR_STEP) 밟는다 — 일찍 타면 건너편이 아직 격류다.
+        그 밖에 쓰러짐·맵 떠남·로딩, 격류가 끝까지 감에도 그만둔다."""
+        st, bot = self.st, self.bot
+        if not st.rifts():
+            bot.log.info("격류: 균열이 안 보임 (패킷) — 움직이지 않음")
+            return
+        end = w["at"] + WAVE_DELAY + WAVE_SECS + 1.0
+        over = lambda: self._rift_over(w, end)
+        while not over():
+            bot.check_stop()
+            if self._rift_time(w, NEAR_HIT):
+                break
+            time.sleep(0.1)
+        if not over():
+            self._with_focus(lambda: self._rift_move(w, end, over))
+        self._rift_end(w)
+
+    def _rift_over(self, w: dict, end: float) -> bool:
+        st = self.st
+        return st.warped_at > w["at"] or bool(st.fang_down) or not self.ok(pattern=False) or time.monotonic() > end
+
+    def _rift_time(self, w: dict, near: float | None) -> bool:
+        """격류 앞머리가 가운데를 넘었거나 내 near 칸 안으로 왔다 (이미 나를 덮쳐 밀고 있어도). near None 이면 가운데만."""
+        start, u, length, front = wave_line(w, time.monotonic())
+        if front >= length / 2:
+            return True
+        p = self.pos_loose() if near is not None else None
+        return p is not None and along(p, start, u) - front <= near
+
+    def _rift_move(self, w: dict, end: float, over) -> None:
+        st, bot = self.st, self.bot
+        start, u, length, front = wave_line(w, time.monotonic())
+        me = self.my_pos()
+        if not me:
+            bot.log.info("격류: 내 자리를 모름 — 움직이지 않음")
+            return
+        outs = exits(start, u, length, st.rifts()) or exits(start, u, length)  # 패킷으로 본 균열, 없으면 정해 둔 자리
+        outs.sort(key=lambda r: math.dist(r, me))
+        bot.log.info(f"격류: ({start[0]:.0f}, {start[1]:.0f}) 에서 옴 · {front / length * 100:.0f}% · "
+                     f"나와 {along(me, start, u) - front:.1f}칸 → 균열 ({outs[0][0]:.0f}, {outs[0][1]:.0f}) 로 "
+                     f"(나온 지 {time.monotonic() - w['at']:.1f}초)")
+        if not self._rift_time(w, None):  # 가운데 전 — 격류에 붙어 있어도 일단 앞질러 균열 앞에서 기다린다
+            stage = (outs[0][0] - u[0] * RIFT_STAGE, outs[0][1] - u[1] * RIFT_STAGE)
+            self.go(stage, TOL, end, lambda: over() or self._rift_time(w, None), pattern=False)
+            self.hold(stage, end, lambda: over() or self._rift_time(w, NEAR_STEP), pattern=False)
+        for r in outs:
+            if over():
+                return
+            self.go(r, RIFT_TOL, min(end, time.monotonic() + GO_LIMIT), over, pattern=False)
+            bot.input.hold(())
+            stop = time.monotonic() + RIFT_WAIT
+            while time.monotonic() < stop and not over():
+                time.sleep(0.05)
+            if not over():
+                bot.log.info(f"격류: 균열 ({r[0]:.0f}, {r[1]:.0f}) 에 닿았는데 안 넘어감 — 같은 면 다른 균열로")
+
+    def _rift_end(self, w: dict) -> None:
+        st = self.st
+        _, _, length, front = wave_line(w, time.monotonic())
+        at = f"격류 {front / length * 100:.0f}% · 나온 지 {time.monotonic() - w['at']:.1f}초"
+        if st.warped_at > w["at"]:
+            self.bot.log.info(f"격류: 균열로 넘어감 ({at})")
+        elif st.fang_down:
+            self.bot.log.info(f"격류: 송곳니가 쓰러짐 — 그만둠 ({at})")
+        elif not self.ok(pattern=False):
+            self.bot.log.info(f"격류: 쓰러졌거나 맵을 떠남 — 그만둠 ({at})")
+        else:
+            self.bot.log.warning(f"격류: 균열로 못 넘어감 ({at})")
+
     def ok(self, pattern: bool = True) -> bool:
         """계속해도 되나 — 맵을 떠났거나 쓰러졌거나 (투창이면) 패턴이 끝났으면 그만둔다."""
         p = self.bot.packets
@@ -312,6 +401,16 @@ class SpearDodge:
         env = self.bot.environment(max_age=0.0) or {}
         w = env.get("WorldPosition") or {}
         return (w["X"], w["Y"]) if "X" in w else None
+
+    def pos_loose(self) -> tuple[float, float] | None:
+        """기다리는 동안 내 자리 — 서 있으면 이동 패킷이 안 오므로 3초 안 패킷 자리, 없으면 CLI 를 0.5초에 한 번만."""
+        p = self.st.where(self.bot.packets.state.me, 3.0)
+        if p:
+            return p
+        now = time.monotonic()
+        if now - self._cli_at > 0.5:
+            self._cli_pos, self._cli_at = self.my_pos(fresh=True), now
+        return self._cli_pos
 
     # ── 움직이기 ──
     def keys_toward(self, dx: float, dy: float) -> list[str]:
