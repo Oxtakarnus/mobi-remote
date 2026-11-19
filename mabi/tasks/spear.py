@@ -6,7 +6,7 @@
 2. 파훼(그 주술사 보호막 깨짐)를 볼 때까지 제자리를 지킨다 — 가만히 있으면 자동 전투·어그로가 끌고 가므로 짧게 움찔거리고,
    밀려나면 다시 들어간다 (사용자). 못 깨면 10초마다 같은 속성을 다시 던지니 계속 지킨다 (상한 HOLD).
    먼저 떠나지 않는다 — 몬스터 길막·후딜 큰 스킬로 늦게 닿을 수 있다 (2026-11-03 사용자).
-3. 깨지면 투창병 근처로 돌아간다 (사용자: 돌아가는 건 파훼했을 때). 돌아오면 1 을 3번 눌러 바로 전투로 (사용자 11-03).
+3. 깨지면 투창병 근처로 돌아간다 (사용자: 돌아가는 건 파훼했을 때). 돌아오면 Space 로 바로 전투로 (사용자 11-19 — 아무 것도 안 하는 상태의 Space 는 지금 '목표' 진행).
 W·D 가 맵에서 어느 쪽인지는 카메라를 고정한 채 (사용자) 주술사가 나온 뒤 한 번 짧게 눌러 재고 저장한다 (속성 버프 3~4초 전).
 키를 떼도 위치 읽기가 늦어 약 1.5칸 더 가므로 지금 속도 × LAG 만큼 앞에서 뗀다 (11-02 실측 초당 5.5칸, 수도사 이속 버프 때 ~7.9).
 게임 키만 누른다 — 패킷은 보내지 않는다.
@@ -36,10 +36,11 @@ CAMERA_MOVED = 1.0  # 맵에 들어와 처음 받은 내 자리에서 이만큼 
 CAMERA_AUTO = 4.0  # 자동 카메라로 이만큼 둔 뒤 수동으로 — 2초로는 덜 돌아간 채 고정됐다 (사용자 11-03)
 CAMP_AUTO = 6.0    # 보스방 갈 때는 더 길게 — 4초로는 덜 돌아간 채 고정될 때가 있었다 (사용자 11-03). 8초는 빠른 캐릭터가
                    # 그 안에 보스방에 들어가 두 번째 Z 가 보스 등장 연출에 묻혀 자동 카메라로 남았다 (11-04 14:34, 사용자)
-FIGHT_PRESS = 3   # 투창병 쪽으로 돌아온 뒤 스킬 1 을 이만큼 눌러 전투로 빨리 돌아가게 (사용자)
 SCENE_FIND = 10.0  # 보스 등장 연출의 넘기기 버튼을 찾는 상한 — 버튼이 늦게 뜰 때가 있다 (11-19 14:00 5초로는 못 찾음)
 SCENE_TAKES = 2.0  # 누른 뒤 연출이 끝나길(패킷) 기다리는 초 — 안 끝나고 버튼이 남아 있으면 다시 누른다
 SCENE_CLICKS = 3
+SCENE_DELAY = 0.5  # 처음 누를 땐 버튼을 보고(또는 버튼 자리를 누르기로 하고) 이만큼 더 기다린다 — 버튼이 막 뜬 때 누른 것이
+                   # 클릭 효과는 났는데 안 먹었다 (11-19 16:26 '버튼 1.1초' 헛방, 같은 1.1초에 4번은 먹음 — 사용자 0.5초 늦추기)
 # HUD 가 사라진 뒤 버튼이 뜨기까지 틈이 있다 (11-19 15:23 화면: 연출이 어둡게 시작해 0.3초 넘게 버튼 없음) — 그 틈에 버튼 자리를
 # 누르면 안 먹고 SCENE_TAKES 를 버린다 (15:07·15:18 첫 누름이 안 먹고 4초대 두 번째에 넘어감 — 이 틈으로 봄). 그래서 이만큼 HUD 가 없는데도
 # 버튼 그림이 안 맞을 때만 그 자리를 누른다
@@ -206,6 +207,10 @@ class SpearDodge:
             else:
                 time.sleep(0.3)
                 continue
+            if not clicks:
+                time.sleep(SCENE_DELAY)
+                if not bot.packets.state.cutscene:
+                    break
             clicks += 1
             found = time.monotonic() - start
             tries.append(f"{how} {found:.1f}초")
@@ -277,9 +282,7 @@ class SpearDodge:
         if self.ok():
             self.go(self.st.spear_home(), NEAR_SPEAR, time.monotonic() + GO_LIMIT, lambda: False)
         if self.ok(pattern=False):
-            for _ in range(FIGHT_PRESS):
-                self.bot.key(keys.of(self.bot, "skill1"))
-                time.sleep(random.uniform(0.2, 0.35))
+            self.resume()
 
     def tictactoe(self, job: dict) -> None:
         """틱택토 O 담당 — 차례 시작 5초 안에 고른 칸 가운데로 가서, 보스가 O 를 새기러 올 때까지 그 칸에서 버틴다
@@ -360,6 +363,12 @@ class SpearDodge:
                 bot.log.info(f"격류: 균열 ({r[0]:.0f}, {r[1]:.0f}) 에 닿았는데 안 넘어감 — 같은 면 다른 균열로")
         if st.warped_at > w["at"] and self.ok(pattern=False):
             self._step_off(u)
+            self.resume()
+
+    def resume(self) -> None:
+        """패턴을 피한 뒤 바로 싸움으로 — 아무 것도 안 하는 상태의 Space 는 지금 '목표' 진행이다 (자동 전투 켜기·끄기는 H,
+        리모콘이 도는 동안은 늘 켜져 있다 — 사용자 11-19). 투창 패턴 복귀 뒤·균열을 넘어 송곳니 쪽으로 비켜 선 뒤."""
+        self.bot.key("space")
 
     def _step_off(self, u) -> None:
         """넘어온 균열에서 비켜 선다. 송곳니 쪽으로 RIFT_OFF 칸 (사용자 11-19) — 자동 전투가 균열 위가 아니라 그 앞에서 이어진다.

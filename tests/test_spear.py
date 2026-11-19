@@ -238,7 +238,7 @@ class KeysTest(unittest.TestCase):
         self.assertEqual(sd.keys_toward(-3, 0.2), ["a"])
 
     def test_fight_key_after_return(self):
-        """투창병 쪽으로 돌아온 뒤 1 을 3번 — 바로 전투로 (사용자 11-03)."""
+        """투창병 쪽으로 돌아온 뒤 Space 한 번 — 지금 '목표' 진행으로 바로 전투로 (사용자 11-19, 전엔 스킬 1 을 3번)."""
         from unittest import mock
         bot = mock.MagicMock()
         sd = SpearDodge(bot)
@@ -248,7 +248,7 @@ class KeysTest(unittest.TestCase):
         with (mock.patch.object(SpearDodge, "st", st), mock.patch.object(SpearDodge, "ok", return_value=True),
               mock.patch("mabi.tasks.spear.time.sleep")):
             sd.dodge({"x": 10, "y": 142, "at": time.monotonic(), "shaman": 1, "attr": "불"})
-        self.assertEqual([c.args for c in bot.key.call_args_list], [("1",)] * 3)
+        self.assertEqual([c.args for c in bot.key.call_args_list], [("space",)])
 
     def test_camera_when_fang_dies(self):
         """비틀린 송곳니가 쓰러지면 (보스방으로 걸어감) 카메라를 한 번 더 맞춘다 — 혼자하기도 (사용자 11-03).
@@ -596,6 +596,7 @@ class RiftTest(unittest.TestCase):
         self.assertTrue(self.logged(bot, "격류: 균열로 넘어감"))
         self.assertEqual(moves[2][0], (-10.0, 230.0))  # 넘어온 북쪽 균열 (-10, 235) 에서 안쪽으로 5칸 (송곳니 자리 모름) (11-19 16:14:05)
         self.assertEqual(len(moves), 3)
+        self.assertEqual([c.args for c in bot.key.call_args_list], [("space",)])  # 비켜 선 뒤 바로 전투로 (사용자 11-19)
 
     def test_step_off_toward_fang(self):
         """넘어오면 송곳니 쪽으로 5칸 비켜 선다 (사용자 11-19) — 송곳니가 가장자리 쪽이면 안쪽으로."""
@@ -630,6 +631,14 @@ class RiftTest(unittest.TestCase):
         self.assertEqual([m[0] for m in moves], [(-10.0, 205.0), (-10.0, 200.0), (-10.0, 230.0)])
         self.assertLess(moves[1][1], 12.0)
         self.assertIsNotNone(warped)
+
+    def test_no_space_when_not_warped(self):
+        """균열로 못 넘어갔으면 Space 를 누르지 않는다 (송곳니가 먼저 쓰러짐)."""
+        def kill(dt):
+            if dt >= 5:
+                self.m.apply("actor.dead", {"actor": 77, "dead": True})
+        _, _, bot = self.dodge((0.0, 217.5), kill)
+        bot.key.assert_not_called()
 
     def test_fang_down_stops(self):
         """기다리는 동안 송곳니가 쓰러지면 그만둔다 (사용자 11-19)."""

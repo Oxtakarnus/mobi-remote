@@ -45,10 +45,10 @@ class DecodeTest(unittest.TestCase):
             f"{act('camera')},1,99,None,None,0",          # 카메라 주 키 C
             f"{act('leave')},2,304,113,None,None,0",      # 여기서 나가기 Shift+Q
             f"{act('quest')},0,None,None,0",              # 퀘스트 창 주 키를 없앰 (보조 키도 없음)
-            f"{act('skill1')},0,None,None,0",             # 스킬 1 주 키를 없앰 → 게임 보조 키 L
+            f"{act('ultimate')},0,None,None,0",           # 궁극기 주 키를 없앰 → 게임 보조 키 ]
             f"{act('food')},None,1,103,None,0",           # 음식 보조 키만 바꿈 → 주 키 B 그대로
         ])
-        self.assertEqual(G.bindings(text), {"camera": "c", "leave": "shift+q", "skill1": "l", "food": "b"})
+        self.assertEqual(G.bindings(text), {"camera": "c", "leave": "shift+q", "ultimate": "]", "food": "b"})
 
     def test_all_defaults_are_sendable(self):
         """game-rules 의 게임 기본 키는 리모콘이 누를 수 있고, 주 키는 리모콘 기본값과 같아야 한다."""
