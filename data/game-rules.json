@@ -45,5 +45,33 @@
       "5": 6,
       "6": 7
     }
+  },
+
+  "keybind": {
+    "_설명": [
+      "게임 조작키 설정을 읽는 데 쓰는 값 (mabi/gamebinds.py). 게임에서 바꾼 키를 리모콘 단축키가 따라간다.",
+      "folder 는 %USERPROFILE%/AppData/LocalLow 아래 게임 설정 폴더,prefsKey·xor·versions 는 게임 CustomControlKeyBindStorage 상수.",
+      "actions 는 리모콘 단축키 이름 → 게임 CustomControlKey 시트 행 id·동작 이름·게임 기본 키(주 키, 보조 키).",
+      "게임 패치로 기본 키나 id 가 바뀌면 여기만 고친다."
+    ],
+    "folder": "devCAT/마비노기 모바일",
+    "files": ["BaseMMPlayerPrefs.txt", "ChangedMMPlayerPrefs.txt"],
+    "prefsKey": "CustomKeys",
+    "xor": "MMCUSTOMLVKEY",
+    "versions": [102, 103],
+    "actions": {
+      "camera": {"id": 1657550870, "name": "ManualAutoCameraToggle", "keys": ["end", "z"]},
+      "leave": {"id": 1472759561, "name": "LeaveHere", "keys": ["shift+esc"]},
+      "food": {"id": 2002568414, "name": "EatFood", "keys": ["b"]},
+      "quest": {"id": 197475138, "name": "OpenQuest", "keys": ["j"]},
+      "mission": {"id": 641107728, "name": "OpenMission", "keys": ["n"]},
+      "map": {"id": 1575844439, "name": "OpenMinimap", "keys": ["m"]},
+      "guide": {"id": 871094473, "name": "OpenGrowUpGuide", "keys": ["/"]},
+      "quick_nav": {"id": 252574548, "name": "OpenQuickNavigator", "keys": ["."]},
+      "fast_travel": {"id": 439978378, "name": "FastTravel", "keys": ["t"]},
+      "skill1": {"id": 26643062, "name": "UseSkillSlot1", "keys": ["1", "l"]},
+      "ultimate": {"id": 231726555, "name": "UseSkillSlot6", "keys": ["6", "]"]},
+      "paladin": {"id": 1666990952, "name": "PaladinTransformation", "keys": ["f5", "shift+5"]}
+    }
   }
 }

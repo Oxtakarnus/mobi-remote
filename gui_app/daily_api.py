@@ -481,7 +481,7 @@ class DailyApi:
             "field": str(s["field"]),
             "stop_key": str(doc["game"]["stop_key"]),
             "dye_key": str(doc["game"]["dye_key"]),
-            "game_keys": [{"name": n, "label": label, "default": d, "key": gkeys.of(doc, n)}
+            "game_keys": [{"name": n, "label": label, "default": d, "key": gkeys.of(doc, n), "game": gkeys.game_key(n)}
                           for n, (d, label) in gkeys.GAME_KEYS.items()],
             "fit_display": bool(doc["run"]["fit_display"]),
             "restart_auto": bool(doc["restart"]["auto"]),
@@ -525,7 +525,10 @@ class DailyApi:
                 if k in mine:
                     return {"error": f"{k.upper()} 는 리모콘의 일시정지·염색 도우미 키입니다"}
             for n, k in gk.items():
-                doc["game"][f"{n}_key"] = str(k or "").strip().lower()
+                k = str(k or "").strip().lower()
+                if k and k == gkeys.game_key(n):
+                    k = gkeys.GAME_KEYS[n][0]  # 게임에서 읽은 키 그대로 → 기본값으로 둬서 게임 설정을 계속 따라가게
+                doc["game"][f"{n}_key"] = k
             if "fit_display" in v:
                 doc["run"]["fit_display"] = bool(v["fit_display"])
             if "restart_auto" in v:

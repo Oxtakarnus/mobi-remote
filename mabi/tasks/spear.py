@@ -47,7 +47,7 @@ class SpearDodge:
     calib_tried = _per_map("calib_tried")   # 보정을 해 봤나
     camera_set = _per_map("camera_set")     # 카메라를 맞췄나
     camp_camera = _per_map("camp_camera")   # 보스방 갈 때 카메라를 다시 맞췄나
-    camera_half = _per_map("camera_half")   # 첫 Z 만 누르고 연출이 시작돼 두 번째 Z 가 남았나
+    camera_half = _per_map("camera_half")   # 첫 카메라 키만 누르고 연출이 시작돼 두 번째가 남았나
     scene_tried = _per_map("scene_tried")   # 보스 등장 연출을 넘겨 봤나
 
     def __init__(self, bot: Bot):
@@ -107,8 +107,8 @@ class SpearDodge:
                 and time.monotonic() - s.entered_at > CAMERA_WAIT)
 
     def set_camera(self) -> None:
-        """Z(자동 카메라) → 4초(보스방 갈 때 8초) 뒤 캐릭터 뒤로 돌아오면 다시 Z(수동 카메라)로 고정 (사용자).
-        Z 는 옵션의 카메라 전환 키."""
+        """카메라 토글(자동 카메라) → 몇 초 뒤 캐릭터 뒤로 돌아오면 한 번 더(수동 카메라)로 고정 (사용자).
+        키는 옵션의 수동 / 자동 카메라 토글 키 (게임 기본 End, 보조 Z)."""
         s = self.bot.packets.state
         key = keys.of(self.bot, "camera")
         if self.camera_half == s.entered_at:
@@ -125,7 +125,7 @@ class SpearDodge:
         self.bot.key(key)
         for _ in range(round(wait / 0.1)):
             if s.cutscene or s.loading:
-                # 연출·로딩 중에 누른 키는 게임이 받지 않는다 — 두 번째 Z 는 연출이 끝난 뒤 (camera_due)
+                # 연출·로딩 중에 누른 키는 게임이 받지 않는다 — 두 번째 카메라 키는 연출이 끝난 뒤 (camera_due)
                 self.camera_half = s.entered_at
                 self.bot.log.info(f"카메라: 맞추는 중 연출이 시작됨 → 두 번째 {key.upper()} 는 연출 뒤에")
                 return

@@ -1,6 +1,7 @@
 """콘텐츠(일반 던전·어비스·레이드·출항선)·보관함 구역 안에서 나가기의 공통 틀.
 
-순서는 같다: 오른쪽 위 나가기(단축키 또는 아이콘) → 확인 창 → 확인(Space, 안 먹으면 버튼 클릭) → 로딩 → 밖 메인 화면.
+순서는 같다: 여기서 나가기(단축키 Shift+Esc, 안 뜨면 오른쪽 위 아이콘) → 확인 창 → 확인(Space, 안 먹으면 버튼 클릭)
+→ 로딩 → 밖 메인 화면. 단축키는 게임 '여기서 나가기' 조작키다 (옵션 [game] leave_key, 게임 설정에서 바꾸면 따라감 — 사용자 11-19).
 종류마다 다른 것(안인가 · 확인 창 알아보기 · 확인 방법 · 나가기 전에 판이 끝났나)만 하위 클래스가 덮어쓴다
 (DungeonExit 은 여기, abyss.AbyssExit · raid.RaidExit · raid.ShipExit · drill.DrillExit · field_boss.FieldBossExit).
 예전엔 네 벌이 따로 있어 'Space 가 안 먹으면 클릭'(레이드)·'나가기 전에 판이 끝났나'(어비스)가 한쪽에만 있었다.
@@ -17,7 +18,7 @@ from ..exceptions import StepTimeout
 class Exit:
     NAME = ""        # 로그·오류에 쓰는 이름
     SNAP = "leave"   # 실패 스냅샷 이름
-    HOTKEY = None    # 나가기 단축키 이름 (mabi.keys — 레이드는 보관함 키. 클릭과 달리 뒤에서 도는 게임을 앞으로 가져오지 않는다)
+    HOTKEY = "leave"  # 나가기 단축키 이름 (mabi.keys — 여기서 나가기. 클릭과 달리 뒤에서 도는 게임을 앞으로 가져오지 않는다)
     TIMEOUT = 120    # 나가기를 누르는 데 쓰는 시간 상한 (횟수가 아니라 시간 — 사람이 PC 를 쓰는 동안 클릭이 몇 번 건너뛰어져도)
     # 안인지 모를 때(where 가 None) 안으로 보고 나가기를 누를까. 모름 처리는 이 한 줄로 정한다 (2026-11-16 점검: 종류마다
     # 모름을 안·밖으로 제각각 읽었다). 나가기 아이콘이 다른 곳(사냥터 등)의 아이콘과 헷갈리는 종류는 누르지 않는다(False)
@@ -67,25 +68,31 @@ class Exit:
 
     def open_dialog(self, bot: Bot):
         """확인 창이 아직 없을 때 나가기를 눌러 띄운다 → dialog 표시, 못 띄웠으면 None (안인지부터 다시 본다).
-        기본: 오른쪽 위 나가기 아이콘 — 단축키가 있고 안이 확실하면 키 먼저. 아이콘이 안 보이면 uncover."""
-        ui = bot.ui
-        if not bot.exists(ui["abyss_exit"]):
+        기본: 여기서 나가기 단축키 먼저, 창이 안 뜨면 오른쪽 위 나가기 아이콘. 키는 안이 확실하거나 아이콘이 보일 때만 —
+        둘 다 아니면(가린 창 등) uncover 뒤 다시 본다."""
+        icon = bot.exists(bot.ui["abyss_exit"])
+        if not icon and not self.surely_inside(bot):
             self.uncover(bot)
             bot.sleep(1.0, 1.5)
             return None
-        hit = None
-        # 단축키(X)는 안이 확실할 때만 — X 는 본래 '보관함으로 이동'이다 (콘텐츠 안에선 나가기 창이 먼저 뜨지만
-        # 메인 필드로 나가면 그 이동이 이어진다, 2026-11-02). 필드로 나가는 쪽은 HOTKEY 를 두지 않는다 → 아이콘
-        if self.HOTKEY and self.surely_inside(bot):
-            key = keys.of(bot, self.HOTKEY)
-            bot.log.debug(f"{self.NAME} 나가기: {key} 키")
-            bot.key(key)
-            hit = self.dialog(bot, 4)
-        if not hit:
-            bot.log.debug(f"{self.NAME} 나가기: 아이콘 클릭")
-            bot.click(ui["abyss_exit"])
-            hit = self.dialog(bot, 5)
-        return hit
+        if hit := self.press_hotkey(bot, 4):
+            return hit
+        if not icon:
+            self.uncover(bot)  # 단축키로도 안 뜸 — 가린 창(부활 창 등)을 닫아 본다
+            bot.sleep(1.0, 1.5)
+            return None
+        bot.log.debug(f"{self.NAME} 나가기: 아이콘 클릭")
+        bot.click(bot.ui["abyss_exit"])
+        return self.dialog(bot, 5)
+
+    def press_hotkey(self, bot: Bot, timeout: float):
+        """여기서 나가기 단축키를 누르고 확인 창을 기다린다 → dialog 표시, 단축키가 없거나 창이 안 뜨면 None."""
+        key = keys.of(bot, self.HOTKEY) if self.HOTKEY else ""
+        if not key:
+            return None
+        bot.log.debug(f"{self.NAME} 나가기: {key.upper()} 키")
+        bot.key(key)
+        return self.dialog(bot, timeout)
 
     # ---- 공통
     def run(self, bot: Bot) -> bool:

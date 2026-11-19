@@ -212,7 +212,7 @@ class ZoneFight(Fight):
 class DrillExit(Exit):
     """구역 결과 창에서 나간다: 결과 창 '나가기'(ESC) — 따로 확인 창이 없다. ESC 가 안 들고 창이 남으면 '나가기' 버튼을 누른다.
     결과 창(의 '나가기' 버튼)을 확인 창 자리에 둔다. 안인지는 패킷 맵으로 — 모르면 안으로 보고 누르고, 다 나왔는지는 메인 화면으로."""
-    NAME, SNAP = "나이트메어 드릴", "drill_leave"
+    NAME, SNAP, HOTKEY = "나이트메어 드릴", "drill_leave", None  # 결과 창의 나가기(ESC)라 여기서 나가기 키를 쓰지 않는다
 
     UNKNOWN_INSIDE = True  # 패킷이 없으면 안으로 보고 누른다 (결과 창 '나가기' 라 다른 곳과 헷갈리지 않는다)
 

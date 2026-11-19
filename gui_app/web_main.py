@@ -136,6 +136,9 @@ def main() -> int:
     server.newConnection.connect(on_connect)
     win.show()
     log.info(f"{APP_NAME} 시작")
+    # 게임 조작키 설정에서 바꾼 키를 리모콘 단축키가 따라간다 (mabi.keys — 옵션에서 따로 정한 키가 이긴다)
+    from mabi import keys as game_keys
+    game_keys.follow_game()
     # 패킷 감시는 숙제를 안 돌려도 리모콘이 켜져 있는 내내 돈다 — 그 사이 사람이 한 일(출석 등)을 하루 기록에 남겨 숙제를
     # 시작할 때 쓴다 (사용자 2026-11-17). 화면이 상태를 물을 때 켜지던 것을 화면과 상관없이 여기서 켠다 (설정에서 끄면 안 켬)
     api.packet_status()

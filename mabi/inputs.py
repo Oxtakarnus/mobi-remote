@@ -59,6 +59,22 @@ def vk_of(key: str) -> int:
     raise ValueError(f"알 수 없는 키: {key}")
 
 
+MODIFIERS = ("ctrl", "alt", "shift")  # 조합 키에서 먼저 누르는 키 — 이 순서로 적는다 (combo_name)
+
+
+def combo(key: str) -> list[int]:
+    """'shift+esc' 같은 조합 키 → 누를 순서대로 가상 키 (보조 키 먼저, 마지막이 본 키). 한 키면 하나."""
+    parts = [p.strip() for p in key.lower().split("+")]
+    if not all(parts) or any(p not in MODIFIERS for p in parts[:-1]) or parts[-1] in MODIFIERS:
+        raise ValueError(f"알 수 없는 키: {key}")
+    return [vk_of(p) for p in parts]
+
+
+def combo_name(mods, key: str) -> str:
+    """보조 키 모음과 본 키 → 'shift+esc' (보조 키는 MODIFIERS 순서)."""
+    return "+".join([m for m in MODIFIERS if m in set(mods)] + [key])
+
+
 def _send(*inputs: INPUT) -> None:
     arr = (INPUT * len(inputs))(*inputs)
     user32.SendInput(len(inputs), arr, ctypes.sizeof(INPUT))
@@ -137,13 +153,20 @@ class Input:
             time.sleep(random.uniform(0.04, 0.09))
 
     def key(self, key: str) -> None:
-        vk = vk_of(key)
+        """한 키나 조합 키('shift+esc' — 보조 키를 누른 채 본 키, 뗄 때는 거꾸로)."""
+        vks = combo(key)
         if self.dry_run:
             self.log and self.log.info(f"[dry-run] key {key}")
             return
-        _send(_key(vk, up=False))
+        for vk in vks[:-1]:
+            _send(_key(vk, up=False))
+            time.sleep(random.uniform(0.04, 0.08))
+        _send(_key(vks[-1], up=False))
         time.sleep(random.uniform(0.05, 0.11))
-        _send(_key(vk, up=True))
+        _send(_key(vks[-1], up=True))
+        for vk in reversed(vks[:-1]):
+            time.sleep(random.uniform(0.04, 0.08))
+            _send(_key(vk, up=True))
 
     def hold(self, keys) -> None:
         """keys 만 누른 채로 둔다 (이동 키 WASD 등). 이전에 누른 것 중 빠진 키는 뗀다. hold(()) 로 다 뗀다."""
@@ -179,17 +202,27 @@ class Input:
 def post_key(hwnd: int, key: str) -> None:
     """게임 창이 앞에 없어도 키를 보낸다 (PostMessage). 게임은 자기가 활성 창일 때만 키를 받으므로 활성·포커스
     메시지로 잠깐 활성인 척하게 한 뒤 누르고, 끝나면 비활성으로 되돌린다 (2026-10-23 확인 — 뒤에 둔 채 M 으로 지도 열림).
-    클릭은 이렇게 해도 좌표대로 들어가지 않는다 (게임이 실제 커서 자리로 받는다)."""
-    vk = vk_of(key)
-    scan = user32.MapVirtualKeyW(vk, 0)
+    클릭은 이렇게 해도 좌표대로 들어가지 않는다 (게임이 실제 커서 자리로 받는다).
+    조합 키는 보조 키 누름 → 본 키 누름·뗌 → 보조 키 뗌 순서로 보낸다."""
+    vks = combo(key)
     user32.SendMessageW(hwnd, 0x001C, 1, 0)  # WM_ACTIVATEAPP
     user32.SendMessageW(hwnd, 0x0006, 1, 0)  # WM_ACTIVATE (WA_ACTIVE)
     user32.SendMessageW(hwnd, 0x0007, 0, 0)  # WM_SETFOCUS
     time.sleep(0.1)
-    ext = (1 << 24) if vk in EXTENDED else 0
-    user32.PostMessageW(hwnd, 0x0100, vk, 1 | (scan << 16) | ext)  # WM_KEYDOWN
+
+    def lparam(vk: int, up: bool) -> int:
+        scan = user32.MapVirtualKeyW(vk, 0)
+        return 1 | (scan << 16) | ((1 << 24) if vk in EXTENDED else 0) | ((0xC0 << 24) if up else 0)
+
+    for vk in vks[:-1]:
+        user32.PostMessageW(hwnd, 0x0100, vk, lparam(vk, False))  # WM_KEYDOWN
+        time.sleep(random.uniform(0.04, 0.08))
+    user32.PostMessageW(hwnd, 0x0100, vks[-1], lparam(vks[-1], False))
     time.sleep(random.uniform(0.06, 0.1))
-    user32.PostMessageW(hwnd, 0x0101, vk, 1 | (scan << 16) | ext | (0xC0 << 24))  # WM_KEYUP
+    user32.PostMessageW(hwnd, 0x0101, vks[-1], lparam(vks[-1], True))  # WM_KEYUP
+    for vk in reversed(vks[:-1]):
+        time.sleep(random.uniform(0.04, 0.08))
+        user32.PostMessageW(hwnd, 0x0101, vk, lparam(vk, True))
     time.sleep(0.3)  # 게임이 다음 프레임에 읽을 때까지 활성으로 둔다
     if user32.GetForegroundWindow() == hwnd:
         return  # 그 사이 사람이 게임을 앞으로 가져왔다 — 비활성이라고 알리면 게임이 ESC 등 키를 무시한다

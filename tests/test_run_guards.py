@@ -157,8 +157,8 @@ class LeaveDungeonTest(unittest.TestCase):
         kinds = itertools.chain([DUNGEON, DUNGEON], itertools.repeat(None))  # 자리 보기 → 안 → 나옴
         with mock.patch("mabi.place.place", side_effect=lambda _: SimpleNamespace(kind=next(kinds))):
             self.assertTrue(exits.leave_instance(b))
-        b.click.assert_called_once()
-        b.key.assert_called_with("space")
+        b.click.assert_not_called()  # 여기서 나가기 키로 확인 창이 뜬다 (아이콘은 키가 안 들 때만)
+        self.assertEqual([c.args[0] for c in b.key.call_args_list], ["shift+esc", "space"])
 
 
 class FieldAtLoginTest(unittest.TestCase):

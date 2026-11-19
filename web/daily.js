@@ -433,9 +433,21 @@ async function savePathSettings() {
   if (!(r && r.error)) paintPathSettings(await mm.daily.settings());
 }
 
-/* 게임 단축키 — 칸을 누르고 키를 누르면 그 키 (한글 입력 상태에서도 되게 e.code 로) */
+/* 게임 단축키 — 칸을 누르고 키를 누르면 그 키 (한글 입력 상태에서도 되게 e.code 로).
+   Shift·Ctrl·Alt 를 누른 채면 조합 키 ('shift+esc' — 보조 키 순서는 mabi/inputs.MODIFIERS) */
+const KEY_MODS = ['ctrl', 'alt', 'shift'];
+
+function keyCombo(e) {
+  if (/^(Shift|Control|Alt|Meta)/.test(e.code || '')) return undefined;  // 보조 키만 — 본 키를 기다린다
+  const k = keyName(e);
+  if (!k) return null;
+  const mods = KEY_MODS.filter((m) => e[m + 'Key']);
+  return mods.concat([k]).join('+');
+}
+
 function keyName(e) {
   const c = e.code || '';
+  if (c === 'Escape') return 'esc';
   if (/^Key[A-Z]$/.test(c)) return c.slice(3).toLowerCase();
   if (/^Digit\d$/.test(c)) return c.slice(5);
   if (/^F([1-9]|1[0-2])$/.test(c)) return c.toLowerCase();
@@ -451,8 +463,10 @@ function keyName(e) {
 function paintGameKeys(list) {
   $('#opt-game-keys').innerHTML = list.map((k) => {
     const [name, hint] = k.label.split(' — ');
+    const fromGame = k.game && k.key === k.game;  // 게임 조작키 설정에서 읽은 키
     return '<dt>' + esc(name) + '</dt><dd><input class="mono game-key" data-name="' + esc(k.name) + '"'
       + ' data-default="' + esc(k.default) + '" value="' + esc(k.key.toUpperCase()) + '" readonly>'
+      + (fromGame ? ' <span class="pill pill-ok" title="게임 조작키 설정에서 읽은 키">게임</span>' : '')
       + (hint ? '<div class="hint">' + esc(hint) + '</div>' : '') + '</dd>';
   }).join('');
 }
@@ -715,11 +729,13 @@ $('#opt-game-keys').addEventListener('keydown', (e) => {
   const i = e.target.closest('.game-key');
   if (!i || e.key === 'Tab') return;
   e.preventDefault();
-  if (e.key === 'Escape') { e.stopPropagation(); i.blur(); return; }  // 옵션 창은 닫지 않는다
-  if (e.key === 'Backspace') { i.value = ''; return; }
-  const k = keyName(e);
+  const plain = !e.shiftKey && !e.ctrlKey && !e.altKey;
+  if (e.key === 'Escape' && plain) { e.stopPropagation(); i.blur(); return; }  // 옵션 창은 닫지 않는다
+  if (e.key === 'Backspace' && plain) { i.value = ''; return; }
+  const k = keyCombo(e);
+  if (k === undefined) return;
   if (k) i.value = k.toUpperCase();
-  $('#opt-keys-msg').textContent = k ? '' : '그 키는 쓸 수 없습니다 (Shift·Ctrl·Alt·Space·Enter·Esc 는 안 됨)';
+  $('#opt-keys-msg').textContent = k ? '' : '그 키는 쓸 수 없습니다';
 });
 $('#opt-keys-save').addEventListener('click', saveGameKeys);
 $('#opt-keys-reset').addEventListener('click', () => {

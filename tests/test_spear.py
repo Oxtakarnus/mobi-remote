@@ -343,7 +343,7 @@ class KeysTest(unittest.TestCase):
         self.assertTrue(sd.camera_due())
         with mock.patch("mabi.tasks.spear.time.sleep"):
             sd.set_camera()
-        self.assertEqual([c.args for c in bot.key.call_args_list], [("z",), ("z",)])
+        self.assertEqual([c.args for c in bot.key.call_args_list], [("end",), ("end",)])
         self.assertFalse(sd.camera_due())  # 한 맵에 한 번
 
     def test_wanted_only_when_active(self):

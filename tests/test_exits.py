@@ -30,11 +30,25 @@ def make_bot(loading_after_space=True):
 
 
 class ExitTest(unittest.TestCase):
-    def test_click_then_space(self):
+    def test_hotkey_then_space(self):
         b = make_bot()
-        self.assertTrue(Fake([True], [None, (10, 20)]).run(b))  # 창 없음 → 아이콘 → 창
+        self.assertTrue(Fake([True], [None, (10, 20)]).run(b))  # 창 없음 → 여기서 나가기 키 → 창
+        self.assertEqual([c.args[0] for c in b.key.call_args_list], ["shift+esc", "space"])
+        b.click.assert_not_called()
+
+    def test_icon_when_hotkey_shows_nothing(self):
+        b = make_bot()
+        self.assertTrue(Fake([True], [None, None, (10, 20)]).run(b))  # 키로 안 뜸 → 아이콘 → 창
         b.click.assert_called_once_with("exit")
         b.key.assert_called_with("space")
+
+    def test_no_icon_and_unsure_presses_nothing_but_uncover(self):
+        b = make_bot()
+        b.exists.side_effect = lambda name, **k: False  # 아이콘 안 보임 + 안인지 모름(Fake 는 True 지만 surely_inside 는 아님)
+        f = Fake([True, False], [None])
+        f.surely_inside = lambda bot: False
+        f.run(b)
+        self.assertEqual([c.args[0] for c in b.key.call_args_list], ["esc"])  # 가린 창 닫기만
 
     def test_space_ignored_clicks_button(self):
         b = make_bot(loading_after_space=False)
@@ -79,8 +93,8 @@ class HousingExitTest(unittest.TestCase):
             b.map_loading.side_effect = [False, True] + [False] * 50   # 누르자 로딩 시작
             b.wait_loaded.return_value = None
             self.assertTrue(exits.HousingExit().run(b))
-        b.click.assert_called_once_with("exit")
-        b.key.assert_not_called()
+        b.key.assert_called_once_with("shift+esc")  # 여기서 나가기 키 → 바로 로딩 (Space 없음)
+        b.click.assert_not_called()
 
     def test_leave_instance_picks_housing(self):
         for kind in ("HousingInn", "Housing"):
@@ -157,8 +171,23 @@ class ContentExitTest(unittest.TestCase):
         b.click.assert_not_called()
         b.key.assert_not_called()
 
-    def test_field_boss_clicks_exit_then_space(self):
+    def test_field_boss_hotkey_then_space(self):
         from mabi.tasks import field_boss
         b = self.run_exit(field_boss, [True], field_boss.leave, side_effect=[None, (960, 500)])
+        b.click.assert_not_called()
+        self.assertEqual([c.args[0] for c in b.key.call_args_list], ["shift+esc", "space"])
+
+    def test_field_boss_clicks_exit_when_hotkey_ignored(self):
+        from mabi.tasks import field_boss
+        b = self.run_exit(field_boss, [True], field_boss.leave, side_effect=[None, None, (960, 500)])
         b.click.assert_called_once()
-        b.key.assert_called_once_with("space")
+        b.key.assert_called_with("space")
+
+    def test_leave_key_everywhere_but_drill(self):
+        """여기서 나가기 키는 콘텐츠 나가기 모두 — 드릴은 결과 창 ESC 라 빼고 (사용자 11-19)."""
+        from mabi.tasks import abyss, drill, field_boss, raid
+        for cls in (exits.DungeonExit, exits.HousingExit, abyss.AbyssExit, raid.RaidExit, raid.ShipExit,
+                    field_boss.FieldBossExit):
+            self.assertEqual(cls.HOTKEY, "leave", cls.__name__)
+        self.assertEqual(raid.RaidExit(to_field=True).HOTKEY, "leave")  # 필드로 나갈 때도 (예전 X 는 보관함 이동이 이어졌다)
+        self.assertIsNone(drill.DrillExit.HOTKEY)

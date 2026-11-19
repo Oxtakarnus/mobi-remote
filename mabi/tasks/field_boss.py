@@ -216,7 +216,8 @@ def fight(bot: Bot) -> bool:
 
 
 class FieldBossExit(Exit):
-    """보스 영역에서 나간다: 오른쪽 위 나가기 (던전과 다른 자리 — fb_exit_button) → '영역에서 나가시겠습니까' 나가기(Space).
+    """보스 영역에서 나간다: 여기서 나가기(Shift+Esc, 안 뜨면 오른쪽 위 나가기 — 던전과 다른 자리 fb_exit_button)
+    → '영역에서 나가시겠습니까' 나가기(Space).
     영역 밖이면 아무것도 누르지 않는다 (밖에서 그 자리를 누르면 다른 창이 열린다). 패킷이 없으면 안으로 보고 누른다."""
     NAME, SNAP = "보스 영역", "fb_leave"
     TIMEOUT = 15  # 나가기 창을 띄우는 데 쓰는 시간 — 예전처럼 몇 번(누르기 + 3초)만 해 보고 그만둔다
@@ -229,7 +230,9 @@ class FieldBossExit(Exit):
     def dialog(self, bot, timeout):
         return ui_text.wait(bot, gd.text("fb_exit"), gd.region("fb_dialog"), timeout=max(0.0, timeout), exact=False)
 
-    def open_dialog(self, bot):
+    def open_dialog(self, bot):  # 여기서 나가기 단축키 먼저, 안 뜨면 오른쪽 위 나가기 자리를 누른다
+        if hit := self.press_hotkey(bot, 3):
+            return hit
         x, y, w, h = gd.region("fb_exit_button")
         bot.click((x + w // 2, y + h // 2))
         return self.dialog(bot, 3)

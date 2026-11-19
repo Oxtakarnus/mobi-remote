@@ -137,7 +137,7 @@ web/                          화면 (빌드 없이 <script> 여러 개가 같�
 | 화면 판단에 쓰면 안 되는 자리 (게임이 위에 띄우는 창 — 연속 실행 제한 창) | `data/ui.json` covers · `gamedata.covering` · 예외 covered_ok · 시험 `tests/test_covers.py` | 모든 글자 영역·그림 ROI·설정 영역 |
 | 어비스·레이드 입장 창 (입장 창인가·버튼·지금 탭·우연한 만남, 탭 바꾸기) | `tasks/entry` (`parse`·`read`·`set_tab`·`ensure_chance`·`wait_button`) | 어비스, 레이드 (버튼 기다리기는 드릴도) |
 | 아래 가운데 '확인' (퀘스트 완료·레이드·필드 보스 결과 창) | `clear.confirm_text` | 점검자, 레이드·필드 보스 결과 |
-| 게임 단축키 (Z 카메라·X 보관함·J 퀘스트 … 옵션에서 바꿈) — 글자를 직접 쓰지 않는다 | `keys.of(bot, "camera")` · 목록 `keys.GAME_KEYS` | 곳곳. 이동 WASD·버튼 확인 키(Space·Esc·R)는 고정 |
+| 게임 단축키 (Shift+Esc 여기서 나가기·End 카메라·J 퀘스트 … 게임 조작키 설정을 따라가고 옵션에서 바꿈) — 글자를 직접 쓰지 않는다 | `keys.of(bot, "camera")` · 목록 `keys.GAME_KEYS` · 게임 설정 읽기 `gamebinds` | 곳곳. 이동 WASD·버튼 확인 키(Space·Esc·R)는 고정 |
 | 여러 신호(패킷·CLI·화면)로 우선순위 판단 | `judge.decide` | 어비스 단계, 쓰러짐, 로딩 |
 | 게임 화면(실제 픽셀) 위에 Qt 창 겹치기 — 게임이 있는 모니터·배율 | `queue_overlay.to_logical` | 작업 큐 오버레이, 염색 표시 |
 | 염색 팔레트가 떠 있나·색 찾을 범위 (자리는 게임 화면 비율로 정해 둠, 테두리로 확인) | `dye.detect.palette_at` · `frame_skip` | `dye.tracker.DyeTracker` |
