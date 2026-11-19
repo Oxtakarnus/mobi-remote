@@ -372,6 +372,7 @@ class KeysTest(unittest.TestCase):
             sd.skip_scene()
         self.assertEqual(bot.click.call_count, 2)
         self.assertIn("2번 누름", bot.log.info.call_args.args[0])
+        self.assertIn(" → ", bot.log.info.call_args.args[0])  # 누른 것마다 어떻게·몇 초
 
     def test_scene_spot_when_hud_gone(self):
         """버튼 그림이 안 맞아도 HUD 가 두 번 연달아 사라졌으면 버튼 자리를 누른다 — HUD 가 보이는 동안은 안 누른다 (미니맵)."""

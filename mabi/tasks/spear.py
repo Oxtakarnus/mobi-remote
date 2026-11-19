@@ -175,6 +175,7 @@ class SpearDodge:
         self.scene_seen = bot.packets.state.changed_at.get("cutscene", 0.0)
         start = time.monotonic()
         clicks = gone = 0
+        tries: list[str] = []  # 누른 것마다 '어떻게 몇 초' — 첫 번째가 안 먹은 까닭을 로그로 가리려고
         while bot.packets.state.cutscene and time.monotonic() < start + SCENE_FIND and clicks < SCENE_CLICKS:
             frame = bot.frame()
             hit = bot.skip_button(frame)
@@ -188,10 +189,11 @@ class SpearDodge:
                 continue
             clicks += 1
             found = time.monotonic() - start
+            tries.append(f"{how} {found:.1f}초")
             self.scene_tried = bot.packets.state.entered_at
             bot.click(where)
             if bot.wait_packet(lambda st: not st.cutscene, SCENE_TAKES):
-                again = f" · {clicks}번 누름" if clicks > 1 else ""
+                again = f" · {clicks}번 누름: {' → '.join(tries)}" if clicks > 1 else ""
                 bot.log.info(f"물결: 보스 등장 연출 넘김 ({how} {found:.1f}초 · 끝남 {time.monotonic() - start:.1f}초{again})")
                 return
         if not bot.packets.state.cutscene:
@@ -199,7 +201,7 @@ class SpearDodge:
                 bot.log.info(f"물결: 보스 등장 연출 넘김 ({clicks}번 누름 · 끝난 것은 화면으로)")
             return
         if clicks:
-            bot.log.warning(f"물결: 넘기기를 {clicks}번 눌러도 보스 등장 연출이 이어짐 → 끝나길 기다림 "
+            bot.log.warning(f"물결: 넘기기를 {clicks}번 눌러도 보스 등장 연출이 이어짐 ({' → '.join(tries)}) → 끝나길 기다림 "
                             f"({bot.snapshot('spear_scene').name})")
         else:
             bot.log.info(f"물결: 보스 등장 연출의 넘기기 버튼을 못 찾음 — 끝나길 기다림 ({bot.snapshot('spear_scene').name})")
