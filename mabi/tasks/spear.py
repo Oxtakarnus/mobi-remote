@@ -51,6 +51,8 @@ NEAR_HIT = 6.0    # 격류 앞머리가 이만큼 가까이 오면 균열로 출
 NEAR_STEP = 2.5   # 균열 앞에서 기다리는데 격류가 이만큼 붙으면 가운데 전이라도 밟는다 (밀리며 맞느니)
 RIFT_STAGE = 5.0  # 가운데 전에 균열에 닿으면 이만큼 안쪽에서 기다린다 (밟히는 범위를 아직 못 재서 넉넉히)
 RIFT_TOL = 0.5
+RIFT_OFF = 5.0    # 넘어온 균열에서 송곳니 쪽으로 비켜 서는 칸 — 그 위에서 싸우다 밀리면 재사용 대기(5초)가 끝나자마자 다시
+                  # 옮겨진다 (11-19 16:14:05 넘어간 쪽에 송곳니가 있어 균열 위에서 싸움 — 사용자)
 RIFT_WAIT = 1.5   # 균열 자리에 닿고 넘어가길 기다리는 초 — 안 넘어가면 같은 면 다른 균열로
 
 
@@ -348,7 +350,7 @@ class SpearDodge:
             self.hold(stage, end, lambda: over() or self._rift_time(w, NEAR_STEP), pattern=False)
         for r in outs:
             if over():
-                return
+                break
             self.go(r, RIFT_TOL, min(end, time.monotonic() + GO_LIMIT), over, pattern=False)
             bot.input.hold(())
             stop = time.monotonic() + RIFT_WAIT
@@ -356,6 +358,24 @@ class SpearDodge:
                 time.sleep(0.05)
             if not over():
                 bot.log.info(f"격류: 균열 ({r[0]:.0f}, {r[1]:.0f}) 에 닿았는데 안 넘어감 — 같은 면 다른 균열로")
+        if st.warped_at > w["at"] and self.ok(pattern=False):
+            self._step_off(u)
+
+    def _step_off(self, u) -> None:
+        """넘어온 균열에서 비켜 선다. 송곳니 쪽으로 RIFT_OFF 칸 (사용자 11-19) — 자동 전투가 균열 위가 아니라 그 앞에서 이어진다.
+        송곳니가 가장자리 쪽이거나 자리를 모르면 격류가 간 쪽(안쪽)으로. 격류 앞머리는 가운데 너머라 이 근처는 비어 있다."""
+        time.sleep(0.3)  # 옮겨진 자리가 오길 (순간이동 패킷·CLI)
+        p = self.my_pos(fresh=True)
+        if not p:
+            return
+        d, boss = u, self.st.where(self.st.fang, 30.0)  # 송곳니는 서 있으면 자리를 안 보낸다 (녹화: 최대 9초 틈)
+        if boss and math.dist(boss, p) > 1.0:
+            n = math.dist(boss, p)
+            b = ((boss[0] - p[0]) / n, (boss[1] - p[1]) / n)
+            if b[0] * u[0] + b[1] * u[1] > 0.3:  # 안쪽으로 가는 쪽일 때만
+                d = b
+        self.go((p[0] + d[0] * RIFT_OFF, p[1] + d[1] * RIFT_OFF), TOL, time.monotonic() + 3.0, lambda: False,
+                pattern=False)
 
     def _rift_end(self, w: dict) -> None:
         st = self.st

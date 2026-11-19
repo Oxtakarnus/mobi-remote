@@ -515,8 +515,11 @@ class RiftTest(unittest.TestCase):
         self.assertIsNone(self.st.feed("spear.move_update", {"actor": ME, "x": -10.0, "y": 235.0}, ME))
         self.assertIsNone(self.st.feed("spear.buff", {"actor": OTHER, "buff": RIFT_PASS, "caster": 904}, ME))
         self.t[0] += 5
-        self.assertEqual(self.st.feed("spear.move_update", {"actor": ME, "x": -10.0, "y": 201.0}, ME),
-                         "균열로 넘어감 ((-10, 235) → (-10, 201))")  # 버프를 못 받아도 자리 튐으로
+        self.assertEqual(self.st.feed("spear.move_warp", {"actor": ME, "x": -10.0, "y": 201.0}, ME),
+                         "균열로 넘어감 ((-10, 235) → (-10, 201))")  # 버프를 못 받아도 순간이동으로
+        self.t[0] += 5
+        self.st.feed("spear.move_update", {"actor": ME, "x": 0.0, "y": 326.0}, ME)
+        self.assertIsNone(self.st.feed("spear.move_update", {"actor": ME, "x": -1.0, "y": 356.0}, ME))  # 보스방으로 옮겨짐
 
     def test_exit_edge(self):
         """격류가 가는 쪽 면의 균열만 — 경로 패킷이 없으면 나온 자리·방향으로 어림한다."""
@@ -533,7 +536,8 @@ class RiftTest(unittest.TestCase):
 
     def dodge(self, me, on_sleep=None, stuck=False):
         """격류가 나온 때 run 을 부른다. 2초 뒤 경로 패킷. 가짜 이동: 5.5칸/초로 가고, 균열 1칸 안에 서면 넘어간다.
-        stuck: 균열 말고는 못 움직임 (밀리거나 묶임). 돌려줌: ([(목표, 출발 초)], 넘어간 초 또는 None, bot)."""
+        stuck: 균열 말고는 못 움직임 (밀리거나 묶임). 돌려줌: ([(목표, 출발 초)], 넘어간 초 또는 None, bot).
+        넘어가면 맞은편 균열 자리로 (동↔서 Y, 남↔북 X 그대로)."""
         pos, moves = [me], []
         bot = mock.MagicMock(packets=self.m)
         sd = SpearDodge(bot)
@@ -559,6 +563,8 @@ class RiftTest(unittest.TestCase):
             sleep(math.dist(pos[0], target) / 5.5)
             pos[0] = target
             if rift:
+                x, y = next(r for r in RIFTS if math.dist(target, r) < 1.0)
+                pos[0] = (-x, y) if abs(x) == 18.0 else (x, 435.0 - y)
                 self.m._spear("spear.buff", {"actor": ME, "buff": RIFT_PASS, "caster": 904})
             return True
 
@@ -588,6 +594,22 @@ class RiftTest(unittest.TestCase):
         self.assertGreaterEqual(moves[1][1], 12.0)           # 경로 받고 10초 = 가운데
         self.assertLess(warped, 14.0)
         self.assertTrue(self.logged(bot, "격류: 균열로 넘어감"))
+        self.assertEqual(moves[2][0], (-10.0, 230.0))  # 넘어온 북쪽 균열 (-10, 235) 에서 안쪽으로 5칸 (송곳니 자리 모름) (11-19 16:14:05)
+        self.assertEqual(len(moves), 3)
+
+    def test_step_off_toward_fang(self):
+        """넘어오면 송곳니 쪽으로 5칸 비켜 선다 (사용자 11-19) — 송곳니가 가장자리 쪽이면 안쪽으로."""
+        self.m._spear("spear.move_update", {"actor": 77, "x": 5.0, "y": 225.0})
+        moves, _, _ = self.dodge((0.0, 217.5))
+        x, y = moves[-1][0]
+        n = math.dist((5.0, 225.0), (-10.0, 235.0))
+        self.assertAlmostEqual(x, -10.0 + 15.0 / n * 5, places=3)
+        self.assertAlmostEqual(y, 235.0 - 10.0 / n * 5, places=3)
+
+    def test_step_off_inward_when_fang_at_edge(self):
+        self.m._spear("spear.move_update", {"actor": 77, "x": -16.0, "y": 236.0})  # 넘어온 균열 옆 가장자리
+        moves, _, _ = self.dodge((0.0, 217.5))
+        self.assertEqual(moves[-1][0], (-10.0, 230.0))
 
     def test_near_start_edge_leaves_early(self):
         """격류가 나온 면 가까이 있으면 바로 출발하지만, 밟는 건 가운데를 넘은 뒤 (일찍 타면 건너편이 아직 격류)."""
@@ -605,7 +627,7 @@ class RiftTest(unittest.TestCase):
     def test_caught_steps_early(self):
         """균열 앞까지 못 가고 격류가 2.5칸 안으로 붙으면 가운데 전이라도 밟는다 (밀리며 맞느니)."""
         moves, warped, _ = self.dodge((-10.0, 216.0), stuck=True)
-        self.assertEqual([m[0] for m in moves], [(-10.0, 205.0), (-10.0, 200.0)])
+        self.assertEqual([m[0] for m in moves], [(-10.0, 205.0), (-10.0, 200.0), (-10.0, 230.0)])
         self.assertLess(moves[1][1], 12.0)
         self.assertIsNotNone(warped)
 

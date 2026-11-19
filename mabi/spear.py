@@ -30,7 +30,8 @@ FANG_KIND = 0x0d08006c_00000006  # 비틀린 송곳니 — 몬스터 등장 [694
 SPEAR_HOME = (0.0, 163.0)
 FRESH = 3.0               # 대상 표시를 이만큼 지나서 보면 늦었다 (투창은 7~8초 뒤)
 TTT = ("spear.timeline", "spear.path", "spear.breakpoint")
-MOVES = ("spear.move_update", "spear.move_ensure", "spear.move_end", "spear.move_manual", "spear.move_location")
+MOVES = ("spear.move_update", "spear.move_ensure", "spear.move_end", "spear.move_manual", "spear.move_location",
+         "spear.move_warp")
 # 비틀린 송곳니 격류·균열 (caps/fang1119)
 WAVE_KIND = 0x76fcd878   # 기술 물체 종류 — 격류
 RIFT_PASS = 0x3efd9bea   # 균열을 지난 캐릭터에 붙는 버프 (5초 재사용 대기, 시전자 = 밟은 균열)
@@ -116,7 +117,8 @@ class SpearState:
                     prev = self.pos.get(a)
                     self.pos[a] = (x, y, now)
                     if (me is not None and a == me and self.wave and prev and now - prev[2] < 10.0
-                            and math.dist(prev[:2], (x, y)) > WARP_JUMP):
+                            and math.dist(prev[:2], (x, y)) > WARP_JUMP and any(math.dist((x, y), r) < 2.0 for r in RIFTS)):
+                        # 균열 가까이 떨어졌을 때만 — 보스방 들어갈 때도 30칸 옮겨진다 (11-19 16:14:43)
                         return self._warped(now, f"({prev[0]:.0f}, {prev[1]:.0f}) → ({x:.0f}, {y:.0f})")
                 return None
             if key == "spear.object":
