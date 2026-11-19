@@ -293,6 +293,50 @@ class KeysTest(unittest.TestCase):
         m.apply("cutscene.end", {})
         self.assertFalse(sd.camera_due())  # 한 맵에 한 번
 
+    def test_camera_mode_icon(self):
+        """오른쪽 위 카메라 아이콘 — 손가락 얹은 카메라는 수동, 카메라만은 자동, 없으면 모름 (사용자 11-19)."""
+        from pathlib import Path
+        from unittest import mock
+        import cv2
+        import numpy as np
+        from mabi.tasks.spear import camera_mode
+        from mabi.vision import Vision
+        root = Path(__file__).resolve().parent.parent / "templates"
+        bot = mock.MagicMock(ui={})
+        bot.vision = Vision(root)
+        for mode in ("manual", "auto"):
+            frame = np.full((1080, 1920, 3), 40, np.uint8)
+            frame[28:58, 1578:1622] = cv2.imread(str(root / f"camera_{mode}.png"))
+            self.assertEqual(camera_mode(bot, frame), mode)
+        self.assertIsNone(camera_mode(bot, np.full((1080, 1920, 3), 40, np.uint8)))
+
+    def test_auto_camera_set_manual_first(self):
+        """자동 카메라로 들어오면 맞추기 전에 한 번 눌러 수동으로 — 안 그러면 수동 → 자동으로 반대로 돈다 (11-19 16:45).
+        혼자하기는 들어올 때 수동인지만 보고 맞추지는 않는다."""
+        from unittest import mock
+        from mabi.tasks import spear as sp
+        for name, presses in (("흩어진 물길 (어비스 시즌2 3구역 매우 어려움2)", 3),
+                              ("흩어진 물길 (어비스 시즌2 3구역 매우 어려움2 솔로)", 1)):
+            m = PacketMonitor(None)
+            m.state.me = ME
+            m.apply("channel.entering", {"channel": 1, "channel_type": "InstanceAbyssDungeon", "channel_name": name})
+            bot = mock.MagicMock(packets=m)
+            bot.cfg = {"game": {"camera_key": "end"}}
+            sd = SpearDodge(bot)
+            m.state.entered_at -= sp.CAMERA_LATE + 1
+            self.assertTrue(sd.camera_due(), name)
+            with mock.patch.object(sp, "camera_mode", side_effect=["auto", "manual"]),                     mock.patch("mabi.tasks.spear.time.sleep"):
+                sd.set_camera()
+            self.assertEqual(bot.key.call_count, presses, name)
+            self.assertFalse(sd.camera_due(), name)
+            with mock.patch.object(sp, "camera_mode", return_value="manual"), mock.patch("mabi.tasks.spear.time.sleep"):
+                m.apply("channel.leaving", {})
+                m.apply("channel.entering", {"channel": 1, "channel_type": "InstanceAbyssDungeon", "channel_name": name})
+                m.state.entered_at -= sp.CAMERA_LATE + 1
+                bot.key.reset_mock()
+                sd.set_camera()
+            self.assertEqual(bot.key.call_count, presses - 1, name)  # 이미 수동이면 바로 맞춤
+
     def test_camera_second_press_after_scene(self):
         """맞추는 중에 보스 등장 연출이 시작되면 두 번째 Z 는 연출이 끝난 뒤 (11-04 14:34 자동 카메라로 남음)."""
         from unittest import mock

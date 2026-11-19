@@ -34,6 +34,9 @@ CAMERA_WAIT = 2.0  # 맵에 들어오고 적어도 이만큼 뒤, 내 캐릭터�
 CAMERA_LATE = 8.0  # 움직임을 못 봐도 들어오고 이만큼 지나면 맞춘다
 CAMERA_MOVED = 1.0  # 맵에 들어와 처음 받은 내 자리에서 이만큼 넘게 가면 움직이기 시작한 것
 CAMERA_AUTO = 4.0  # 자동 카메라로 이만큼 둔 뒤 수동으로 — 2초로는 덜 돌아간 채 고정됐다 (사용자 11-03)
+CAMERA_ICON_MIN = 0.7   # 카메라 아이콘 그림 점수가 이보다 낮으면 모름 (HUD 가 없을 때 등)
+CAMERA_ICON_GAP = 0.15  # 수동·자동 두 그림 점수가 이만큼은 벌어져야 한쪽으로 본다 (서로 다른 쪽엔 0.5 안팎)
+CAMERA_SWITCH = 0.5     # 자동 → 수동으로 바꾸고 아이콘을 다시 보기까지
 CAMP_AUTO = 6.0    # 보스방 갈 때는 더 길게 — 4초로는 덜 돌아간 채 고정될 때가 있었다 (사용자 11-03). 8초는 빠른 캐릭터가
                    # 그 안에 보스방에 들어가 두 번째 Z 가 보스 등장 연출에 묻혀 자동 카메라로 남았다 (11-04 14:34, 사용자)
 SCENE_FIND = 10.0  # 보스 등장 연출의 넘기기 버튼을 찾는 상한 — 버튼이 늦게 뜰 때가 있다 (11-19 14:00 5초로는 못 찾음)
@@ -55,6 +58,20 @@ RIFT_TOL = 0.5
 RIFT_OFF = 5.0    # 넘어온 균열에서 송곳니 쪽으로 비켜 서는 칸 — 그 위에서 싸우다 밀리면 재사용 대기(5초)가 끝나자마자 다시
                   # 옮겨진다 (11-19 16:14:05 넘어간 쪽에 송곳니가 있어 균열 위에서 싸움 — 사용자)
 RIFT_WAIT = 1.5   # 균열 자리에 닿고 넘어가길 기다리는 초 — 안 넘어가면 같은 면 다른 균열로
+
+
+def camera_mode(bot: Bot, frame=None) -> str | None:
+    """오른쪽 위 카메라 아이콘으로 본 지금 카메라 — "manual"(카메라에 손가락) · "auto"(카메라만) · None(모름)."""
+    frame = bot.frame() if frame is None else frame
+    score = {}
+    for mode in ("manual", "auto"):
+        name = bot.ui.get(f"camera_{mode}", f"camera_{mode}")
+        m = bot.vision.best(frame, name) if bot.vision.has(name) else None
+        score[mode] = float(m.score) if m else 0.0
+    top = max(score, key=score.get)
+    if score[top] < CAMERA_ICON_MIN or score[top] - min(score.values()) < CAMERA_ICON_GAP:
+        return None
+    return top
 
 
 def _per_map(name: str):
@@ -127,7 +144,7 @@ class SpearDodge:
             return not s.cutscene
         if self.camp_camera != s.entered_at and (self.st.fang_down or s.boss_scene):
             return not s.cutscene
-        if self.camera_set == s.entered_at or SOLO in (s.channel_name or ""):
+        if self.camera_set == s.entered_at:  # 혼자하기도 들어올 때 수동 카메라인지는 본다 (set_camera)
             return False
         # 맵 진입 패킷은 로딩 화면이 걷히기 전에 와서, 2초 뒤에 눌러도 첫 키를 게임이 못 받을 때가 있었다 → 첫 키만 먹고
         # 자동 카메라로 남음 (사용자 11-19). 내 캐릭터가 움직이기 시작한 뒤 (= 조작을 받는다) 누른다
@@ -160,6 +177,9 @@ class SpearDodge:
         self.camera_set = s.entered_at  # 모닥불 뒤에 처음 맞춰도 맵 진입 때 것은 다시 하지 않는다
         if camp:
             self.camp_camera = s.entered_at
+        self.manual_camera(key)
+        if not camp and SOLO in (s.channel_name or ""):
+            return  # 혼자하기는 카메라가 캐릭터가 보는 쪽으로 시작한다 — 수동인지만 본다
         what, wait = ("보스방", CAMP_AUTO) if camp else ("함께하기", CAMERA_AUTO)
         self.bot.log.info(f"{what}: 카메라를 캐릭터 뒤로 맞춤 ({key.upper()} → {wait:.0f}초 → {key.upper()})")
         self.bot.key(key)
@@ -171,6 +191,18 @@ class SpearDodge:
                 return
             time.sleep(0.1)
         self.bot.key(key)
+
+    def manual_camera(self, key: str) -> None:
+        """카메라 맞춤(키 → 자동 → 몇 초 → 키 → 수동)은 수동 카메라에서 시작해야 맞는다. 자동 카메라로 둔 캐릭터는
+        거꾸로 수동 → 자동이 되어 시점이 반대로 돌았다 (11-19 16:45). 그래서 맞추기 전에 오른쪽 위 아이콘을 보고
+        자동이면 키를 한 번 눌러 수동으로 해 둔다 (사용자 11-19). 아이콘을 모르면 그대로 둔다."""
+        if camera_mode(self.bot) != "auto":
+            return
+        self.bot.log.info(f"카메라: 자동 카메라라 {key.upper()} 를 눌러 수동으로 바꿈")
+        self.bot.key(key)
+        time.sleep(CAMERA_SWITCH)
+        if camera_mode(self.bot) == "auto":
+            self.bot.log.warning("카메라: 눌렀는데도 자동 카메라로 보임")
 
     def scene_due(self) -> bool:
         """보스 등장 연출 중이고 이 맵에서 아직 안 넘겼다. 물결은 어차피 게임을 앞에 두고 돌아 넘겨도 된다 (사용자 11-03)
