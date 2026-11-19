@@ -237,18 +237,33 @@ class KeysTest(unittest.TestCase):
         self.assertEqual(sorted(sd.keys_toward(7, -10)), ["d", "s"])
         self.assertEqual(sd.keys_toward(-3, 0.2), ["a"])
 
-    def test_fight_key_after_return(self):
-        """투창병 쪽으로 돌아온 뒤 Space 한 번 — 지금 '목표' 진행으로 바로 전투로 (사용자 11-19, 전엔 스킬 1 을 3번)."""
+    def spear_run(self, job, ok=True):
         from unittest import mock
         bot = mock.MagicMock()
         sd = SpearDodge(bot)
+        sd.calib = ((0.0, 1.0), (1.0, 0.0))
         sd.go = sd.hold = mock.MagicMock()
+        sd._with_focus = lambda fn: fn()
         st = mock.MagicMock()
         st.broken_since.return_value = True
-        with (mock.patch.object(SpearDodge, "st", st), mock.patch.object(SpearDodge, "ok", return_value=True),
+        st.wave_due.return_value = st.ttt.due.return_value = False
+        st.take.return_value = job
+        with (mock.patch.object(SpearDodge, "st", st), mock.patch.object(SpearDodge, "ok", return_value=ok),
+              mock.patch.object(SpearDodge, "scene_due", return_value=False),
+              mock.patch.object(SpearDodge, "camera_due", return_value=False),
               mock.patch("mabi.tasks.spear.time.sleep")):
-            sd.dodge({"x": 10, "y": 142, "at": time.monotonic(), "shaman": 1, "attr": "불"})
-        self.assertEqual([c.args for c in bot.key.call_args_list], [("space",)])
+            sd.run()
+        return [c.args for c in bot.key.call_args_list]
+
+    def test_fight_key_after_return(self):
+        """투창병 쪽으로 돌아온 뒤 Space 한 번 — 지금 '목표' 진행으로 바로 전투로 (사용자 11-19, 전엔 스킬 1 을 3번)."""
+        self.assertEqual(self.spear_run({"x": 10, "y": 142, "at": time.monotonic(), "shaman": 1, "attr": "불"}),
+                         [("space",)])
+
+    def test_space_even_when_not_moved(self):
+        """투창 대상인데 주술사를 몰라 그만둬도 마지막엔 Space (사용자 11-19). 쓰러졌거나 맵을 떠났으면 안 누른다."""
+        self.assertEqual(self.spear_run(None), [("space",)])
+        self.assertEqual(self.spear_run(None, ok=False), [])
 
     def test_camera_when_fang_dies(self):
         """비틀린 송곳니가 쓰러지면 (보스방으로 걸어감) 카메라를 한 번 더 맞춘다 — 혼자하기도 (사용자 11-03).
@@ -632,13 +647,13 @@ class RiftTest(unittest.TestCase):
         self.assertLess(moves[1][1], 12.0)
         self.assertIsNotNone(warped)
 
-    def test_no_space_when_not_warped(self):
-        """균열로 못 넘어갔으면 Space 를 누르지 않는다 (송곳니가 먼저 쓰러짐)."""
+    def test_space_when_stopped(self):
+        """균열로 못 넘어가고 그만둬도 (송곳니가 먼저 쓰러짐) 마지막엔 Space (사용자 11-19)."""
         def kill(dt):
             if dt >= 5:
                 self.m.apply("actor.dead", {"actor": 77, "dead": True})
         _, _, bot = self.dodge((0.0, 217.5), kill)
-        bot.key.assert_not_called()
+        self.assertEqual([c.args for c in bot.key.call_args_list], [("space",)])
 
     def test_fang_down_stops(self):
         """기다리는 동안 송곳니가 쓰러지면 그만둔다 (사용자 11-19)."""

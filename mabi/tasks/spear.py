@@ -244,6 +244,7 @@ class SpearDodge:
                 self._with_focus(self.calibrate)
             if w and self.calib is not None:
                 self.rift(w)  # 움직일 때만 게임 창을 앞으로
+            self.resume()
             return
         if st.ttt.due():
             job = st.ttt.take(self.my_pos())  # 크게 차이 나지 않으면 가까운 칸
@@ -259,12 +260,12 @@ class SpearDodge:
         job = st.take()
         if job is None:
             self.bot.log.info("투창 대상이지만 속성이나 그 주술사를 모름 (맵에 들어온 뒤 소환을 못 봄) — 움직이지 않음")
-            return
-        if self.calib is None:  # 주술사 소환 때 못 쟀다 — 지금이라도 (늦게 출발한다)
-            self._with_focus(self.calibrate)
-            if self.calib is None:
-                return
-        self._with_focus(lambda: self.dodge(job))
+        else:
+            if self.calib is None:  # 주술사 소환 때 못 쟀다 — 지금이라도 (늦게 출발한다)
+                self._with_focus(self.calibrate)
+            if self.calib is not None:
+                self._with_focus(lambda: self.dodge(job))
+        self.resume()
 
     # ── 순서 ──
     def dodge(self, job: dict) -> None:
@@ -281,8 +282,6 @@ class SpearDodge:
             self.bot.log.info(f"투창 패턴: {HOLD:.0f}초 동안 파훼 못 봄 — 투창병 쪽으로")
         if self.ok():
             self.go(self.st.spear_home(), NEAR_SPEAR, time.monotonic() + GO_LIMIT, lambda: False)
-        if self.ok(pattern=False):
-            self.resume()
 
     def tictactoe(self, job: dict) -> None:
         """틱택토 O 담당 — 차례 시작 5초 안에 고른 칸 가운데로 가서, 보스가 O 를 새기러 올 때까지 그 칸에서 버틴다
@@ -363,12 +362,13 @@ class SpearDodge:
                 bot.log.info(f"격류: 균열 ({r[0]:.0f}, {r[1]:.0f}) 에 닿았는데 안 넘어감 — 같은 면 다른 균열로")
         if st.warped_at > w["at"] and self.ok(pattern=False):
             self._step_off(u)
-            self.resume()
 
     def resume(self) -> None:
-        """패턴을 피한 뒤 바로 싸움으로 — 아무 것도 안 하는 상태의 Space 는 지금 '목표' 진행이다 (자동 전투 켜기·끄기는 H,
-        리모콘이 도는 동안은 늘 켜져 있다 — 사용자 11-19). 투창 패턴 복귀 뒤·균열을 넘어 송곳니 쪽으로 비켜 선 뒤."""
-        self.bot.key("space")
+        """투창·격류 처리가 끝나면 — 해냈든 그만뒀든 — 마지막에 Space 로 바로 싸움으로 (사용자 11-19). 아무 것도 안 하는 상태의
+        Space 는 지금 '목표' 진행이다 (자동 전투 켜기·끄기는 H, 리모콘이 도는 동안은 늘 켜져 있다).
+        쓰러졌거나 맵을 떠났으면 안 누른다. 사용자가 멈춰 예외로 빠져나갈 때도 안 누른다."""
+        if self.ok(pattern=False):
+            self.bot.key("space")
 
     def _step_off(self, u) -> None:
         """넘어온 균열에서 비켜 선다. 송곳니 쪽으로 RIFT_OFF 칸 (사용자 11-19) — 자동 전투가 균열 위가 아니라 그 앞에서 이어진다.
