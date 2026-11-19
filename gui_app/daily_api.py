@@ -310,7 +310,7 @@ class DailyApi:
                 "difficulties": abyss.difficulties(),
                 "running": self._alive_now(self._rep("abyss").thread)}
 
-    # ---- 보스전 기본값 (어비스·레이드 탭) — 캐릭터 탭에서 따로 정하지 않은 캐릭터에 ----
+    # ---- 궁극기·팔라딘 기본값 (어비스·레이드 탭) — 캐릭터 탭에서 따로 정하지 않은 캐릭터에 ----
     def daily_bossSettings(self) -> dict:  # noqa: N802
         from mabi.tasks import boss_skills
         b = self._doc().get("boss_skills", {})
@@ -320,10 +320,11 @@ class DailyApi:
             own = {int(x) for s in ("_slots", "_off_slots") for x in b.get(kind + s, [])}
             return sum(c["slot"] not in own for c in chars)
         return {**{k: bool(b.get(k, False)) for k in boss_skills.KINDS},
+                "boss_only": sorted(boss_skills.boss_only(b)),
                 "follow": {**{k: follow(k) for k in boss_skills.KINDS}, "total": len(chars)}}
 
     def daily_saveBoss(self, v: dict) -> dict:  # noqa: N802
-        """보스전 기본값 저장. 새 기본값과 같아진 캐릭터별 설정은 지운다 (그 캐릭터는 기본값을 따름)."""
+        """궁극기·팔라딘 기본값 저장 (보스에서만 포함). 새 기본값과 같아진 캐릭터별 설정은 지운다 (그 캐릭터는 기본값을 따름)."""
         from mabi.tasks import boss_skills
         with userconfig.LOCK:  # 화면·작업 큐가 함께 고친다
             doc = self._doc()
@@ -338,6 +339,10 @@ class DailyApi:
                 same = kind + ("_slots" if on else "_off_slots")
                 if same in b:
                     b[same] = tomlkit.array()
+            if "boss_only" in v:  # '보스에서만' 을 켠 기술 목록 — 나머지는 끈다
+                only = set(v["boss_only"] or ())
+                for kind in boss_skills.KINDS:
+                    b[f"{kind}_boss_only"] = kind in only
             userconfig.save(self.paths, doc)
         return {"ok": True}
 

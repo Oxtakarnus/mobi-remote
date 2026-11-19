@@ -256,7 +256,8 @@ def play(bot: Bot, start: int | None = None) -> str:
     now = start or (best + 1 if best else None)  # 지금 도전하는 구역 (모르면 None)
     cleared = []
     # 드릴 안 전체를 보스전으로 친다
-    skills = BossSkills.for_current(bot, bot.character, lambda s: s.channel_type == DRILL)
+    here = lambda s: s.channel_type == DRILL  # noqa: E731 — 드릴은 안 전체가 보스전
+    skills = BossSkills.for_current(bot, bot.character, here, inside=here)
     if skills.enabled:
         bot.log.info(f"드릴에서 쓸 것: {skills.describe()}")
     while True:

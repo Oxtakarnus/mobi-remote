@@ -3,7 +3,7 @@
 판을 도는 순서는 같다: 캐릭터 확인 → (얻은 것 재기 시작) → 입장 → 판 → 결과 → 수리 → 다음 판, 판 수·시간이 차면 끝.
 종류마다 다른 것(어디인가 · 입장 · 판 안에서 나가기 · 다음 판으로)은 하위 클래스가 덮어쓴다 (abyss.AbyssRepeat ·
 raid.RaidRepeat). 공통으로 쥐는 것: 판 수·시간·사망 집계, 진행 알림, 캐릭터 확인(이름을 모르면 이어 하고 나중에
-확인), 판 사이 수리(repair.due), 게임을 뒤로 돌려주기, 보스전 궁극기·팔라딘 변신(boss_skills — 보스전인가만 종류마다).
+확인), 판 사이 수리(repair.due), 게임을 뒤로 돌려주기, 궁극기·팔라딘 변신(boss_skills — '보스에서만' 일 때 보스전인가만 종류마다).
 """
 import ctypes
 import time
@@ -54,7 +54,7 @@ class Repeat:
         raise NotImplementedError
 
     def boss_fight(self, s) -> bool:
-        """지금 보스전인가 (패킷 상태 s). 보스전이면 켠 캐릭터는 궁극기·팔라딘 변신을 쓴다 (boss_skills)."""
+        """지금 보스전인가 (패킷 상태 s). '보스에서만' 을 켠 궁극기·팔라딘 변신은 이때만 쓴다 (boss_skills)."""
         return False
 
     # ---- 공통

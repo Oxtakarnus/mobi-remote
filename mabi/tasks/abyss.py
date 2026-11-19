@@ -458,7 +458,7 @@ def play(bot: Bot, run_timeout: float, revive: bool = True, on_revive=lambda: No
     쓰러지면 revive 일 때 '여기서 부활' 하고 이어 한다 (못 하면 'dead' → 나가서 처음부터).
     배고프면 그때마다 음식을 먹는다 (어비스 반복은 일일 숙제의 하루 횟수 제한 없이).
     쓰러짐('여기서 부활')과 판 중에 끼어든 창(퀘스트 클리어 창·대화)은 점검자가 (fight.watch).
-    tick(act): 확인마다 부른다 — 보스전 궁극기·팔라딘 변신 (Repeat.skills).
+    tick(act): 확인마다 부른다 — 궁극기·팔라딘 변신 (Repeat.skills).
     흩어진 물길은 예외로 투창병 속성 패턴을 맡는다 — 내가 대상이 되면 패킷이 기다림을 깨우고 바로 움직인다 (tasks/spear).
     뼈대는 fight.Fight, 어비스만 다른 것은 AbyssPlay."""
     return AbyssPlay(bot, run_timeout, revive, on_revive, tick).run()

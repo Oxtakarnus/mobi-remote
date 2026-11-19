@@ -566,12 +566,15 @@ function paintAbyssBg() {
     : '입장할 때만 게임을 앞으로 가져오고, 그 뒤로는 다른 창에 가려져 있어도 됩니다 (작업 표시줄로 내리면 안 됨)';
 }
 
-/* 보스전 기본값 (궁극기·팔라딘 변신) — 숙제 기본값처럼 캐릭터 탭에서 따로 정하지 않은 캐릭터에 */
+/* 궁극기·팔라딘 변신 기본값 — 숙제 기본값처럼 캐릭터 탭에서 따로 정하지 않은 캐릭터에. '보스에서만' 은 모든 캐릭터 */
 async function loadBoss() {
   const b = await mm.daily.bossSettings();
   if (!b) return;
   $('#ab-def-ult').checked = !!b.ultimate;
   $('#ab-def-pal').checked = !!b.paladin;
+  const only = b.boss_only || [];
+  $('#ab-only-ult').checked = only.includes('ultimate');
+  $('#ab-only-pal').checked = only.includes('paladin');
   const f = b.follow || {};
   const fol = (n) => (f.total ? n + '명 적용' : '');
   $('#ab-follow-ult').textContent = fol(f.ultimate);
@@ -579,7 +582,8 @@ async function loadBoss() {
 }
 
 async function saveBoss() {
-  const r = await mm.daily.saveBoss({ ultimate: $('#ab-def-ult').checked, paladin: $('#ab-def-pal').checked });
+  const only = [['ultimate', '#ab-only-ult'], ['paladin', '#ab-only-pal']].filter(([, id]) => $(id).checked).map(([k]) => k);
+  const r = await mm.daily.saveBoss({ ultimate: $('#ab-def-ult').checked, paladin: $('#ab-def-pal').checked, boss_only: only });
   $('#ab-boss-msg').textContent = r && r.error ? r.error : '저장했습니다';
   if (!(r && r.error)) await loadBoss();
 }

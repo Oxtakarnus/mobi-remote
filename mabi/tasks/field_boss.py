@@ -176,7 +176,8 @@ def fight(bot: Bot) -> bool:
     창을 닫음) 퇴장 시간이 지난 것. 실패로 끝내면 다시 들어가 보지 못했다 (2026-11-16 12:07). run 이 성장 가이드로 잡았나를
     보고 다시 들어간다."""
     bot.step("fb_fight", "보스와 전투 중")
-    skills = BossSkills.for_current(bot, bot.character, lambda s: s.channel_type == FIELD_BOSS)
+    here = lambda s: s.channel_type == FIELD_BOSS  # noqa: E731 — 보스 영역 안 전체가 보스전
+    skills = BossSkills.for_current(bot, bot.character, here, inside=here)
     ctx = monitor.Ctx("field_boss", "필드 보스 전투", revive=True)
     end = time.monotonic() + bot.cfg["field_boss"]["fight_timeout"]
     asked = time.monotonic()

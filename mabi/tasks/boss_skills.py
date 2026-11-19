@@ -1,9 +1,13 @@
-"""보스전 궁극기·팔라딘 변신 — 어비스·레이드 반복(Repeat)의 판 진행 중과 나이트메어 드릴 안에서 쓴다. 일반 던전·일일 숙제에서는 쓰지 않는다.
+"""궁극기·팔라딘 변신 자동 사용 — 어비스·레이드 반복(Repeat)의 판 진행 중과 나이트메어 드릴·필드 보스 안에서 쓴다.
+일반 던전·일일 숙제에서는 쓰지 않는다.
 
 기본값([boss_skills] ultimate · paladin, 어비스·레이드 탭)을 따르고, 캐릭터 탭에서 따로 정한 캐릭터만 다르게
 (ultimate_slots · paladin_slots = 따로 켬, ultimate_off_slots · paladin_off_slots = 따로 끔 — on_for). 키는 [game] ultimate_key · paladin_key.
-쓰는 때: 보스전(종류마다 Repeat.boss_fight — 레이드는 보스전 시작 패킷, 어비스는 모닥불 뒤 보스 등장 연출 뒤) · 전투 중(CLI IsInCombat,
-모르면 패킷) · 게이지가 참(패킷 ultimate.resource) · 컷신·쓰러짐·로딩이 아님. 게임 키만 누르고 패킷은 보내지 않는다.
+쓰는 때: 콘텐츠 안(inside — 드릴·필드 보스는 그 맵, 반복은 판 진행이 부를 때만) · 전투 중(CLI IsInCombat, 모르면 패킷) ·
+게이지가 참(패킷 ultimate.resource) · 컷신·쓰러짐·로딩이 아님. 게임 키만 누르고 패킷은 보내지 않는다.
+'보스에서만'([boss_skills] ultimate_boss_only · paladin_boss_only)을 켠 기술은 보스전에서만 쓴다 (종류마다 Repeat.boss_fight —
+레이드는 보스전 시작 패킷, 어비스는 모닥불 뒤 보스 등장 연출 뒤, 드릴·필드 보스는 안 전체). 기본은 꺼짐 — 게이지가 차면
+어디서나 쓴다 (사용자 11-19, 그 전엔 늘 보스전에서만).
 게이지가 차 있는데 눌러도 안 줄면 RETRY 초마다 다시 누른다 (게임이 키를 놓치거나 아직 못 쓰는 순간).
 
 팔라딘 변신 중에는 궁극기를 쓰지 않는다 — 변신 중엔 궁극기 키(6)가 '변신 해제' 가 된다 (사용자, 2026-10-30).
@@ -25,6 +29,11 @@ from ..bot import Bot
 KINDS = ("ultimate", "paladin")
 
 
+def boss_only(boss: dict) -> set[str]:
+    """'보스에서만' 을 켠 기술 (KINDS 중). 캐릭터마다 따로 두지 않는다."""
+    return {k for k in KINDS if boss.get(f"{k}_boss_only", False)}
+
+
 def on_for(boss: dict, kind: str, slot: int | None) -> bool:
     """이 캐릭터(슬롯)가 kind(ultimate · paladin)를 쓰나. 캐릭터 탭에서 따로 켜거나 끈 게 먼저, 아니면 기본값.
     슬롯을 모르면(지금 접속한 캐릭터를 못 알아봄) 기본값."""
@@ -41,36 +50,40 @@ class BossSkills:
     TRANSFORM = 20 + 3  # 팔라딘 변신 시간 20초 + 여유 — 이 동안 궁극기 키(6)는 변신 해제
     MAX_TRIES = 3       # 변신 키를 이만큼 눌러도 시작 패킷이 없으면 그 맵에서는 포기 (궁극기를 막지 않게)
 
-    def __init__(self, bot: Bot, ultimate: bool, paladin: bool, boss_fight):
+    def __init__(self, bot: Bot, ultimate: bool, paladin: bool, boss_fight, only=(), inside=None):
+        """boss_fight(st): 보스전인가 — only(KINDS 중 '보스에서만' 켠 것)만 이걸 본다. inside(st): 콘텐츠 안인가 (없으면 늘 참)."""
         self.bot, self.boss_fight = bot, boss_fight
-        # (이름, 키, 게이지 읽기) — 팔라딘 먼저: 게이지를 같이 쓰면 궁극기를 먼저 쓸 때 500 까지 못 모은다
+        self.inside = inside or (lambda st: True)
+        # (이름, 키, 게이지 읽기, 보스에서만) — 팔라딘 먼저: 게이지를 같이 쓰면 궁극기를 먼저 쓸 때 500 까지 못 모은다
         self.skills = [s for s, on in (
-            (("팔라딘 변신", keys.of(bot, "paladin"), lambda st: (st.pal, st.pal_max) if st.can_paladin is not False else (None, None)), paladin),
-            (("궁극기", keys.of(bot, "ultimate"), lambda st: (st.ult, st.ult_max)), ultimate),
+            (("팔라딘 변신", keys.of(bot, "paladin"),
+              lambda st: (st.pal, st.pal_max) if st.can_paladin is not False else (None, None), "paladin" in only), paladin),
+            (("궁극기", keys.of(bot, "ultimate"), lambda st: (st.ult, st.ult_max), "ultimate" in only), ultimate),
         ) if on and s[1]]
         self.pressed: dict[str, float] = {}
         self.tries = (None, 0)  # (맵 entered_at, 그 맵에서 변신 키를 누른 횟수)
 
     @classmethod
-    def for_character(cls, bot: Bot, cfg: dict, slot: int | None, boss_fight) -> "BossSkills":
+    def for_character(cls, bot: Bot, cfg: dict, slot: int | None, boss_fight, inside=None) -> "BossSkills":
         c = cfg["boss_skills"]
-        return cls(bot, on_for(c, "ultimate", slot), on_for(c, "paladin", slot), boss_fight)
+        return cls(bot, on_for(c, "ultimate", slot), on_for(c, "paladin", slot), boss_fight, boss_only(c), inside)
 
     @classmethod
     def for_current(cls, bot: Bot, character: dict | None, boss_fight, name: str | None = None,
-                    cfg: dict | None = None) -> "BossSkills":
+                    cfg: dict | None = None, inside=None) -> "BossSkills":
         """지금 접속한 캐릭터의 설정으로 — 반복(Repeat)·나이트메어 드릴·필드 보스가 같이 쓴다. character 는 고른 캐릭터
         ({slot, name}, 없으면 None), name 은 지금 이름 (None 이면 패킷이 아는 내 이름). 슬롯 고르기는 slot_of."""
         if name is None:
             name = bot.packets.state.my_name if bot.packets.ok else ""
-        return cls.for_character(bot, bot.cfg if cfg is None else cfg, slot_of(bot, character, name or ""), boss_fight)
+        return cls.for_character(bot, bot.cfg if cfg is None else cfg, slot_of(bot, character, name or ""), boss_fight,
+                                 inside)
 
     @property
     def enabled(self) -> bool:
         return bool(self.skills)
 
     def describe(self) -> str:
-        return " · ".join(n for n, _, _ in self.skills)
+        return " · ".join(n + (" (보스에서만)" if only else "") for n, _, _, only in self.skills)
 
     def transformed(self, st) -> bool:
         """팔라딘 변신 중일 수 있나 — 그러면 궁극기 키가 변신 해제라 누르면 안 된다.
@@ -97,13 +110,19 @@ class BossSkills:
             return False
         p = self.bot.packets
         st = p.state
-        if not p.ok or st.loading or st.cutscene or st.dead or not self.boss_fight(st):
+        if not p.ok or st.loading or st.cutscene or st.dead or not self.inside(st):
             return False
         combat = act.get("IsInCombat") if "IsInCombat" in act else st.in_combat
         if not combat:
             return False
         now = time.monotonic()
-        for name, key, gauge in self.skills:
+        boss = None  # 보스전인가 — '보스에서만' 기술이 있을 때만 본다
+        for name, key, gauge, only in self.skills:
+            if only:
+                if boss is None:
+                    boss = bool(self.boss_fight(st))
+                if not boss:
+                    continue
             if name == "궁극기" and self.transformed(st):
                 continue
             if name == "팔라딘 변신" and self.paladin_spent(st):
@@ -112,7 +131,7 @@ class BossSkills:
             wait = self.TRANSFORM if name == "팔라딘 변신" else self.RETRY  # 변신이 됐는데 신호만 늦을 수 있다 — 변신 중엔 다시 안 누른다
             if cur is None or not need or cur < need or now - self.pressed.get(name, -1e9) < wait:
                 continue
-            self.bot.log.info(f"보스전 {name} ({cur:.0f}/{need:.0f}) → {key}")
+            self.bot.log.info(f"{'보스전' if boss else '전투 중'} {name} ({cur:.0f}/{need:.0f}) → {key.upper()}")
             self.bot.key(key)
             self.pressed[name] = now
             if name == "팔라딘 변신":

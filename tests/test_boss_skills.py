@@ -5,8 +5,9 @@ import unittest
 from unittest import mock
 
 from mabi.packet_monitor import PacketMonitor
+from mabi.place import DRILL
 from mabi.tasks.abyss import AbyssRepeat
-from mabi.tasks.boss_skills import BossSkills
+from mabi.tasks.boss_skills import KINDS, BossSkills
 from mabi.tasks.raid import RaidRepeat
 
 ABYSS = "InstanceAbyssDungeon"
@@ -50,7 +51,7 @@ class BossSkillsTest(unittest.TestCase):
     def test_abyss_boss_is_after_campfire_scene(self):
         bot = FakeBot()
         bot.enter(ABYSS)
-        sk = BossSkills(bot, True, True, abyss_fight)
+        sk = BossSkills(bot, True, True, abyss_fight, only=KINDS)  # 보스에서만
         bot.gauge(500)
         self.assertFalse(sk.tick({"IsInCombat": True}))  # 모닥불 전
         bot.packets.apply("abyss.campfire", {})
@@ -189,7 +190,7 @@ class BossSkillsTest(unittest.TestCase):
         bot.boss()
         bot.gauge(500)
         bot.packets.apply("ultimate.can_paladin", {"on": False})
-        sk = BossSkills(bot, False, True, abyss_fight)
+        sk = BossSkills(bot, False, True, abyss_fight, only=("paladin",))
         self.assertFalse(sk.tick({"IsInCombat": True}))
         bot.packets.apply("ultimate.can_paladin", {"on": True})
         bot.packets.apply("cutscene.play", {})
@@ -205,11 +206,58 @@ class BossSkillsTest(unittest.TestCase):
         bot.enter("InstanceRaid")
         bot.packets.apply("abyss.campfire", {})  # 레이드는 맵 진입 때도 모닥불이 온다 — 그걸로 보지 않는다
         bot.gauge(300)
-        sk = BossSkills(bot, True, False, lambda s: RaidRepeat.boss_fight(None, s))
+        sk = BossSkills(bot, True, False, lambda s: RaidRepeat.boss_fight(None, s), only=("ultimate",))
         self.assertFalse(sk.tick({"IsInCombat": True}))
         bot.packets.apply("raid.boss_begin", {})
         self.assertTrue(sk.tick({"IsInCombat": True}))
         self.assertEqual(bot.keys, ["6"])
+
+    def test_anywhere_by_default(self):
+        """'보스에서만' 을 안 켰으면 보스전이 아니어도 전투 중 게이지가 차면 쓴다 (사용자 11-19)."""
+        bot = FakeBot()
+        bot.enter(ABYSS)
+        sk = BossSkills(bot, True, True, abyss_fight)
+        bot.gauge(500)
+        self.assertFalse(abyss_fight(bot.packets.state))  # 모닥불 전 잡몹
+        self.assertFalse(sk.tick({"IsInCombat": False}))  # 전투 중이 아니면 안 씀
+        self.assertTrue(sk.tick({"IsInCombat": True}))
+        self.assertEqual(bot.keys, ["f5"])
+
+    def test_boss_only_per_skill(self):
+        bot = FakeBot()
+        bot.enter(ABYSS)
+        sk = BossSkills(bot, True, True, abyss_fight, only=("paladin",))  # 팔라딘만 보스에서만
+        bot.gauge(500)
+        self.assertTrue(sk.tick({"IsInCombat": True}))
+        self.assertEqual(bot.keys, ["6"])  # 잡몹 때 궁극기만
+        sk.pressed["궁극기"] -= 9
+        bot.packets.apply("ultimate.resource", {"ult_max": 300.0, "ult": 0.0, "pal_max": 500.0, "pal": 500.0})
+        self.assertFalse(sk.tick({"IsInCombat": True}))  # 팔라딘은 보스까지 아낀다
+        bot.boss()
+        self.assertTrue(sk.tick({"IsInCombat": True}))
+        self.assertEqual(bot.keys, ["6", "f5"])
+
+    def test_inside_guard(self):
+        """드릴·필드 보스는 그 맵 안에서만 — '보스에서만' 을 꺼도."""
+        bot = FakeBot()
+        bot.enter(DRILL)
+        here = lambda s: s.channel_type == DRILL  # noqa: E731
+        sk = BossSkills(bot, True, False, here, inside=here)
+        bot.gauge(300)
+        self.assertTrue(sk.tick({"IsInCombat": True}))
+        bot.enter("Field")
+        sk.pressed.clear()
+        bot.gauge(300)
+        self.assertFalse(sk.tick({"IsInCombat": True}))
+        self.assertEqual(bot.keys, ["6"])
+
+    def test_boss_only_from_settings(self):
+        bot = FakeBot()
+        bot.cfg["boss_skills"]["paladin_boss_only"] = True
+        two = BossSkills.for_character(bot, bot.cfg, 2, abyss_fight)
+        one = BossSkills.for_character(bot, bot.cfg, 1, abyss_fight)
+        self.assertEqual(two.describe(), "팔라딘 변신 (보스에서만)")
+        self.assertEqual(one.describe(), "궁극기")
 
     def test_per_character(self):
         bot = FakeBot()
@@ -230,7 +278,6 @@ class BossSkillsTest(unittest.TestCase):
         self.assertIs(play.call_args.kwargs["tick"], rep.skills.tick)
 
 
-
 class DefaultTest(unittest.TestCase):
     """기본값(어비스·레이드 탭)을 따르고 캐릭터 탭에서 따로 켜거나 끈 캐릭터만 다르게 (boss_skills.on_for)."""
 
@@ -244,6 +291,19 @@ class DefaultTest(unittest.TestCase):
         self.assertTrue(on_for(b, "paladin", 3))
         self.assertFalse(on_for({"ultimate_slots": [1]}, "ultimate", 2))  # 예전 설정(기본값 없음) = 켠 캐릭터만
         self.assertTrue(on_for({"ultimate_slots": [1]}, "ultimate", 1))
+
+    def test_settings_api_boss_only(self):
+        """어비스·레이드 탭 저장·읽기 — '보스에서만' 은 켠 기술 목록으로 주고받는다."""
+        from gui_app import daily_api
+        api = daily_api.DailyApi.__new__(daily_api.DailyApi)
+        doc = {"boss_skills": {"ultimate": True, "paladin": True, "paladin_boss_only": True}}
+        api._doc = lambda: doc
+        api.paths = mock.Mock()
+        with mock.patch.object(daily_api.prof, "chars", return_value=[]):
+            self.assertEqual(api.daily_bossSettings()["boss_only"], ["paladin"])
+        with mock.patch.object(daily_api.userconfig, "save"):
+            self.assertEqual(api.daily_saveBoss({"ultimate": True, "paladin": True, "boss_only": ["ultimate"]}), {"ok": True})
+        self.assertEqual((doc["boss_skills"]["ultimate_boss_only"], doc["boss_skills"]["paladin_boss_only"]), (True, False))
 
 
 if __name__ == "__main__":
