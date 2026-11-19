@@ -20,6 +20,9 @@ CRAFT_TITLE_AREA, ALTER_TITLE = (80, 15, 420, 60), "가공"
 ALTER_CARDS = (600, 160, 580, 560)  # 가공 시설 창 카드 목록 (x, y, w, h) — 카드 아래쪽에 이름
 
 
+MENU_WAIT_GAP = 15  # NPC 메뉴 버튼 기다림이 이만큼(초) 안에 이어져야 연달아 기다린 것
+
+
 class Did(StrEnum):
     """처리기가 한 일 중 점검자·태스크가 갈래를 나누는 데 쓰는 것 (기다림인가, 수락했나 …). StrEnum 이라 로그·기록
     (logs/acts)에는 예전 글자 그대로 남고 글자와 비교해도 같다. 그 밖의 한 일(누른 것 이름 등)은 그냥 글자다."""
@@ -127,7 +130,10 @@ def dialog(bot, ctx, seen):
         # 아르바이트가 아닌 일(클리어 뒤 정리 등)에서 뜬 NPC 메뉴는 우리 일이 아니다 → 대화 종료(ESC).
         # 아르바이트여도 버튼이 늦게 그려지는 건 몇 초 — 계속 없으면 우리 메뉴가 아니다.
         # 클리어 뒤 로나 메뉴(판의 조언·상점·대화 종료) 앞에서 3분 가까이 '메뉴 버튼 기다림' 만 했다 (2026-11-06 11:16)
-        waits = ctx.n.get("menu_wait", 0)
+        # 연달아 기다린 횟수만 센다 — 지난번 메뉴에서 기다린 것이 남아 다음 메뉴를 일찍 닫지 않게 (판정 점검 2026-11-16)
+        now = int(time.monotonic())
+        waits = ctx.n.get("menu_wait", 0) if now - ctx.n.get("menu_wait_at", 0) <= MENU_WAIT_GAP else 0
+        ctx.n["menu_wait_at"] = now
         if ctx.task != "arbeit" or waits >= 3:
             ctx.n["menu_wait"] = 0
             bot.log.info(f"우리 일이 아닌 NPC 메뉴 → 대화 종료 ({bot.snapshot('npc_menu_other').name})")

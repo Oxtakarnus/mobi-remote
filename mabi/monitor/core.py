@@ -23,6 +23,9 @@ from .handlers import Did, Finish
 from ..exceptions import StepTimeout, Stuck
 
 
+UNKNOWN_RETRY = 600  # 모르는 화면에서 메인으로 돌려 본 뒤 이만큼(초) 지나면 다시 돌려 본다 (그 안이면 멈춤)
+
+
 class Ctx:
     """지금 하는 일. task 는 숙제 id, what 은 그 안의 일 (아르바이트 제목 등 — 로그용).
     menus: NPC 메뉴(수락·결과 보고)·전달 창·던전 창까지 다룬다. job: 채집·제작·가공 창까지 (menus 포함). talk: NPC 대화를 넘긴다.
@@ -187,8 +190,11 @@ class Monitor:
         if now - self._unknown_since < self.unknown_limit:
             return
         shot = self.bot.snapshot("monitor_unknown").name
-        if not self._unknown_tried and not ctx.n.get("unknown_escape"):
-            ctx.n["unknown_escape"] = 1
+        # 같은 일에서 메인으로 돌린 지 얼마 안 됐으면 멈춘다. 몇 시간 도는 일(어비스 반복)에서 아침에 한 번 돌린 것으로
+        # 저녁의 다른 모르는 화면까지 바로 멈추지 않게 UNKNOWN_RETRY 초 지나면 다시 한 번 돌려 본다 (판정 점검 2026-11-16)
+        tried_at = ctx.n.get("unknown_escape")
+        if not self._unknown_tried and (tried_at is None or now - tried_at > UNKNOWN_RETRY):
+            ctx.n["unknown_escape"] = int(now)
             self._unknown_tried, self._unknown_since = True, now
             self.bot.log.warning(f"점검: [{ctx.what or ctx.task}] 모르는 상황이 {self.unknown_limit}초째 → 메인 화면으로 ({shot})")
             self.record(ctx, "모름", seen, did="메인 화면으로", shot=shot)

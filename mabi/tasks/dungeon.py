@@ -118,7 +118,13 @@ def _play_dungeon(bot: Bot, clear_timeout: float, extra_loot: int, again: str | 
     ui = bot.ui
     entered = wait_dungeon(bot, lambda s: s == "InProgress", bot.cfg["timing"]["loading"], interval=2)
     if entered == "":
-        raise StepTimeout("던전 입장 확인 실패")
+        # '입장하기' 로 비용(은동전·공물)을 냈을 수 있다. 오류로 끝내면 정리가 던전에서 나가 버리므로, 던전 맵에 와 있으면
+        # 진행 신호를 못 본 것으로 보고 이어 한다 (판정 점검 2026-11-16)
+        from ..place import DUNGEON, place
+        if place(bot).kind != DUNGEON:
+            raise StepTimeout("던전 입장 확인 실패")
+        bot.log.warning("던전 진행 신호는 못 봤지만 던전 맵 안 → 이어 함")
+        entered = "InProgress"
     if entered is not None:
         bot.step("in_dungeon", "던전 진행 중")
         ctx = _in_ctx(bot, "던전 진행 중")

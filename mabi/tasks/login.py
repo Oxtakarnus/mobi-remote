@@ -122,7 +122,12 @@ def settle_first_login(bot: Bot, cfg: dict, timeout: float) -> list[str]:
     stable = unknown = 0
     while stable < 3:
         if time.monotonic() > end:
-            raise StepTimeout(f"접속 후 메인 화면이 안정되지 않음 → {bot.snapshot('login').name}")
+            shot = bot.snapshot('login').name
+            if bot.in_game():
+                # 접속은 됐다 — 여기서 실패로 끝내면 그 캐릭터 일을 통째로 건너뛴다. 남은 화면은 뒤의 일이 점검자로 넘긴다
+                bot.log.warning(f"접속 후 메인 화면이 {timeout:.0f}초 안에 안정되지 않음 — 게임 안이라 이어 감 ({shot})")
+                return handled
+            raise StepTimeout(f"접속 후 메인 화면이 안정되지 않음 → {shot}")
         bot.sleep(1.2, 1.6)
         seen = mon.check(ctx, guard=False)
         if seen.done:

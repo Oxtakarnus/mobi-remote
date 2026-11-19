@@ -232,12 +232,20 @@ def _press_other(bot: Bot, exclude) -> str | None:
     # CLI 퀘스트 목록은 '화면에 보이는' 추적 칸만 준다 → 창이 닫히고 추적 칸에 이 일이 뜰 때까지 몇 초 걸린다
     # (2026-10-22: 바로 물어 빈 목록 → 수락 안 된 것으로 보고 '막힘' 처리)
     for _ in range(8):
-        now = accepted(bot)
-        if now:
-            return now[0]["title"]
+        hit = _pressed_title([j["title"] for j in accepted(bot) or ()], guess, exclude)
+        if hit:
+            return hit
         bot.sleep(1, 1.2)
     bot.log.warning(f"아르바이트 '{guess}': 진행하기를 눌렀는데 추적 칸에 안 나타남 → {bot.snapshot('arbeit_pin').name}")
     return guess or None
+
+
+def _pressed_title(tracked: list[str], guess: str | None, exclude) -> str | None:
+    """'진행하기' 를 누른 뒤 추적 칸(CLI) 제목 중 누른 일. 추적 칸이 바뀌기 전엔 앞서 추적하던 일이 남아 있어 첫 제목을
+    그대로 쓰면 다른 일을 하는 줄 안다 (판정 점검 2026-11-16). 누른 일(guess — 카드에서 읽은 제목)이 보이면 그것,
+    글자가 조금 달라 안 맞으면 빼 둔 일(exclude)이 아닌 것, 둘 다 없으면 None (아직 안 바뀜)."""
+    return (next((t for t in tracked if guess and _same(t, guess)), None)
+            or next((t for t in tracked if not any(_same(t, e) for e in exclude)), None))
 
 
 def _idle(bot: Bot) -> bool:

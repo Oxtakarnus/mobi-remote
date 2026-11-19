@@ -74,6 +74,9 @@ def unexpected(e: BaseException | None) -> bool:
     return e is not None and not isinstance(e, EXPECTED)
 
 
+MAIN_WAIT = 6  # 오류 뒤 정리에서 메인 화면이 보이길 기다리는 초 (못 보면 게임을 다시 켠다)
+
+
 def settle(bot: Bot, why: str) -> None:
     """오류 뒤 자리 정리 — 다음 일이 이 오류의 뒷자리(연출·로딩·열린 창·콘텐츠 안)에서 시작해 연달아 실패하지 않게.
     연출·맵 로딩이 끝나길 SETTLE_WAIT 초까지 기다리고 (연출 중 로그아웃하자 캐릭터 선택이 먹통이 됐다 — 2026-11-16 12:07),
@@ -84,7 +87,9 @@ def settle(bot: Bot, why: str) -> None:
             return
         bot.wait_packet(lambda s: not s.loading and not s.cutscene, SETTLE_WAIT)
         recover(bot)
-        if bot.at_main():
+        # 한 번만 보면 잠깐 뜬 알림·창 하나로 게임을 다시 켠다 — 몇 초 동안 몇 번 본다
+        from .tasks.press import poll
+        if poll(bot, bot.at_main, MAIN_WAIT, 1.5):
             return
     except StopRequested:  # 멈춤 요청 — 정리도 그만 (다시 켜지 않는다)
         return

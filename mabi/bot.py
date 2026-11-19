@@ -827,11 +827,20 @@ class Bot:
                 # 메인 HUD 가 보이는 채로 뜬 퀘스트 완료 창이 ESC 를 먹는다 (2026-10-24 어비스 3판 뒤 캐릭터 바꾸기)
                 self.clear_blockers(ocr=True)
                 self.to_main()
-        self.click(ui["menu_quit"])
+        from .tasks import press
+        dialog = ui["dialog_to_charselect"]
+
+        def reopen():  # 메뉴가 닫혔으면 다시 연다
+            if not self.exists(ui["menu_quit"]) and not self.exists(dialog):
+                self.key("esc")
+                self.sleep(1.0, 1.3)
+        # '게임 종료' 를 눌렀는데 창이 안 뜨면 다시 누른다 — 한 번 누르고 창만 기다리다 실패했다 (판정 점검 2026-11-16)
+        press.until(self, lambda: self.click(ui["menu_quit"]), lambda: press.poll(self, lambda: self.exists(dialog), 6),
+                    "게임 종료", again=reopen, shot="menu_quit")
         # 창이 뜨는 애니메이션 중에 클릭하면 아래 '시작 화면으로'가 눌릴 수 있어 단축키(Space)를 쓴다
-        self.wait(ui["dialog_to_charselect"])
         self.sleep(0.8, 1.2)
-        self.key("space")
+        press.until(self, lambda: self.key("space"), lambda: press.poll(self, lambda: not self.exists(dialog), 4),
+                    "캐릭터 선택 화면으로", shot="to_charselect")
         errors = [n for n in ui.get("login_errors", []) if self.vision.has(n)]
         m = self.wait_any([ui["charselect_title"], ui["title_start"], *errors], timeout=60)
         if m.name in errors:  # login.run 이 확인을 누르고 쉬었다가 다시 시도한다

@@ -103,6 +103,27 @@ class UnknownTest(unittest.TestCase):
                     mon.check(ctx)
         b.to_main.assert_called_once()
 
+    def test_unknown_retries_main_after_long_time(self):
+        """몇 시간 도는 일에서 한참 전에 메인으로 돌린 것 때문에 새 모르는 화면에서 바로 멈추지 않는다 (판정 점검 11-16)."""
+        b = fake_bot()
+        mon = monitor.Monitor(b)
+        mon.unknown_limit = 10
+        ctx = monitor.Ctx("t")
+        clock = [0.0]
+        with mock.patch.object(core.time, "monotonic", side_effect=lambda: clock[0]):
+            with mock.patch.object(d, "look", return_value=Seen(d.UNKNOWN, frame=frame())):
+                mon.check(ctx)
+                clock[0] = 11
+                mon.check(ctx)  # 메인으로
+            with mock.patch.object(d, "look", return_value=Seen(d.MAIN, frame=frame(), idle=True)):
+                mon.check(ctx)
+            with mock.patch.object(d, "look", return_value=Seen(d.UNKNOWN, frame=frame())):
+                clock[0] = 20 + core.UNKNOWN_RETRY
+                mon.check(ctx)
+                clock[0] = 31 + core.UNKNOWN_RETRY
+                mon.check(ctx)  # 멈추지 않고 한 번 더 메인으로
+        self.assertEqual(b.to_main.call_count, 2)
+
     def test_run_limit_does_not_stop(self):
         """CLI 연속 실행 제한이 걸려 있어도 점검자는 평소대로 화면을 본다 (멈추지 않는다 — 2026-11-10 사용자)."""
         b = fake_bot()
@@ -244,6 +265,12 @@ class DialogTest(unittest.TestCase):
         ctx = monitor.Ctx("arbeit", "x", menus=True)
         dids = [self.menu_by_text(["Space", "상점", "대화 종료"], ctx=ctx)[1] for _ in range(4)]
         self.assertEqual(dids, ["메뉴 버튼 기다림"] * 3 + ["대화 종료"])
+
+    def test_arbeit_menu_wait_counts_only_in_a_row(self):
+        """지난번 메뉴에서 기다린 횟수가 남아 다음 메뉴를 일찍 닫지 않는다 (판정 점검 11-16)."""
+        ctx = monitor.Ctx("arbeit", "x", menus=True)
+        ctx.n.update(menu_wait=2, menu_wait_at=-100)
+        self.assertEqual(self.menu_by_text(["Space", "상점", "대화 종료"], ctx=ctx)[1], "메뉴 버튼 기다림")
 
     def test_blocker_does_not_touch_menus(self):
         """기다리는 중의 정리는 NPC 메뉴(수락·결과 보고)를 누르지 않는다."""
