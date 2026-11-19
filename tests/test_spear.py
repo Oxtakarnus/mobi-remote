@@ -375,17 +375,33 @@ class KeysTest(unittest.TestCase):
         self.assertIn(" → ", bot.log.info.call_args.args[0])  # 누른 것마다 어떻게·몇 초
 
     def test_scene_spot_when_hud_gone(self):
-        """버튼 그림이 안 맞아도 HUD 가 두 번 연달아 사라졌으면 버튼 자리를 누른다 — HUD 가 보이는 동안은 안 누른다 (미니맵)."""
+        """버튼 그림이 안 맞아도 HUD 가 사라진 지 SCENE_SPOT_AFTER 초가 지났으면 버튼 자리를 누른다.
+        HUD 가 보이는 동안(미니맵)이나 막 사라진 때(연출이 어둡게 시작해 버튼이 아직 없음 — 11-19 15:23)는 안 누른다."""
         from unittest import mock
         from mabi.tasks import spear
         m, bot = self.scene_bot()
         bot.skip_button.return_value = None
-        bot.at_main.side_effect = [True, True, False, False]
         bot.wait_packet.return_value = True
-        with mock.patch("mabi.tasks.spear.time.sleep"):
+        t = [0.0]
+        hud = iter([True, True] + [False] * 40)
+        seen = {}
+
+        def clock():
+            t[0] += 0.25
+            return t[0]
+
+        def at_main(frame):
+            v = next(hud)
+            if not v:
+                seen.setdefault("gone", t[0])
+            return v
+
+        bot.at_main.side_effect = at_main
+        bot.click.side_effect = lambda xy: seen.setdefault("click", t[0])
+        with mock.patch("mabi.tasks.spear.time.sleep"), mock.patch("mabi.tasks.spear.time.monotonic", side_effect=clock):
             SpearDodge(bot).skip_scene()
         bot.click.assert_called_once_with(spear.SCENE_SKIP_XY)
-        self.assertEqual(bot.at_main.call_count, 4)
+        self.assertGreaterEqual(seen["click"] - seen["gone"], spear.SCENE_SPOT_AFTER)
 
     def test_scene_without_button_tries_next_scene(self):
         """넘기기 버튼이 없는 연출이 먼저 오면 그 연출만 넘어가고 다음 연출에서 또 찾는다."""
