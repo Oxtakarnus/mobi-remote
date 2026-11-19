@@ -373,6 +373,19 @@ class KeysTest(unittest.TestCase):
         self.assertEqual(bot.click.call_count, 2)
         self.assertIn("2번 누름", bot.log.info.call_args.args[0])
 
+    def test_scene_spot_when_hud_gone(self):
+        """버튼 그림이 안 맞아도 HUD 가 두 번 연달아 사라졌으면 버튼 자리를 누른다 — HUD 가 보이는 동안은 안 누른다 (미니맵)."""
+        from unittest import mock
+        from mabi.tasks import spear
+        m, bot = self.scene_bot()
+        bot.skip_button.return_value = None
+        bot.at_main.side_effect = [True, True, False, False]
+        bot.wait_packet.return_value = True
+        with mock.patch("mabi.tasks.spear.time.sleep"):
+            SpearDodge(bot).skip_scene()
+        bot.click.assert_called_once_with(spear.SCENE_SKIP_XY)
+        self.assertEqual(bot.at_main.call_count, 4)
+
     def test_scene_without_button_tries_next_scene(self):
         """넘기기 버튼이 없는 연출이 먼저 오면 그 연출만 넘어가고 다음 연출에서 또 찾는다."""
         from unittest import mock
@@ -380,7 +393,8 @@ class KeysTest(unittest.TestCase):
         bot.skip_button.return_value = None
         sd = SpearDodge(bot)
         clock = iter(range(0, 1000, 3))
-        with mock.patch("mabi.tasks.spear.time.sleep"),                 mock.patch("mabi.tasks.spear.time.monotonic", side_effect=lambda: next(clock)):
+        with mock.patch("mabi.tasks.spear.time.sleep"), \
+                mock.patch("mabi.tasks.spear.time.monotonic", side_effect=lambda: next(clock)):
             sd.skip_scene()
         bot.click.assert_not_called()
         self.assertFalse(sd.scene_due())  # 같은 연출은 다시 안 본다

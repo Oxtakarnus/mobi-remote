@@ -39,6 +39,8 @@ FIGHT_PRESS = 3   # 투창병 쪽으로 돌아온 뒤 스킬 1 을 이만큼 눌
 SCENE_FIND = 10.0  # 보스 등장 연출의 넘기기 버튼을 찾는 상한 — 버튼이 늦게 뜰 때가 있다 (11-19 14:00 5초로는 못 찾음)
 SCENE_TAKES = 2.0  # 누른 뒤 연출이 끝나길(패킷) 기다리는 초 — 안 끝나고 버튼이 남아 있으면 다시 누른다
 SCENE_CLICKS = 3
+# '장면 넘기기' 자리 (기준 1920x1080, 11-19 13:30 버튼을 찾아 누른 자리). 평소 화면에선 미니맵 위라 HUD 가 사라진 뒤에만 누른다
+SCENE_SKIP_XY = (1805, 44)
 
 
 def _per_map(name: str):
@@ -162,27 +164,35 @@ class SpearDodge:
                     and self.scene_seen != s.changed_at.get("cutscene"))
 
     def skip_scene(self) -> None:
-        """'장면 넘기기' 를 누르고 연출이 끝나는지(패킷 cutscene.end·abort) 본다. 버튼은 연출 시작보다 늦게 뜰 수 있고,
-        눌러도 연출이 이어질 때가 있어 (사용자 11-19 '될 때도 있고 아닐 때도') 버튼이 남아 있으면 다시 누른다 — 버튼이
-        보일 때만 누르므로 연출이 끝난 뒤 그 자리(오른쪽 위 메뉴)를 누르지 않는다.
+        """'장면 넘기기' 를 누르고 연출이 끝나는지(패킷 cutscene.end·abort) 본다. 연출 패킷이 와도 화면에 연출이 뜨기까지
+        2초 넘게 걸리고 (11-19 13:30 블랙박스 — 1초 뒤엔 아직 평소 화면), 반투명 버튼 그림은 안 맞을 때가 있다 (14:00·14:11).
+        그래서 버튼이 보이면 그 버튼을, 안 보여도 HUD 가 두 번 연달아 사라졌으면 연출 화면이 뜬 것으로 보고 버튼 자리를
+        누른다 (사용자 11-19 — 버튼을 찾기보다 그 자리를). 그 자리는 평소 화면에선 미니맵이라 HUD 가 보이는 동안은 누르지 않는다.
+        누른 뒤 안 끝나면 다시 (SCENE_CLICKS 번까지).
         버튼을 못 찾은 연출은 그 연출만 넘어가고, 같은 맵에서 다음 연출이 오면 또 찾는다 — 보스 연출 앞에 넘기기 없는
         연출이 끼면 그것만 보고 끝내 정작 보스 연출을 못 넘길 수 있다."""
         bot = self.bot
         self.scene_seen = bot.packets.state.changed_at.get("cutscene", 0.0)
         start = time.monotonic()
-        clicks = 0
+        clicks = gone = 0
         while bot.packets.state.cutscene and time.monotonic() < start + SCENE_FIND and clicks < SCENE_CLICKS:
-            hit = bot.skip_button()
-            if not (hit and hit[0] == "scene"):
-                time.sleep(0.5)
+            frame = bot.frame()
+            hit = bot.skip_button(frame)
+            gone = 0 if bot.at_main(frame) else gone + 1
+            if hit and hit[0] == "scene":
+                where, how = hit[1], "버튼"
+            elif gone >= 2:
+                where, how = SCENE_SKIP_XY, "버튼 자리"
+            else:
+                time.sleep(0.3)
                 continue
             clicks += 1
             found = time.monotonic() - start
             self.scene_tried = bot.packets.state.entered_at
-            bot.click(hit[1])
+            bot.click(where)
             if bot.wait_packet(lambda st: not st.cutscene, SCENE_TAKES):
                 again = f" · {clicks}번 누름" if clicks > 1 else ""
-                bot.log.info(f"물결: 보스 등장 연출 넘김 (버튼 {found:.1f}초 · 끝남 {time.monotonic() - start:.1f}초{again})")
+                bot.log.info(f"물결: 보스 등장 연출 넘김 ({how} {found:.1f}초 · 끝남 {time.monotonic() - start:.1f}초{again})")
                 return
         if not bot.packets.state.cutscene:
             if clicks:
