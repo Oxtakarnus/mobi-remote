@@ -120,6 +120,41 @@ class ServerDownTest(unittest.TestCase):
         down.assert_called_once()
 
 
+class KickedBotTest(unittest.TestCase):
+    """패킷 알림이면 화면 창을 기다리지 않고 check_stop 에서 바로 끄고 멈춘다 (Bot.check_server — 사용자 2026-11-19)."""
+
+    def bot(self, code):
+        b = botmod.Bot.__new__(botmod.Bot)
+        b.session = mock.Mock()
+        b.session.input.dry_run = False
+        b.session.packets.kicked.return_value = code
+        b.stopper = mock.Mock()
+        b.stopper.stopped.is_set.return_value = False
+        b._downing, b.deadline = False, None
+        b.check_weight = b.check_interrupt = lambda *a: None
+        return b
+
+    def test_kick_closes_and_stops(self):
+        b = self.bot(83)
+        seen = []
+
+        def down(bot, why):
+            seen.append((why, bot._downing))
+            bot.check_stop()  # 끄는 동안 잠깐 기다려도 다시 들어오지 않는다
+            return "메모"
+        with mock.patch.object(restart, "server_down", side_effect=down), self.assertRaises(StopRequested):
+            b.check_stop()
+        self.assertEqual(seen, [("패킷: 서버가 세션을 끊음 (사유 83 · 점검)", True)])
+        b.session.packets.kick_handled.assert_called_once()
+        self.assertFalse(b._downing)
+
+    def test_no_kick(self):
+        b = self.bot(None)
+        with mock.patch.object(restart, "server_down") as down:
+            b.check_stop()
+        down.assert_not_called()
+
+
 class QueueTest(unittest.TestCase):
     def test_card_pauses_with_note(self):
         tmp = tempfile.TemporaryDirectory()

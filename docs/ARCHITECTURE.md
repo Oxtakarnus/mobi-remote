@@ -41,7 +41,7 @@ mabi/
     ├ state.py                PacketState · Seen · history 사본
     ├ events.py               이벤트 → 상태 반영 (Events.apply — 맵 진입·던전·사냥터·드릴·어비스·레이드·대화·변신 …)
     ├ cli_sync.py             CLI 답과 맞추기 (merge_cli · reconcile · forget · map_contradicts)
-    ├ link_watch.py           서버 연결 끊김 단서 로그 (판단에는 아직 안 씀)
+    ├ link_watch.py           서버 연결 끊김 단서 — 무수신·연결 닫힘은 로그로만, 세션 강제 종료 알림은 kicked 로 판단에
     ├ days.py                 하루 기록 (게임 날짜별 logs\packets — 오늘 이 신호가 있었나, 필요한 이벤트만)
     └ monitor.py              PacketMonitor 본체 (캡처 스레드, wait·find·saw·mark·today …, 종류별 기억 by_key) · shared · current
   tasks/                      숙제·콘텐츠 하나씩 — 일일(weekday·silver·tribute·black_hole·daily_mission·arbeit), 주간·기타

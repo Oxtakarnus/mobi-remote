@@ -54,10 +54,12 @@ class PacketMonitor(LinkWatch, CliSync, Events):
         self.history: deque[tuple[int, PacketState]] = deque(maxlen=3000)
         self.dropped = 0             # 캡처를 켠 뒤 받는 칸이 넘쳐 못 받은 조각 수
         self.last_rx = 0.0           # 마지막으로 서버 패킷을 받은 때 (monotonic)
-        # 서버 연결 끊김 단서 (점검 등) — 판단에 쓰기 전에 실제로 무엇이 오는지 로그로 먼저 본다 (2026-11-12 사용자)
+        # 서버 연결 끊김 단서 (점검 등) — 연결·무수신은 로그로만, 세션 강제 종료 알림은 판단에 쓴다 (link_watch.kicked)
         self._closed: tuple[float, str, str] | None = None  # 서버가 마지막으로 연결을 닫은 때 (시각, FIN·RST, 서버 주소)
         self._opened = 0.0           # 서버와 새 연결이 마지막으로 열린 때 (시각)
         self._silent = False         # 무수신 로그를 남겼다 (다시 받으면 한 줄 더 남기고 푼다)
+        self._kick: tuple[float, int] | None = None  # 마지막 세션 강제 종료 알림 (시각, 사유) — kicked
+        self._kick_done = 0.0        # 게임을 끄며 처리한 알림의 시각
         self._seq = 0
         self.started_at = 0.0        # 캡처를 시작한 때 (monotonic, 0 = 아직) — dye_open 이 본다
         self._cond = threading.Condition()  # 잠금은 RLock — 잠금 안에서 부르는 _apply 등이 다시 잡아도 된다

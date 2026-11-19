@@ -166,15 +166,16 @@ def _quit(bot: Bot, timeout: float) -> None:
 DOWN_NOTE = "게임 서버 연결이 끊겨(점검 등) 게임을 껐습니다 — 점검이 끝나면 게임을 켜고 ▶"
 
 
-def server_down(bot: Bot) -> str:
+def server_down(bot: Bot, why: str | None = None) -> str:
     """게임 서버와 연결이 끊긴 창이 떠 있다 (bot.server_down_shown — 목요일 점검·임시 점검). 그 창은 게임을 끌 때까지
     남고, 리모콘은 그 앞에서 하던 일만 붙잡고 있었다 (2026-11-12 06:00~06:13 어비스 보스방). 그래서 게임을 끄고 작업 큐를
     일시정지한다 (2026-11-12 사용자). 점검은 몇 시간이라 다시 켜지는 않는다 — 점검 뒤 사람이 게임을 켜고 ▶ 면 하던 카드를
     그 자리부터 이어 한다. 끄는 길은 다시 켜기와 같은 창 닫기 신호(_quit). 창의 '확인' 이 무엇을 하는지는 아직 몰라 먼저
     누르지 않고, 닫기 신호로 창이 안 닫힐 때만 '확인'(Space) 뒤 한 번 더 보낸다. 큐에 남길 메모를 돌려준다 —
-    봇은 멈춤 요청 상태가 된다 (뒤이어 무엇을 하려 해도 StopRequested)."""
+    봇은 멈춤 요청 상태가 된다 (뒤이어 무엇을 하려 해도 StopRequested).
+    why: 무엇으로 알았나 — 없으면 화면 창, 패킷 알림이면 Bot.check_server 가 준다."""
     timeout = float(bot.cfg["restart"]["exit_timeout"])
-    bot.log.error(f"게임 서버와 연결이 끊김 (점검 등) → 게임을 끄고 작업 큐 일시정지 ({bot.snapshot('server_down').name})")
+    bot.log.error(f"{why or '게임 서버와 연결이 끊김 (점검 등)'} → 게임을 끄고 작업 큐 일시정지 ({bot.snapshot('server_down').name})")
     note = DOWN_NOTE
     try:
         try:

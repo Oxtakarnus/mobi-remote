@@ -80,6 +80,11 @@ def run_limit_shown(frame) -> bool:
     return any(ocr.nospace(w) in texts for w in gd.words("run_limit"))
 
 
+def kick_why(code: int) -> str:
+    """세션 강제 종료 알림의 로그 글 (사유 83 = 점검)."""
+    return f"패킷: 서버가 세션을 끊음 (사유 {code}{' · 점검' if code == 83 else ''})"
+
+
 def server_down_shown(frame) -> bool:
     """게임 서버와 연결이 끊긴 창('게임 서버와 연결이 끊어졌습니다. 잠시 후 다시 접속해주세요. (ERROR 83)' + 넓은 초록
     '확인')이 이 화면에 떠 있나. 목요일 정기 점검·임시 점검으로 서버가 내려가면 뜨고 게임을 끌 때까지 남는다
@@ -143,6 +148,7 @@ class Bot:
         self.interrupts = not dry_run
         self._npc_owned = 0
         self._interrupting = False
+        self._downing = False  # 서버 연결이 끊겨 게임을 끄는 중 (shut_down_for_server) — check_stop 이 아무것도 안 본다
         self._interrupt_off: dict[str, float] = {}
         self._watch = None          # monitor.interrupts.Watch (처음 볼 때 만든다)
         self.interrupt_spent = 0.0  # 끼어들기에 쓴 시간 합 — 기다리는 쪽이 시간 상한을 그만큼 늘린다
@@ -254,12 +260,42 @@ class Bot:
     def check_stop(self) -> None:
         if self.stopper.stopped.is_set():
             raise StopRequested()
+        if self._downing:
+            return
+        self.check_server()
         if self.deadline and time.monotonic() > self.deadline:
             # 숙제 하나의 시간 상한 (runner 가 정함). 안쪽 대기마다 상한이 있어도 그것들이 되풀이되면 끝없이 늘어진다
             self.deadline = None
             raise StepTimeout(f"숙제가 시간 상한 안에 끝나지 않음 → {self.snapshot('task_timeout').name}")
         self.check_weight()
         self.check_interrupt()
+
+    def check_server(self) -> None:
+        """패킷이 서버가 세션을 끊었다고 알리면(점검 등 — server_kicked) 화면에 끊김 창이 뜨길 기다리지 않고 바로 게임을 끄고
+        작업 큐를 일시정지한다 (사용자 2026-11-19 — 어차피 게임은 못 쓴다). 화면 창은 점검자·실패 처리가 그대로 본다."""
+        code = self.server_kicked()
+        if code is None:
+            return
+        self.shut_down_for_server(kick_why(code))
+        raise StopRequested()
+
+    def server_kicked(self) -> int | None:
+        """패킷: 서버가 이 세션을 끊었나 — 사유 번호(83 = 점검) 또는 None (packet_monitor.kicked)."""
+        if self.input.dry_run:
+            return None
+        code = self.packets.kicked()
+        return code if isinstance(code, int) else None
+
+    def shut_down_for_server(self, why: str | None = None) -> str:
+        """서버 연결이 끊겨 게임을 끄고 작업 큐를 일시정지한다 (restart.server_down). 끄는 동안 check_stop 이 다시 들어오지
+        않게 막고, 패킷 알림은 처리한 것으로 둔다. 큐에 남긴 메모를 돌려준다."""
+        from . import restart
+        self.packets.kick_handled()
+        self._downing = True
+        try:
+            return restart.server_down(self, why)
+        finally:
+            self._downing = False
 
     def check_interrupt(self) -> None:
         """패킷이 무작위 이벤트(NPC 가 말을 걺·출석)를 알리면 화면을 한 번 보고, 떠 있으면 하던 일을 멈추고 점검자가 넘긴 뒤

@@ -111,6 +111,7 @@ class DeadlineTest(unittest.TestCase):
         from mabi.exceptions import StepTimeout
         b = mock.MagicMock()
         b.stopper.stopped.is_set.return_value = False
+        b._downing = False
         b.deadline = time.monotonic() + 60
         Bot.check_stop(b)  # 아직 안 넘음
         b.deadline = time.monotonic() - 1

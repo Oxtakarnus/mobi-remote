@@ -121,6 +121,9 @@ def escalate(bot: Bot, status: str, summary: str, err: BaseException | None = No
     if not bot.window.find():
         log.error("게임이 꺼짐 → 일시정지 (게임을 켠 뒤 다시 시작하면 이어 함)")
         return "STOP", "게임이 꺼짐 — 게임을 켠 뒤 다시 시작하면 이어 합니다"
+    if (code := bot.server_kicked()) is not None:  # 창이 뜨기 전에 실패한 일 — 패킷 알림이 먼저 왔다
+        from .bot import kick_why
+        return "STOP", bot.shut_down_for_server(kick_why(code))
     if bot.server_down_popup():
         return "STOP", restart.server_down(bot)
     if bot.run_limit_popup():

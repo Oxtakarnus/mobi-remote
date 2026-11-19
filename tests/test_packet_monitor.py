@@ -579,5 +579,49 @@ class LinkLogTest(unittest.TestCase):
         self.assertEqual(m.recent[-1].key, "system.session_kicked")  # 블랙박스에도 남는다
 
 
+class KickTest(unittest.TestCase):
+    """세션 강제 종료 알림 → 서버가 연결을 닫거나 조용해지면 끊긴 것 (link_watch.kicked, 2026-11-19 06:00 점검 그대로)."""
+
+    def setUp(self):
+        self.m = PacketMonitor(None)
+        self.m._link("10.0.0.1", 0x12)
+        self.m.last_rx = time.monotonic()
+
+    def kick(self, code=83):
+        with self.assertLogs("mabi", "WARNING"):
+            self.m._server_notice("system.session_kicked", 0, code.to_bytes(4, "little") + bytes(5))
+
+    def test_kick_then_server_closes(self):
+        m = self.m
+        self.assertIsNone(m.kicked())
+        self.kick()
+        self.assertIsNone(m.kicked())  # 연결이 살아 있고 아직 조용하지 않다
+        m._link("10.0.0.1", 0x11)  # 같은 초에 서버가 닫음
+        self.assertEqual(m.kicked(), 83)
+        m.kick_handled()  # 게임을 껐다 — 다시 시작해도 또 끄지 않는다
+        self.assertIsNone(m.kicked())
+
+    def test_kick_then_silence(self):
+        m = self.m
+        self.kick(17)
+        m.last_rx = time.monotonic() - 6
+        self.assertEqual(m.kicked(), 17)
+
+    def test_reconnected(self):  # 그 뒤 새 연결(다시 접속)이면 지난 알림은 안 본다
+        m = self.m
+        self.kick()
+        m._link("10.0.0.1", 0x11)
+        time.sleep(0.01)
+        m._link("10.0.0.2", 0x12)
+        self.assertIsNone(m.kicked())
+
+    def test_other_notices(self):
+        m = self.m
+        with self.assertLogs("mabi", "WARNING"):
+            m._server_notice("system.suspend_notify", 0, (100).to_bytes(4, "little"))
+        m._link("10.0.0.1", 0x11)
+        self.assertIsNone(m.kicked())
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -7,8 +7,9 @@ from mabi.exceptions import CannotProceed, Overweight, StepTimeout, StopRequeste
 
 
 class OutcomeTest(unittest.TestCase):
-    def bot(self, window=True, limited=False, popup=False, down=False):
+    def bot(self, window=True, limited=False, popup=False, down=False, kicked=None):
         b = mock.MagicMock()
+        b.server_kicked.return_value = kicked
         b.window.find.return_value = window
         b.cli.run_limited = limited
         b.run_limit_popup.return_value = popup
@@ -81,6 +82,11 @@ class OutcomeTest(unittest.TestCase):
         with mock.patch.object(outcome.restart, "server_down", return_value="메모") as down:
             self.assertEqual(outcome.escalate(self.bot(down=True), "FAIL", "x"), ("STOP", "메모"))
         down.assert_called_once()
+        # 창이 뜨기 전에 실패했어도 패킷 알림(세션 강제 종료)이 왔으면 같다 — 사유가 로그 글에 남는다
+        b = self.bot(kicked=83)
+        b.shut_down_for_server.return_value = "메모"
+        self.assertEqual(outcome.escalate(b, "ERROR", "x"), ("STOP", "메모"))
+        self.assertIn("사유 83 · 점검", b.shut_down_for_server.call_args.args[0])
 
     def test_overweight(self):
         b = mock.MagicMock()
