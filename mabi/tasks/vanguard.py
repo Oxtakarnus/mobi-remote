@@ -145,7 +145,7 @@ def run(bot: Bot, cfg: dict) -> str:
     else:
         bot.log.info("이미 뱅가드 브리치 안 → 클리어까지")
     # 들어간 뒤로는 게임을 뒤로 보내고 하던 창을 돌려준다 (사용자 — 드릴·어비스와 같다). 키는 창에 직접 가고,
-    # 클릭(화면 터치 등)만 누를 때 잠깐 앞으로 가져왔다가 되돌린다
+    # 클릭만 누를 때 잠깐 앞으로 가져왔다가 되돌린다
     with bot.behind_while(_cfg(bot)["background"]):
         play(bot)
         quest_clear(bot)

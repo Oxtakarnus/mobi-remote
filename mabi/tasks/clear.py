@@ -115,12 +115,13 @@ def _clear_show(bot: Bot, mon, d, end: float) -> None:
                 # 뜨고 2~3번이면 넘어갔다 (10-25 로그). 사냥터의 반투명 글자는 잘 안 읽혀 10초 간격 누르기는 남긴다.
                 # 던전은 터치 → 보상 상자 연출 → 보상 메뉴 순이라, 연출을 본 뒤로는 글자가 보일 때만 누른다 —
                 # 연출이 끝나고 메뉴가 뜨기까지 10초 남짓 빈 곳을 누르는 게 눈에 띄었다 (사용자 11-04)
+                # 글자를 본 때만 Space, 보지 않고 누를 땐 빈 곳 (tap_blank — 메인 화면이면 Space 는 자동 전투)
                 gap = None if kind == "dungeon" and scened else 2.5 if blind < 3 else 10.0
-                if ((gap is not None and time.monotonic() - touched > gap)
-                        or (blind >= 3 or scened) and touch_prompt_visible(bot)):
+                due = gap is not None and time.monotonic() - touched > gap
+                if due or (blind >= 3 or scened) and touch_prompt_visible(bot):
                     touched = time.monotonic()
                     blind += 1
-                    handlers_touch(bot, ctx, seen)
+                    (tap_blank if due else handlers_touch)(bot, ctx, seen)
             elif touch_prompt_visible(bot):
                 quiet = 0
                 handlers_touch(bot, ctx, seen)
@@ -134,6 +135,16 @@ def _clear_show(bot: Bot, mon, d, end: float) -> None:
 def handlers_touch(bot: Bot, ctx, seen) -> None:
     from ..monitor import handlers
     handlers.touch(bot, ctx, seen)
+
+
+def tap_blank(bot: Bot, ctx=None, seen=None) -> None:
+    """보지 않고 화면 터치 — 반투명 '화면을 터치해 주세요' 가 그림·글자로 잘 안 잡혀 가끔 누른다. 아직 메인 화면일 수
+    있어 앞에서는 빈 곳을 누른다 (Space 는 메인 화면에서 자동 전투를 켜고 끈다). 뒤에서는 클릭하면 게임이 앞으로
+    튀어나와 Space."""
+    if bot.behind():
+        bot.key("space")
+    else:
+        bot.click(tuple(bot.cfg["dungeon"]["touch_xy"]))
 
 
 def after_clear(bot: Bot, extra_loot: int = 0, again: str | None = None, timeout: float = 180) -> bool:

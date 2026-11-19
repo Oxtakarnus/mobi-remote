@@ -221,10 +221,9 @@ def confirm(bot, ctx, seen):
 
 
 def touch(bot, ctx, seen):
-    if bot.behind():
-        bot.key("space")  # 뒤에서는 키로 (클릭은 게임을 앞으로 가져와야 한다)
-    else:
-        bot.click(tuple(bot.cfg["dungeon"]["touch_xy"]))
+    """'화면을 터치해 주세요' 가 보일 때 — Space 로 넘긴다 (던전·사냥터·어비스 모두, 사용자 11-19. 뒤에서도 키라 게임을
+    앞으로 가져오지 않는다). 안 보이는데 눌러야 할 땐 clear.tap_blank — 메인 화면의 Space 는 자동 전투다."""
+    bot.key("space")
     return "화면 터치"
 
 
