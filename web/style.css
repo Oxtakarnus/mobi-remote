@@ -1041,7 +1041,7 @@ input[type="number"].num-in { min-width: 0; width: 72px; }
 .wk-grid { display: grid; grid-template-columns: minmax(112px, max-content) minmax(110px, 150px) minmax(100px, 124px) minmax(90px, 100px);
   gap: 8px 8px; align-items: center; justify-content: start; margin-bottom: 10px; }
 .wk-grid select { width: 100%; }
-.dl-log.ab-log { min-height: 360px; max-height: 60vh; }
+.dl-log.ab-log { min-height: 120px; max-height: 240px; }  /* 탭이 너무 길어지지 않게 — 넘치면 칸 안에서 스크롤 */
 
 /* 염색 옵션 — 묶음마다 작은 제목, 설명은 title 풍선으로 */
 .opt-group { display: flex; flex-direction: column; gap: 6px; }
