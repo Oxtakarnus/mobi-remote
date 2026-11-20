@@ -6,6 +6,8 @@
 - 누적 보상은 받을 수 있을 때 'N회' 글자가 크고 노랗게 바뀐다. 받으면 체크 표시가 된다.
 - 재료 아이템 3회 채집: 미션 카드 '진행하기' → 미션 창이 닫히고 캐릭터가 근처에서 알아서 채집한다.
   CLI 로 완료를 확인한 뒤 미션 창을 다시 연다. 사냥터에서 가끔 채워지지만 안 될 때가 많다.
+- 멤버십 전용 미션([daily_mission] membership)은 멤버십이 아닌 계정이면 다 해도 '선물 받기' 가 없다 (11-20 친구 계정:
+  나머지 선물은 받고 그 둘만 남음). 목록을 한 번 훑어 그것만 남으면 그날 그 캐릭터는 받을 것이 없는 것으로 본다.
 - 연금술 3회 사용: 미션 카드 '진행하기' → 보석 연금술 → 재료 자동 넣기 → 모두 승급 한 번이면 완료.
   승급 직후 다음 단계 '모두 승급'(훨씬 비쌈)이 바로 나오므로 한 번만 누르고 ESC 로 빠져나온다.
   ESC 를 몇 번 누르면 일일 미션 창으로 돌아온다.
@@ -40,7 +42,7 @@ def verify(bot: Bot, cfg: dict) -> bool:
     """완료한 미션의 선물을 모두 받았고, 직접 하는 미션(연금술·채집)이 남지 않았으면 완료.
     다른 조건을 못 채운 미션(음식 등)은 따지지 않는다."""
     ms = missions(bot)
-    return bool(ms) and not unclaimed(bot) and not own_pending(bot, cfg["daily_mission"])
+    return bool(ms) and not claimable(bot) and not own_pending(bot, cfg["daily_mission"])
 
 
 def own_pending(bot: Bot, c: dict) -> list[str]:
@@ -51,6 +53,25 @@ def own_pending(bot: Bot, c: dict) -> list[str]:
 
 def unclaimed(bot: Bot) -> list[dict]:
     return [m for m in missions(bot) if m.get("IsCompleted") and not m.get("IsRewardReceived")]
+
+
+# (게임 날짜, 캐릭터 슬롯) → 눌러 볼 버튼이 없어 못 받은 멤버십 전용 미션 제목 (멤버십이 아닌 계정)
+_locked: dict[tuple, set] = {}
+
+
+def _day_key(bot: Bot) -> tuple:
+    return time.strftime("%Y%m%d", time.localtime(time.time() - 6 * 3600)), (getattr(bot, "character", None) or {}).get("slot")
+
+
+def locked(bot: Bot) -> set:
+    """오늘 이 캐릭터가 못 받는 것으로 본 멤버십 전용 미션 제목."""
+    return _locked.get(_day_key(bot), set())
+
+
+def claimable(bot: Bot) -> list[dict]:
+    """다 했는데 선물을 안 받은 미션 중 받을 수 있는 것 (멤버십 전용으로 막힌 것 빼고)."""
+    lock = locked(bot)
+    return [m for m in unclaimed(bot) if m["Title"] not in lock]
 
 
 def _is(m: dict, keyword: str) -> bool:
@@ -135,7 +156,7 @@ def _gift_taken(bot: Bot, mark: int, left: int) -> bool:
         if seen is not None:
             return seen.key == "dm.reward_ok"
     try:
-        wait_until(bot, lambda: len(unclaimed(bot)) < left, 4, interval=1, what="선물 받기")
+        wait_until(bot, lambda: len(claimable(bot)) < left, 4, interval=1, what="선물 받기")
         return True
     except StepTimeout:
         return False
@@ -156,9 +177,17 @@ def claim_gifts(bot: Bot, c: dict) -> int:
     """CLI 가 '다 했는데 선물 안 받음'이라고 하는 미션이 없어질 때까지, 목록을 위에서부터 훑으며
     보이는 '선물 받기'를 하나씩 누르고 받아졌는지 확인한다. 받은 개수 반환."""
     n = 0
+    members_only = set(c.get("membership") or ())
     for r in range(c["gift_rounds"]):
-        left = len(unclaimed(bot))
+        rest = claimable(bot)
+        left = len(rest)
         if not left:
+            break
+        if r and all(m["Title"] in members_only for m in rest):
+            # 한 번 훑었는데 멤버십 전용만 남음 — 멤버십이 아니면 버튼이 없다. 다시 훑지 않고 오늘은 건너뛴다
+            _locked.setdefault(_day_key(bot), set()).update(m["Title"] for m in rest)
+            bot.log.info("멤버십 전용 미션 선물만 남음 (" + ", ".join(m["Title"] for m in rest)
+                         + ") → 멤버십이 아닌 계정으로 보고 건너뜀")
             break
         if r:
             # 다시 훑을 때는 창을 새로 연다 — 새로 열면 선물을 받을 카드가 맨 위로 모인다 (2026-10-25 실측).
@@ -343,7 +372,8 @@ def run(bot: Bot, cfg: dict) -> str:
     ignore = set(c["ignore"])  # 다른 숙제를 하다 저절로 깨지는 미션은 미완료로 알리지 않는다
     pending = [f"{m['Title']}({m['Description']} {m['CurrentCount']}/{m['GoalCount']})"
                for m in missions(bot) if not m.get("IsCompleted") and m["Title"] not in ignore]
-    missed = [m["Title"] for m in unclaimed(bot)]
+    missed = [m["Title"] for m in claimable(bot)]
+    skipped = sorted(locked(bot) & {m["Title"] for m in unclaimed(bot)})
     shot = bot.snapshot("dm_missed").name if missed else ""  # 왜 못 찾았는지 볼 수 있게 미션 창을 남긴다
     bot.to_main()
     summary = f"선물 {gifts}개, 누적 보상 {milestones}개"
@@ -353,6 +383,8 @@ def run(bot: Bot, cfg: dict) -> str:
         summary += f", 미완료: {', '.join(pending)}"
     if missed:
         summary += f", 못 받은 선물: {', '.join(missed)} → {shot}"
+    if skipped:
+        summary += f", 멤버십 전용이라 못 받음: {', '.join(skipped)}"
     # 직접 하는 미션이 남았으면 실패로 남겨 다음에 다시 한다 — 연금술 2/3 인 채 OK 로 기록돼 다시 돌려도
     # '오늘 완료' 로 건너뛰었다 (2026-10-28)
     if own_pending(bot, c):
@@ -364,7 +396,7 @@ def claim_leftovers(bot: Bot, cfg: dict) -> str | None:
     """캐릭터의 숙제가 다 끝난 뒤: 일일 미션보다 뒤에 한 숙제(아르바이트 → '따뜻한 손길')나 나중에 먹은 음식으로
     새로 깬 미션의 선물만 받는다. 받을 게 없으면 창을 열지 않는다 (CLI 로만 본다)."""
     c = cfg["daily_mission"]
-    if not bot.state.available() or not unclaimed(bot):
+    if not bot.state.available() or not claimable(bot):
         return None
     open_window(bot, c)
     gifts = claim_gifts(bot, c)

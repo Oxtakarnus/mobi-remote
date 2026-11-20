@@ -87,6 +87,19 @@ class GiftTest(unittest.TestCase):
         self.assertEqual(daily_mission.claim_gifts(bot, CFG["daily_mission"]), 2)
         self.assertEqual(bot.opened, 1)
 
+    def test_membership_only_gifts_are_skipped_after_one_pass(self):
+        """멤버십이 아닌 계정: 멤버십 전용 미션은 다 해도 '선물 받기' 버튼이 없다 → 한 번 훑고 그날은 건너뜀."""
+        bot = FakeBot([3, 9, 10])
+        bot.character = {"slot": 7}
+        locked = {9, 10}
+        shown = bot.find_all
+        bot.find_all = lambda name: [b for b in shown(name) if b.i not in locked]
+        c = {**CFG["daily_mission"], "membership": ["9", "10"]}
+        self.assertEqual(daily_mission.claim_gifts(bot, c), 1)
+        self.assertEqual(bot.opened, 0)  # 다시 열어 훑지 않음
+        self.assertEqual(daily_mission.locked(bot), {"9", "10"})
+        self.assertEqual(daily_mission.claimable(bot), [])
+
     def test_nothing_to_claim_never_clicks(self):
         bot = FakeBot([])
         self.assertEqual(daily_mission.claim_gifts(bot, CFG["daily_mission"]), 0)
