@@ -67,6 +67,12 @@ class Kind:
         """정해진 시간에만 하는 카드인가 — 열리면(ready 가 "") 돌던 카드를 끊어도 되는 자리에서 끊고 먼저 한다 (cut_for_timed)."""
         return False
 
+    def cuttable(self, it: dict) -> bool:
+        """이 카드가 도는 동안 시간 정해진 카드(필드 보스·가공 완료 복귀·게임 다시 켜기)가 끼어들어도 되나.
+        다른 사람과 맞춰 도는 카드(고정 파티)는 끼어들면 같이 도는 사람이 마냥 기다리게 되어 False 로 둔다.
+        끼어들기만 막는다 — 서버 끊김·게임 꺼짐·사람의 멈춤은 그대로 멈춘다."""
+        return True
+
     def stop(self, reason: str) -> None:
         """큐가 선다 — 돌고 있는 일을 멈춰 달라."""
 
@@ -338,10 +344,10 @@ class WorkQueue:
 
     def _timed_due(self):
         """(lock 안에서) 돌던 카드를 밀어내고 먼저 할 시간 정해진 카드 (Kind.timed 이고 지금 열림). 없으면 None.
-        돌던 카드가 없거나, 큐가 서는 중이거나, 돌던 카드가 그런 카드면 없다."""
+        돌던 카드가 없거나, 큐가 서는 중이거나, 돌던 카드가 그런 카드거나 끼어들기를 안 받는 카드(Kind.cuttable)면 없다."""
         cur = self.current()
         timed = lambda x: getattr(self.kind_of(x), "timed", lambda _: False)(x)  # noqa: E731 — 없는 종류는 아님
-        if not cur or self.stop or timed(cur):
+        if not cur or self.stop or timed(cur) or not getattr(self.kind_of(cur), "cuttable", lambda _: True)(cur):
             return None
         return next((x for x in self.items if x.get("status") == "wait" and timed(x) and not self.kind_of(x).ready(x)),
                     None)

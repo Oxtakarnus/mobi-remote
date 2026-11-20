@@ -240,7 +240,17 @@ class AbyssKind(Kind):
             (f"{x['runs']}판" + (f" ({x['doneRuns']}판 함)" if x.get("doneRuns") else "")) if x.get("runs") else "",
             f"{x['minutes']}분" if x.get("minutes") else ""] if s)
         mode = {"solo": " 혼자하기", "party": " 함께하기"}.get(x.get("mode"), "")
-        return f"{x.get(cls.place())} {x.get('difficulty')}{mode} · {lim or '멈출 때까지'}" + (" · 쓰러지면 나감" if x.get("revive") is False else "")
+        role = cls.PARTY_ROLES.get(x.get("partyRole"))
+        return (f"{x.get(cls.place())} {x.get('difficulty')}{mode}" + (f" · 고정 파티 {role}" if role else "")
+                + f" · {lim or '멈출 때까지'}" + (" · 쓰러지면 나감" if x.get("revive") is False else ""))
+
+    # 고정 파티 역할 (카드 partyRole). 함께하기(mode 'party', 무작위 매칭)와는 다른 것이다.
+    # 파티장은 입장·반복, 파티원은 기다리다 입장 준비 창이 뜨면 준비 — 실행 흐름은 아직 없다 (패킷 확인 뒤 붙인다)
+    PARTY_ROLES = {"leader": "파티장", "member": "파티원"}
+
+    def cuttable(self, it) -> bool:
+        # 고정 파티는 한 사람이 필드 보스 등으로 빠지면 나머지가 마냥 기다린다 — 파티장·파티원 모두 끼어들기를 안 받는다
+        return not it.get("partyRole")
 
     def where(self, it) -> str:
         return f"{it['doneRuns']}판 한 뒤" if it.get("doneRuns") else ""

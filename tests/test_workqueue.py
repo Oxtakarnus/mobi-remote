@@ -126,6 +126,40 @@ class Closed(Kind):
         return True
 
 
+class Opened(Kind):
+    """지금 열린 시간 정해진 카드 (필드 보스가 열림)."""
+
+    def timed(self, it):
+        return True
+
+    def run(self, q, it):
+        return True
+
+
+class Party(Kind):
+    """끼어들기를 안 받는 카드 (고정 파티 흉내)."""
+
+    def cuttable(self, it):
+        return not it.get("partyRole")
+
+    def run(self, q, it):
+        return True
+
+
+class CuttableTest(unittest.TestCase):
+    def test_party_card_blocks_timed_cut(self):
+        d = tempfile.TemporaryDirectory()
+        self.addCleanup(d.cleanup)
+        q = WorkQueue(Path(d.name) / "q.json", Path(d.name) / "h.jsonl", lambda ch, v: None,
+                      {"party": Party(), "boss": Opened()})
+        cur = {"id": 1, "kind": "party", "label": "파티", "status": "run", "partyRole": "member"}
+        q.items = [cur, {"id": 2, "kind": "boss", "label": "보스", "status": "wait"}]
+        self.assertEqual(q.timed_due(), "")      # 파티 카드가 돌면 필드 보스가 끼어들지 않는다
+        self.assertEqual(q.cut_for_timed(), "")
+        cur.pop("partyRole")
+        self.assertIn("보스", q.timed_due())     # 보통 카드면 그대로 끼어든다
+
+
 def wait_for(cond, timeout=3):
     end = time.monotonic() + timeout
     while time.monotonic() < end:
