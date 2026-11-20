@@ -243,7 +243,19 @@ def _candidates() -> list[Path]:
 
 @cache
 def load() -> Table:
+    """데이터 폴더와 설치 폴더에 표가 둘 다 있으면 더 늦게 묶은 것. 예전엔 데이터 폴더 것을 먼저 써서, 거기 옛 표가
+    남아 있으면 새 판을 깔아도 옛 표로 게임과 어긋날 수 있었다 (11-20 다른 PC: 3.29.1 인데 11-12 표로 stale_table)."""
+    best = None
     for f in _candidates():
-        if f.exists():
-            return Table(unseal(f.read_bytes()))
+        if not f.exists():
+            continue
+        try:
+            data = unseal(f.read_bytes())
+        except (OSError, ValueError):
+            continue
+        at = str((data.get("meta") or {}).get("built_at") or "")
+        if best is None or at > best[0]:
+            best = (at, data)
+    if best is not None:
+        return Table(best[1])
     raise FileNotFoundError(f"데이터 파일 없음: data\\{FILE_NAME}")
