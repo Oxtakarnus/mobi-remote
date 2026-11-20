@@ -2,7 +2,8 @@
 import logging
 import sys
 
-from PySide6.QtGui import QAction, QIcon
+from PySide6.QtCore import QPoint, QRect, QTimer
+from PySide6.QtGui import QAction, QGuiApplication, QIcon
 from PySide6.QtNetwork import QLocalServer, QLocalSocket
 from PySide6.QtWidgets import QApplication, QMenu, QSystemTrayIcon
 
@@ -73,6 +74,62 @@ class MainWindow(WebWindow):
         self.tray.activated.connect(lambda r: r in (QSystemTrayIcon.Trigger, QSystemTrayIcon.DoubleClick)
                                     and self.show_window())
         self.tray.show()
+        # 창 자리 기억 — 옮기거나 크기를 바꾸면 잠깐 뒤 저장한다 (리모콘을 강제로 꺼도 남게 닫을 때만 저장하지 않는다)
+        self._placed = False
+        self._geo_timer = QTimer(self, singleShot=True, interval=800, timeout=self._save_place)
+
+    PLACE_KEY = "window"  # 설정 파일의 창 자리 {x, y, w, h, max}
+
+    def place(self) -> bool:
+        """지난번 창 자리로 옮긴다. 기억이 없거나 그 자리가 지금 화면들 밖이면(모니터를 뺐음 등) 주 화면 가운데.
+        예전엔 자리를 정하지 않아 Windows 가 켤 때마다 조금씩 아래·오른쪽으로 밀어(새 창 계단식 배치) 오른쪽 아래에 박혔다.
+        최대화였으면 True (부르는 쪽이 최대화로 띄운다)."""
+        g = self.api.settings.get(self.PLACE_KEY)
+        ok = False
+        if isinstance(g, dict):
+            try:
+                rect = QRect(int(g["x"]), int(g["y"]), int(g["w"]), int(g["h"]))
+                head = QPoint(rect.center().x(), rect.top() + 20)  # 제목 줄이 어느 화면 안에 있어야 끌어 옮길 수 있다
+                ok = QGuiApplication.screenAt(head) is not None
+            except (KeyError, TypeError, ValueError):
+                ok = False
+        if ok:
+            self.resize(max(rect.width(), self.minimumWidth()), max(rect.height(), self.minimumHeight()))
+            self.move(rect.topLeft())
+        else:
+            area = QGuiApplication.primaryScreen().availableGeometry()
+            frame = self.frameGeometry()
+            frame.moveCenter(area.center())
+            # 창이 화면보다 크면 가운데에 두면 제목 줄이 위로 넘어간다 — 왼쪽 위는 화면 안에
+            self.move(max(frame.left(), area.left()), max(frame.top(), area.top()))
+        self._placed = True
+        return bool(ok and g.get("max"))
+
+    def _remember(self) -> None:
+        if self._placed and self.isVisible() and not self.isMinimized():
+            self._geo_timer.start()
+
+    def _save_place(self) -> None:
+        if self.isMinimized():
+            return
+        g = dict(self.api.settings.get(self.PLACE_KEY) or {})
+        g["max"] = self.isMaximized()
+        if not g["max"]:  # 최대화 동안엔 창 모드 자리를 덮지 않는다 — 풀면 그 자리로
+            g.update(x=self.x(), y=self.y(), w=self.width(), h=self.height())
+        if g != self.api.settings.get(self.PLACE_KEY):
+            self.api._save_settings({self.PLACE_KEY: g})
+
+    def moveEvent(self, e):  # noqa: N802
+        super().moveEvent(e)
+        self._remember()
+
+    def resizeEvent(self, e):  # noqa: N802
+        super().resizeEvent(e)
+        self._remember()
+
+    def changeEvent(self, e):  # noqa: N802
+        super().changeEvent(e)
+        self._remember()
 
     def show_window(self) -> None:
         self.showNormal()
@@ -134,7 +191,10 @@ def main() -> int:
         conn.readyRead.connect(lambda: _on_message(win, conn))
 
     server.newConnection.connect(on_connect)
-    win.show()
+    if win.place():
+        win.showMaximized()
+    else:
+        win.show()
     log.info(f"{APP_NAME} 시작")
     # 게임 조작키 설정에서 바꾼 키를 리모콘 단축키가 따라간다 (mabi.keys — 옵션에서 따로 정한 키가 이긴다)
     from mabi import keys as game_keys
