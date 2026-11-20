@@ -46,8 +46,9 @@ def verify(bot: Bot, cfg: dict) -> bool:
 
 
 def own_pending(bot: Bot, c: dict) -> list[str]:
-    """직접 진행하는 미션(연금술·채집) 중 아직 안 끝난 것의 제목."""
+    """직접 진행하는 미션(연금술·채집) 중 아직 안 끝난 것의 제목. 오늘 이미 해 본 연금술은 빼고 본다."""
     return [m["Title"] for key in ("alchemy", "gather") if c[key]["enabled"]
+            and not (key == "alchemy" and key in tried(bot))
             and (m := _pending(bot, c[key]["mission_keyword"]))]
 
 
@@ -61,6 +62,15 @@ _locked: dict[tuple, set] = {}
 
 def _day_key(bot: Bot) -> tuple:
     return time.strftime("%Y%m%d", time.localtime(time.time() - 6 * 3600)), (getattr(bot, "character", None) or {}).get("slot")
+
+
+# (게임 날짜, 캐릭터 슬롯) → 오늘 해 봤는데 못 채운 직접 하는 미션 키. 연금술은 보석이 모자라면 몇 번을 다시 해도
+# 못 채우므로 한 번 해 봤으면 넘어간다 (사용자 11-20)
+_tried: dict[tuple, set] = {}
+
+
+def tried(bot: Bot) -> set:
+    return _tried.get(_day_key(bot), set())
 
 
 def locked(bot: Bot) -> set:
@@ -259,7 +269,10 @@ def do_alchemy(bot: Bot, c: dict, m: dict) -> str:
         return f"연금술 창이 열리지 않음 → {bot.snapshot('alchemy').name}"
     bot.sleep(1, 1.5)
     bot.click(a["gem_card"], timeout=5)
-    bot.wait(a["auto_off"], timeout=10)
+    if _look(bot, a["auto_off"], 10) is None:
+        result = f"'재료 자동 넣기'가 보이지 않음 → {bot.snapshot('alchemy').name}"
+        _back_to_window(bot, c)
+        return result
     # 토글 그림은 창이 열리는 연출 중에도 보여서 너무 일찍 누르면 무시된다 (2026-10-22, 클릭은 됐는데 꺼진 채)
     # → 넉넉히 기다리고, 누른 뒤 꺼진 그림이 그대로면 다시 누른다
     bot.sleep(1.5, 2)
@@ -363,6 +376,10 @@ def run(bot: Bot, cfg: dict) -> str:
     for key, m in todo:
         bot.step(f"dm_{key}", f"{labels[key]} 미션 ({m.get('CurrentCount')}/{m.get('GoalCount')})")
         notes.append((do_alchemy if key == "alchemy" else do_gather)(bot, c, m))
+        if key == "alchemy" and _pending(bot, c[key]["mission_keyword"]):
+            # 보석 합성까지 해 봤는데 안 채워짐(보석 모자람 등) — 실패로 남겨 다시 돌리지 않고 오늘은 넘어간다
+            _tried.setdefault(_day_key(bot), set()).add(key)
+            bot.log.info("연금술 미션이 다 안 채워짐 → 오늘은 넘어감")
 
     bot.step("dm_gifts", "선물 받기")
     gifts = claim_gifts(bot, c)
