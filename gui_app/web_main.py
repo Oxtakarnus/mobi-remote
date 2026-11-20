@@ -79,6 +79,7 @@ class MainWindow(WebWindow):
         self._geo_timer = QTimer(self, singleShot=True, interval=800, timeout=self._save_place)
 
     PLACE_KEY = "window"  # 설정 파일의 창 자리 {x, y, w, h, max}
+    _placed = False       # 부모 __init__ 중에도 changeEvent 가 불린다 — 그때는 아직 저장하지 않는다
 
     def place(self) -> bool:
         """지난번 창 자리로 옮긴다. 기억이 없거나 그 자리가 지금 화면들 밖이면(모니터를 뺐음 등) 주 화면 가운데.
@@ -106,7 +107,7 @@ class MainWindow(WebWindow):
         return bool(ok and g.get("max"))
 
     def _remember(self) -> None:
-        if self._placed and self.isVisible() and not self.isMinimized():
+        if self._placed and self.isVisible() and not self.isMinimized() and hasattr(self, "_geo_timer"):
             self._geo_timer.start()
 
     def _save_place(self) -> None:
