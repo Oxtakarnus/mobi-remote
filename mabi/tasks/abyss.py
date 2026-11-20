@@ -295,6 +295,12 @@ def open_entry(bot: Bot, dungeon: str, difficulty: str = "", _moved: int = 0, at
         if e and e.button:
             break
         bot.sleep(1.0, 1.4)
+    # 함께하기는 우연한 만남을 켜면 입구에서 멀어도 버튼이 '입장하기' 로 바뀐다 → 걸어가지 않고 그 자리에서 매칭 (사용자 11-21)
+    if not (solo or party) and e and e.button == "move" and e.chance and not e.chance[0]:
+        entry.chance_on(bot, e)
+        e = entry.read(bot) or e
+        if e.button == "move":
+            bot.log.info("우연한 만남을 켜도 '이동하기' 그대로 → 입구로 감")
     if e and e.button == "move":
         if _moved >= MOVE_TRIES:
             raise NotSeen(f"'{dungeon}' 입구로 {_moved}번 가도 버튼이 '이동하기' 그대로 → {bot.snapshot('abyss').name}")
