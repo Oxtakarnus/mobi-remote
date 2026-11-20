@@ -172,10 +172,14 @@ def _card_title(items, bx: int, by: int) -> str:
 
 
 def _same(a: str, b: str) -> bool:
-    """같은 제목인가. 카드 제목은 OCR 이라 한 글자쯤 틀린다 ('빚은' → '빛은', 2026-10-22) → 비슷하면 같다고 본다."""
+    """같은 제목인가. 카드 제목은 OCR 이라 한 글자쯤 틀린다 ('빚은' → '빛은', 2026-10-22) → 비슷하면 같다고 본다.
+    짧은 제목은 한 글자만 틀려도 닮은 정도가 0.85 아래로 떨어진다 ('영양 듬뿍 스튜' → '영양 듬뿐 스튜' 0.83, 2026-11-20 —
+    같은 일을 막힘·완료로 따로 적어 FAIL) → 길이가 같고 한 글자만 다르면 같다."""
     a, b = ocr.nospace(a), ocr.nospace(b)
     if not (a and b):
         return False
+    if len(a) == len(b) >= 4 and sum(x != y for x, y in zip(a, b)) <= 1:
+        return True
     return a in b or b in a or difflib.SequenceMatcher(None, a, b).ratio() >= 0.85
 
 

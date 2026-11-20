@@ -846,9 +846,41 @@ class QueueApi:
             time.sleep(2)
         return False
 
+    def _q_wait_screen_main(self, q: WorkQueue, label: str, limit: float = 180) -> bool:
+        """막혔는데 대화 창·어비스 연출이 아니면 사람이 연 창(캐시샵 등)일 수 있다 — CLI 는 그런 창을 알려 주지 않아
+        화면으로 본다. 메인 화면으로 돌아올 때까지 기다리고(화면만 본다, 알림 한 번), limit 이 지나도 그대로면
+        화면 정리(ESC)로 메인까지 간다. 큐가 서면 False. 화면을 못 보면 예전처럼 바로 한 번 더 (True).
+        (2026-11-20 특급 옷감: 캐시샵에 있는 동안 채집이 막혔고, 기다리지 않고 바로 한 번 더 했다가 또 막혀 카드가 실패로 접힘)"""
+        from mabi import situation
+        if q.stop:
+            return False
+        try:
+            with self._game_bot(None) as bot:  # 기다리는 동안 다른 일을 막지 않게 등록하지 않는다
+                if not bot.window.find():
+                    return True
+                end, told = time.monotonic() + limit, False
+                while time.monotonic() < end:
+                    if q.stop:
+                        return False
+                    if situation.look(bot) == situation.MAIN:
+                        return True
+                    if not told:
+                        told = True
+                        log.info(f"작업 큐: {label} — 게임 화면이 막혀 있음 → 메인 화면으로 돌아오길 기다림")
+                        self._q_toast("게임 화면이 막혀 기다립니다",
+                                      f"{label} — 열린 창을 닫으면 자동으로 이어갑니다.", "bad")
+                    time.sleep(3)
+                log.warning(f"작업 큐: {label} — {int(limit)}초 동안 메인 화면이 아님 → 화면 정리 뒤 한 번 더")
+                situation.to_main(bot, timeout=30)
+                return not q.stop
+        except Exception as e:  # noqa: BLE001 — 화면을 못 보면 예전처럼 한 번 더 해 본다
+            log.warning(f"작업 큐: 막힌 화면 확인 실패 ({e}) → 바로 한 번 더")
+            return not q.stop
+
     def _q_exec(self, q: WorkQueue, command: str, body: dict, origin: dict, wait_label: str) -> dict:
         """큐 카드의 게임 명령 하나. 게임 쪽 확인 창에 막혔으면(blocked) 닫히길 기다렸다가 한 번 더 —
-        한 번만 (가공은 막혀도 날개가 이미 나간다, 실측). wait_label: 기다릴 때 알림에 쓰는 이름."""
+        한 번만 (가공은 막혀도 날개가 이미 나간다, 실측). 확인 창이 아니면 사람이 연 창일 수 있어 메인 화면을 기다린다.
+        wait_label: 기다릴 때 알림에 쓰는 이름."""
         from mabi.connector import is_agent_limit
         r = self.exec(command, body, origin=origin)
         if r.get("ok") or r.get("error") != "blocked":
@@ -856,7 +888,7 @@ class QueueApi:
         if is_agent_limit(r.get("error"), r.get("data")):
             retry = self._q_clear_agent_limit(q)
         else:
-            retry = self._q_wait_dialog_closed(q, wait_label)
+            retry = self._q_wait_dialog_closed(q, wait_label) and self._q_wait_screen_main(q, wait_label)
         if retry:
             r = self.exec(command, body, origin={**origin, "label": origin["label"] + " (재시도)"})
         return r

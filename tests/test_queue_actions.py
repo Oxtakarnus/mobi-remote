@@ -20,6 +20,12 @@ class FakeApi(QueueApi):
         self.events = []
         self.facilities = list(facilities)
         self.dialogue_left = dialogue_until  # activity 를 이만큼 물을 때까지 확인 창이 떠 있다
+        self.screen_waits = []
+        self.screen_ok = True
+
+    def _q_wait_screen_main(self, q, label, limit=180):  # 화면 보기는 게임이 필요하다 — 부르는지만 본다
+        self.screen_waits.append(label)
+        return self.screen_ok
 
     def exec(self, command, body=None, origin=None):
         self.calls.append((command, (body or {}).get("displayName"), origin))
@@ -77,6 +83,20 @@ class ActionKindTest(unittest.TestCase):
         self.assertTrue(r["ok"])
         self.assertEqual(len(api.calls), 2)
         self.assertRaises(StopIteration, next, seen)  # 끝날 때까지 물었다
+
+    def test_blocked_without_dialog_waits_for_main_screen(self):
+        # 대화 창이 아닌데 막혔다(캐시샵 등, 2026-11-20 특급 옷감) — 메인 화면을 기다린 뒤에 한 번 더
+        api = FakeApi([{"ok": False, "error": "blocked"}, {"ok": True}])
+        r = api._q_exec(FakeQ(), "execute_gathering", {"displayName": "양털"}, {"label": "채집"}, "양털")
+        self.assertTrue(r["ok"])
+        self.assertEqual((api.screen_waits, len(api.calls)), (["양털"], 2))
+
+    def test_blocked_screen_not_back_gives_up(self):
+        api = FakeApi([{"ok": False, "error": "blocked"}, {"ok": True}])
+        api.screen_ok = False  # 큐가 섰다
+        r = api._q_exec(FakeQ(), "execute_gathering", {"displayName": "양털"}, {"label": "채집"}, "양털")
+        self.assertFalse(r["ok"])
+        self.assertEqual(len(api.calls), 1)
 
     def test_agent_limit_presses_confirm_then_retries(self):
         # 연속 사용 제한(2026-11-13 04:45) — 대화 창 기다리기가 아니라 확인 창을 누르고 한 번만 더

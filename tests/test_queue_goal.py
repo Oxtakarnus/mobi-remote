@@ -52,6 +52,9 @@ class FakeApi(QueueApi):
     def _q_wait_dialog_closed(self, q, label, limit=120):
         return True
 
+    def _q_wait_screen_main(self, q, label, limit=180):  # 화면 보기는 게임이 필요하다
+        return True
+
     def _q_toast(self, title, text="", kind="ok"):
         self.toasts.append(title)
 

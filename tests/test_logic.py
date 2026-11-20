@@ -188,6 +188,8 @@ class ArbeitTest(unittest.TestCase):
         self.assertTrue(arbeit._same("국경 수비대 물자 보급", "국경 수비대 물자보급"))
         self.assertTrue(arbeit._same("별과 돌이 빚은 광석", "별과 돌이 빛은 광석"))
         self.assertFalse(arbeit._same("일생일대의 위기", "국경 수비대 물자 보급"))
+        self.assertTrue(arbeit._same("영양 듬뿍 스튜", "영양 듬뿐 스튜"))  # 짧은 제목 한 글자 (2026-11-20)
+        self.assertFalse(arbeit._same("영양 듬뿍 스튜", "영양 가득 스프"))
 
     def test_button_word_tolerates_ocr(self):
         self.assertTrue(arbeit._is("지원 하기", arbeit.APPLY))
