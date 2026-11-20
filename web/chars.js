@@ -25,8 +25,8 @@ function tagsOf(c) {
   t.push(c.dungeon ? '<span>' + esc(c.dungeon) + ' ' + esc(floorText(c.floor)) + '</span>' : '<span class="off">던전 안 감</span>');
   t.push(c.black_hole ? '<span>검은 구멍</span>' : '<span class="off">검은 구멍 안 감</span>');
   if (c.arbeit) t.push('<span>아르바이트</span>');
-  if (c.ultimate) t.push('<span>궁극기</span>');
-  if (c.paladin) t.push('<span>팔라딘</span>');
+  if (c.ultimate) t.push('<span>궁극기' + (c.ultimate_boss_only ? '(보스)' : '') + '</span>');
+  if (c.paladin) t.push('<span>팔라딘' + (c.paladin_boss_only ? '(보스)' : '') + '</span>');
   t.push('<span>일요일 ' + esc(c.sunday || '') + '</span>');
   return t.join('');
 }
@@ -88,6 +88,8 @@ function openEdit(slot) {
   $('#ch-e-arb').checked = !!e.arbeit;
   $('#ch-e-ult').checked = !!e.ultimate;
   $('#ch-e-pal').checked = !!e.paladin;
+  $('#ch-e-ult-only').checked = !!e.ultimate_boss_only;
+  $('#ch-e-pal-only').checked = !!e.paladin_boss_only;
   $('#ch-e-del').classList.toggle('hidden', !!e.isNew);
   paintEditArt();
   syncEditFields();
@@ -146,6 +148,7 @@ function collectEdit() {
     black_hole: $('#ch-e-bh').checked,
     arbeit: $('#ch-e-arb').checked,
     ultimate: $('#ch-e-ult').checked, paladin: $('#ch-e-pal').checked,
+    ultimate_boss_only: $('#ch-e-ult-only').checked, paladin_boss_only: $('#ch-e-pal-only').checked,
     sunday: $('#ch-e-sun').value,
   };
 }
@@ -154,6 +157,7 @@ async function saveCharList(list) {
   const r = await mm.chars.save(list.map((c) => ({
     slot: c.slot, name: c.name, field: c.field, field_runs: c.field_runs, dungeon: c.dungeon, floor: c.floor,
     black_hole: c.black_hole, arbeit: !!c.arbeit, sunday: c.sunday, ultimate: !!c.ultimate, paladin: !!c.paladin,
+    ultimate_boss_only: !!c.ultimate_boss_only, paladin_boss_only: !!c.paladin_boss_only,
   })));
   if (r && r.error) { toast('저장하지 못했습니다', r.error, 'bad'); return false; }
   dl.pickedChars = null;  // 일일 숙제 탭의 고른 캐릭터를 새로

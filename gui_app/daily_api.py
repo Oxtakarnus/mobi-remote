@@ -340,10 +340,13 @@ class DailyApi:
                 same = kind + ("_slots" if on else "_off_slots")
                 if same in b:
                     b[same] = tomlkit.array()
-            if "boss_only" in v:  # '보스에서만' 을 켠 기술 목록 — 나머지는 끈다
+            if "boss_only" in v:  # '보스에서만' 을 켠 기술 목록 — 나머지는 끈다. 새 기본값과 같은 캐릭터별 설정은 지운다
                 only = set(v["boss_only"] or ())
                 for kind in boss_skills.KINDS:
                     b[f"{kind}_boss_only"] = kind in only
+                    same = f"{kind}_boss_only_slots" if kind in only else f"{kind}_boss_any_slots"
+                    if same in b:
+                        b[same] = tomlkit.array()
             userconfig.save(self.paths, doc)
         return {"ok": True}
 

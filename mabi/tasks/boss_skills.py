@@ -5,7 +5,7 @@
 (ultimate_slots · paladin_slots = 따로 켬, ultimate_off_slots · paladin_off_slots = 따로 끔 — on_for). 키는 [game] ultimate_key · paladin_key.
 쓰는 때: 콘텐츠 안(inside — 드릴·필드 보스는 그 맵, 반복은 판 진행이 부를 때만) · 전투 중(CLI IsInCombat, 모르면 패킷) ·
 게이지가 참(패킷 ultimate.resource) · 컷신·쓰러짐·로딩이 아님. 게임 키만 누르고 패킷은 보내지 않는다.
-'보스에서만'([boss_skills] ultimate_boss_only · paladin_boss_only)을 켠 기술은 보스전에서만 쓴다 (종류마다 Repeat.boss_fight —
+'보스에서만'([boss_skills] ultimate_boss_only · paladin_boss_only, 캐릭터별 *_boss_only_slots · *_boss_any_slots)을 켠 기술은 보스전에서만 쓴다 (종류마다 Repeat.boss_fight —
 레이드는 보스전 시작 패킷, 어비스는 모닥불 뒤 보스 등장 연출 뒤, 드릴·필드 보스는 안 전체). 기본은 꺼짐 — 게이지가 차면
 어디서나 쓴다 (사용자 11-19, 그 전엔 늘 보스전에서만).
 게이지가 차 있는데 눌러도 안 줄면 RETRY 초마다 다시 누른다 (게임이 키를 놓치거나 아직 못 쓰는 순간).
@@ -29,20 +29,30 @@ from ..bot import Bot
 KINDS = ("ultimate", "paladin")
 
 
-def boss_only(boss: dict) -> set[str]:
-    """'보스에서만' 을 켠 기술 (KINDS 중). 캐릭터마다 따로 두지 않는다."""
-    return {k for k in KINDS if boss.get(f"{k}_boss_only", False)}
+def _per_slot(boss: dict, key: str, on_key: str, off_key: str, slot: int | None) -> bool:
+    """캐릭터 탭에서 따로 켠(on_key 목록)·끈(off_key 목록) 게 먼저, 아니면 기본값 key.
+    슬롯을 모르면(지금 접속한 캐릭터를 못 알아봄) 기본값."""
+    if slot is not None:
+        if slot in [int(x) for x in boss.get(on_key, [])]:
+            return True
+        if slot in [int(x) for x in boss.get(off_key, [])]:
+            return False
+    return bool(boss.get(key, False))
 
 
 def on_for(boss: dict, kind: str, slot: int | None) -> bool:
-    """이 캐릭터(슬롯)가 kind(ultimate · paladin)를 쓰나. 캐릭터 탭에서 따로 켜거나 끈 게 먼저, 아니면 기본값.
-    슬롯을 모르면(지금 접속한 캐릭터를 못 알아봄) 기본값."""
-    if slot is not None:
-        if slot in [int(x) for x in boss.get(f"{kind}_slots", [])]:
-            return True
-        if slot in [int(x) for x in boss.get(f"{kind}_off_slots", [])]:
-            return False
-    return bool(boss.get(kind, False))
+    """이 캐릭터(슬롯)가 kind(ultimate · paladin)를 쓰나."""
+    return _per_slot(boss, kind, f"{kind}_slots", f"{kind}_off_slots", slot)
+
+
+def only_for(boss: dict, kind: str, slot: int | None) -> bool:
+    """이 캐릭터가 kind 를 보스전에서만 쓰나 — 기본값 {kind}_boss_only, 캐릭터별은 _boss_only_slots(켬)·_boss_any_slots(끔)."""
+    return _per_slot(boss, f"{kind}_boss_only", f"{kind}_boss_only_slots", f"{kind}_boss_any_slots", slot)
+
+
+def boss_only(boss: dict, slot: int | None = None) -> set[str]:
+    """'보스에서만' 인 기술 (KINDS 중). slot 이 없으면 기본값."""
+    return {k for k in KINDS if only_for(boss, k, slot)}
 
 
 class BossSkills:
@@ -66,7 +76,7 @@ class BossSkills:
     @classmethod
     def for_character(cls, bot: Bot, cfg: dict, slot: int | None, boss_fight, inside=None) -> "BossSkills":
         c = cfg["boss_skills"]
-        return cls(bot, on_for(c, "ultimate", slot), on_for(c, "paladin", slot), boss_fight, boss_only(c), inside)
+        return cls(bot, on_for(c, "ultimate", slot), on_for(c, "paladin", slot), boss_fight, boss_only(c, slot), inside)
 
     @classmethod
     def for_current(cls, bot: Bot, character: dict | None, boss_fight, name: str | None = None,

@@ -259,6 +259,19 @@ class BossSkillsTest(unittest.TestCase):
         self.assertEqual(two.describe(), "팔라딘 변신 (보스에서만)")
         self.assertEqual(one.describe(), "궁극기")
 
+    def test_boss_only_per_character(self):
+        """'보스에서만' 은 기본값을 따르되 캐릭터 탭에서 캐릭터별로 켜고 끈다."""
+        from mabi.tasks import boss_skills
+        bot = FakeBot()
+        b = bot.cfg["boss_skills"]
+        b["paladin_boss_only"] = True
+        b["paladin_boss_any_slots"] = [2]   # 2번은 기본값(보스에서만)과 달리 아무 때나
+        b["ultimate_boss_only_slots"] = [1]  # 1번은 궁극기를 보스에서만
+        self.assertEqual(BossSkills.for_character(bot, bot.cfg, 2, abyss_fight).describe(), "팔라딘 변신")
+        self.assertEqual(BossSkills.for_character(bot, bot.cfg, 1, abyss_fight).describe(), "궁극기 (보스에서만)")
+        self.assertEqual(boss_skills.boss_only(b, 3), {"paladin"})
+        self.assertEqual(boss_skills.boss_only(b), {"paladin"})
+
     def test_per_character(self):
         bot = FakeBot()
         one = BossSkills.for_character(bot, bot.cfg, 1, abyss_fight)

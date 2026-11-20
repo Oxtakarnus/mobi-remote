@@ -522,9 +522,9 @@
         <h3 title="어비스·레이드·나이트메어 드릴·필드 보스 전투 중에 씁니다. 캐릭터 탭에서 따로 정하지 않은 캐릭터에 적용">궁극기·팔라딘 기본값 <small>캐릭터 탭에서 따로 정하지 않은 캐릭터에</small></h3>
         <dl class="kv dl-kv">
           <dt>궁극기</dt><dd><label class="chk"><input type="checkbox" id="ab-def-ult"> 게이지가 차면 쓰기</label>
-            <label class="chk ab-gap" title="끄면 보스전이 아니어도 게이지가 차면 씁니다 (모든 캐릭터)"><input type="checkbox" id="ab-only-ult"> 보스에서만</label> <span class="muted" id="ab-follow-ult"></span></dd>
+            <label class="chk ab-gap" title="끄면 보스전이 아니어도 게이지가 차면 씁니다 (캐릭터 탭에서 따로 정하지 않은 캐릭터)"><input type="checkbox" id="ab-only-ult"> 보스에서만</label> <span class="muted" id="ab-follow-ult"></span></dd>
           <dt>팔라딘 변신</dt><dd><label class="chk"><input type="checkbox" id="ab-def-pal"> 게이지가 차면 쓰기</label>
-            <label class="chk ab-gap" title="끄면 보스전이 아니어도 게이지가 차면 씁니다 (모든 캐릭터). 변신은 던전마다 한 번"><input type="checkbox" id="ab-only-pal"> 보스에서만</label> <span class="muted" id="ab-follow-pal"></span></dd>
+            <label class="chk ab-gap" title="끄면 보스전이 아니어도 게이지가 차면 씁니다 (캐릭터 탭에서 따로 정하지 않은 캐릭터). 변신은 던전마다 한 번"><input type="checkbox" id="ab-only-pal"> 보스에서만</label> <span class="muted" id="ab-follow-pal"></span></dd>
         </dl>
         <div class="row"><span class="spacer"></span><span id="ab-boss-msg" class="muted"></span>
           <button class="btn btn-primary" id="ab-boss-save">저장</button></div>
@@ -820,6 +820,8 @@
       <dt title="처음엔 어비스·레이드 탭의 궁극기·팔라딘 기본값 — 여기서 바꾸면 이 캐릭터만 따로">궁극기·팔라딘 (어비스·레이드·드릴)</dt><dd><label class="chk"><input type="checkbox" id="ch-e-ult"> 궁극기</label>
         <label class="chk"><input type="checkbox" id="ch-e-pal"> 팔라딘 변신</label>
         <span class="hint">전투 중 게이지가 차면 사용</span></dd>
+      <dt title="켠 기술은 보스전에서만 씁니다. 처음엔 어비스·레이드 탭의 기본값">보스에서만</dt><dd><label class="chk"><input type="checkbox" id="ch-e-ult-only"> 궁극기</label>
+        <label class="chk"><input type="checkbox" id="ch-e-pal-only"> 팔라딘 변신</label></dd>
       <dt>일요일 요일 던전</dt><dd><select id="ch-e-sun"></select> <span class="hint">임무 게시판에서 고를 보상</span></dd>
     </dl>
     <p class="hint">공통 설정과 같은 값은 공통 설정을 따릅니다.</p>
