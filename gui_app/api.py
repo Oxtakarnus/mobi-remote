@@ -764,6 +764,10 @@ class Api(DailyApi, CharsApi, QueueApi):
             log.debug(f"패킷 감시 상태 읽기 실패: {e}")
             return "error"
 
+    def version_packet(self):
+        """패킷 감시 상태만 (화면이 주기적으로 묻는다 — version_info 는 CLI 판도 읽어 무겁다)."""
+        return self.packet_status()
+
     def version_npcap(self):
         webbrowser.open(self.NPCAP_PAGE)
         return True

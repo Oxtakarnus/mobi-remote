@@ -90,6 +90,28 @@ async function wireNpcap() {
     const info = await mm.version.info().catch(() => null);
     if (!pref('npcapNoAsk', false) && info && info.packet === 'no_npcap') $('#npcap-banner').classList.remove('hidden');
   }, 5000);
+  wireStaleTable();
+}
+
+/** 패킷 표가 게임과 어긋나면(게임 패치) 위에 띠를 띄우고 새 판을 묻는다. 켠 채 게임이 패치될 수도 있어 계속 본다.
+ *  닫으면 이번에 켠 동안은 다시 띄우지 않는다 */
+function wireStaleTable() {
+  let closed = false, shown = false;
+  $('#table-later').addEventListener('click', () => { closed = true; $('#table-banner').classList.add('hidden'); });
+  const look = async () => {
+    const st = await mm.version.packet().catch(() => null);
+    const stale = st === 'stale_table';
+    if (stale && !shown && !closed) {
+      shown = true;
+      $('#table-banner').classList.remove('hidden');
+      checkUpdate().catch(() => {});
+    } else if (!stale && shown) {
+      shown = false;
+      $('#table-banner').classList.add('hidden');
+    }
+  };
+  setTimeout(look, 6000);
+  setInterval(look, 120000);
 }
 
 async function loadCompat(refresh) {

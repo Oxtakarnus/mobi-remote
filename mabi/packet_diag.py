@@ -85,6 +85,7 @@ class PacketDiag:
 def open_table(logs_dir: Path):
     """(표 또는 None, 기록기). 표를 못 열면 table_load 로 남기고 None — 패킷 신호 없이 화면 인식만으로 돈다."""
     from . import packet_table
+    stray = packet_table.retire_stray()
     try:
         table = packet_table.load()
     except (OSError, ValueError) as e:
@@ -92,5 +93,7 @@ def open_table(logs_dir: Path):
         diag.record("table_load", type(e).__name__, error=str(e))
         return None, diag
     diag = PacketDiag(logs_dir, table.meta)
+    if stray:
+        diag.record("table_load", "stray_retired", file=str(stray))
     table.diag = diag
     return table, diag

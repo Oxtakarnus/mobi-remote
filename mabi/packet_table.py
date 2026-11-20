@@ -231,31 +231,31 @@ def _read(body: bytes, off: int, typ: str, size: int = 0, at: int = 0, key: str 
     return struct.unpack_from(fmt, body, off)[0]
 
 
-def _candidates() -> list[Path]:
-    out = []
+def table_file() -> Path:
+    """표는 설치 폴더(코드 옆 data 폴더)의 것 하나만 쓴다 — 판(설치 파일·패치 묶음)과 함께 바뀌므로 판을 올리면 표도 새것이다.
+    예전엔 데이터 폴더(LOCALAPPDATA 의 MobiRemote/data)를 먼저 봐서, 거기 옛 표가 남아 있으면 새 판을 깔아도
+    그 표를 읽었다 (11-20 다른 PC: 3.29.1 인데 11-12 표로 stale_table)."""
+    return paths.resource_dir() / "data" / FILE_NAME
+
+
+def retire_stray() -> Path | None:
+    """데이터 폴더에 남은 표를 .old 로 이름을 바꿔 치운다 (지우지는 않는다). 바꾼 파일 경로, 없으면 None.
+    개발 중처럼 데이터 폴더가 곧 설치 폴더면 그 표가 쓰는 표라 건드리지 않는다."""
     try:
-        out.append(paths.load().data / "data" / FILE_NAME)
+        stray = paths.load().data / "data" / FILE_NAME
+        if not stray.exists() or stray.resolve() == table_file().resolve():
+            return None
+        old = stray.with_name(FILE_NAME + ".old")
+        old.unlink(missing_ok=True)
+        stray.rename(old)
+        return old
     except OSError:
-        pass
-    out.append(paths.resource_dir() / "data" / FILE_NAME)
-    return out
+        return None
 
 
 @cache
 def load() -> Table:
-    """데이터 폴더와 설치 폴더에 표가 둘 다 있으면 더 늦게 묶은 것. 예전엔 데이터 폴더 것을 먼저 써서, 거기 옛 표가
-    남아 있으면 새 판을 깔아도 옛 표로 게임과 어긋날 수 있었다 (11-20 다른 PC: 3.29.1 인데 11-12 표로 stale_table)."""
-    best = None
-    for f in _candidates():
-        if not f.exists():
-            continue
-        try:
-            data = unseal(f.read_bytes())
-        except (OSError, ValueError):
-            continue
-        at = str((data.get("meta") or {}).get("built_at") or "")
-        if best is None or at > best[0]:
-            best = (at, data)
-    if best is not None:
-        return Table(best[1])
-    raise FileNotFoundError(f"데이터 파일 없음: data\\{FILE_NAME}")
+    f = table_file()
+    if not f.exists():
+        raise FileNotFoundError(f"데이터 파일 없음: {f}")
+    return Table(unseal(f.read_bytes()))
