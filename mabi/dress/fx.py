@@ -66,17 +66,19 @@ _TL_END = ".StageTimeline.sjon.bin"
 _WEARABLE = ("Female_", "Male_", "Infant_")
 # Unity 기본 메시 (unity default resources 의 경로 id)
 _BUILTIN = {10202: "cube", 10206: "cylinder", 10207: "sphere", 10208: "capsule", 10209: "plane", 10210: "quad"}
-# 셰이더 이름 끝 → 뷰어 셰이더 종류
+# 셰이더 이름 끝 → 뷰어 셰이더 종류 (모르는 셰이더는 default — 알파가 _MainTex 에만 있다고 보므로 알파를 다른 그림에서
+# 읽는 셰이더는 꼭 넣는다. 예: AlphaTex 를 default 로 그리면 비눗방울이 하얀 사각형으로 나왔다)
 _KIND = {"FX_Default": "default", "FX_Default_VertexOffset": "vertexoffset", "FX_Dissolve_Div_01": "dissolve",
+         "FX_Dissolve_Div_Far": "dissolve",   # 픽셀 식이 FX_Dissolve_Div_01 과 같다 (DXBC 로 확인)
          "FX_Dissolve_Div_Offset_Fresnel": "fresnel", "FX_Dissolve_Div_Distortion_2C_AddNoise": "addnoise",
-         "FX_HornFlame": "horn"}
+         "FX_Dissolve_Div_Distortion_AlphaTex": "alphatex", "FX_HornFlame": "horn"}
 _OPAQUE = "FX_Opaque"       # 기본 식으로 그리되 불투명
 _FLOATS = ("_Use_G_Channel_Alpha", "_Intensity_Color", "_Intensity_Alpha", "_EffectAlpha", "_Use_VretexColor",
            "_UVType", "_Twist", "_Noise_X_Speed", "_Noise_Y_Speed", "_ColorGradation", "_Color_Offset", "_Color_Range",
            "_LerpColor_Offset", "_LerpColor_Range", "_LerpColor_Intensity", "_Fresnel_OneMinus", "_DefaultValues",
            "_RimMin", "_RimMax", "_SequenceX", "_SequenceY", "_AddNoise_X_Speed", "_AddNoise_Y_Speed",
            "_Distortion_Offset", "_Distortion_X_Power", "_Distortion_Y_Power", "_VertexOffset_Speed", "_VertexOffset_Power",
-           "_FlameDistortionStrength", "_FlameInsideCenter", "_FlameInsideSoftness", "_FlameOuterEdgeFade",
+           "_Add_Noise_Alpha", "_FlameDistortionStrength", "_FlameInsideCenter", "_FlameInsideSoftness", "_FlameOuterEdgeFade",
            "_FlameAlphaIntensity", "_FlameAlphaThreshold", "_FlameAlphaSoftness", "_FlameWidth", "_FlameDepthPush")
 _COLORS = ("_Color", "_MainColor", "_SubColor", "_LerpColor", "_FlameColorBase", "_FlameColorTip", "_FlameNoiseTiling",
            "_FlameNoiseSpeed")

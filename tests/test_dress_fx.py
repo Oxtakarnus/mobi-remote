@@ -204,6 +204,29 @@ class TableTest(unittest.TestCase):
         self.assertFalse(FX.keep("Assets/PatchableAssets/Fx/1_Effect/Monster/FX_B.prefab"))
 
 
+class MaterialKindTest(unittest.TestCase):
+    """재질 → 뷰어 셰이더 종류. 모르는 셰이더는 default 인데, 알파를 다른 그림에서 읽는 셰이더를 default 로 그리면
+    사각형이 그대로 보인다 (비눗방울 감정 표현)."""
+
+    @staticmethod
+    def _mat(shader: str, path_id: int, floats: dict):
+        sh = NS(m_FileID=0, m_PathID=path_id, deref=lambda: NS(read=lambda: NS(m_ParsedForm=NS(m_Name=shader))))
+        tex = NS(deref=lambda: NS(read=lambda: NS(m_ColorSpace=1)))
+        env = NS(m_Texture=tex, m_Scale=NS(x=1, y=1), m_Offset=NS(x=0.5, y=0))
+        sp = NS(m_Floats=list(floats.items()), m_Colors=[], m_TexEnvs=[("_AlphaTex", env)])
+        return NS(m_Name="m", m_Shader=sh, m_SavedProperties=sp)
+
+    def test_kinds(self):
+        fx = FX.Effects(Path("."), Path("."))
+        fx._assets = lambda: (None, NS(ref=lambda t: "FX_Seq_Bubble"))
+        o = fx._material_obj(self._mat("MMN/FX/Amplify shader/FX_Dissolve_Div_Distortion_AlphaTex", 1, {"_Add_Noise_Alpha": 0.2}))
+        self.assertEqual(o["kind"], "alphatex")
+        self.assertEqual(o["f"]["_Add_Noise_Alpha"], 0.2)
+        self.assertEqual(o["t"]["_AlphaTex"], {"tex": "FX_Seq_Bubble", "srgb": True, "st": [1.0, 1.0, 0.5, 0.0]})
+        self.assertEqual(fx._material_obj(self._mat("MMN/FX/Amplify shader/FX_Dissolve_Div_Far", 2, {}))["kind"], "dissolve")
+        self.assertEqual(fx._material_obj(self._mat("MMN/FX/Amplify shader/FX_Unknown_01", 3, {}))["kind"], "default")
+
+
 class EmotionTimelineTest(unittest.TestCase):
     TL = {"Tracks": [
         {"Type": "Effect", "IsEnabled": True, "Intervals": [

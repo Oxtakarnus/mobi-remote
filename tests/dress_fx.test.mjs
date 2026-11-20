@@ -149,6 +149,16 @@ t('정점 흐름 — 사용자 값이 UV 뒤 칸에 차례로', () => {
   assert.deepEqual(Array.from(g.extra.array.slice(0, 4)), [0.75, 1, 0, 0]);
 });
 
+t('AlphaTex 셰이더 — 모양 알파를 _AlphaTex 초록에서 (사용자 값 tcd1.xy 만큼 밀어)', () => {
+  const s = system({ mat: { name: 'b', kind: 'alphatex', blend: [5, 10], cull: 0, f: {}, c: {}, t: {} } });
+  const m = sys0(new FxPlayer(fx([s]), model(), tex)).material;
+  assert.match(m.fragmentShader, /fxSample\(_AlphaTex, [^;]*vExtra\.xy, _AlphaTex_sRGB\)\.g/);
+  assert.match(m.fragmentShader, /_Add_Noise_Alpha/);
+  close(m.uniforms._Add_Noise_Alpha.value, 0.35);   // 재질에 없으면 셰이더 기본값
+  const q = system({ mat: { ...s.mat, f: { _Add_Noise_Alpha: 0.1 } } });
+  close(sys0(new FxPlayer(fx([q]), model(), tex)).material.uniforms._Add_Noise_Alpha.value, 0.1);
+});
+
 t('메시 파티클의 앞면 — 뒤집힌 축이라 뒷면 버림이면 BackSide', () => {
   const s = system({ render: { mode: 4, align: 2, len: 1, vscale: 0, max: 0, min: 0, pivot: [0, 0, 0], flip: [0, 0], sort: 0 },
     mesh: 0, mat: { name: 'b', kind: 'fresnel', blend: [5, 10], cull: 2, f: {}, c: {}, t: {} } });

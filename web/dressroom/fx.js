@@ -13,7 +13,8 @@
 // 한 번만 돈다. follow 가 false 인 구간은 시작한 자리에 남는다.
 //
 // 셰이더는 게임 FX 셰이더(재질 값 이름)를 참고한 웹 드레스룸의 역산 식에 맞춰 근사한다 — default·vertexoffset·
-// dissolve·fresnel·addnoise, 덧그리기의 horn(뿔 불꽃). vTex = (uv, 사용자 값 2개), vExtra = 다음 사용자 값 4개.
+// dissolve·fresnel·addnoise·alphatex(게임 셰이더 DXBC 를 풀어 옮김), 덧그리기의 horn(뿔 불꽃).
+// vTex = (uv, 사용자 값 2개), vExtra = 다음 사용자 값 4개.
 import * as THREE from './vendor/three.module.min.js';
 
 const N = 16;   // 곡선 표본 칸 (mabi/dress/fx.py N)
@@ -178,6 +179,20 @@ const BODY = {
   rgb = mix(m.rgb * tint.rgb, tint.rgb, _Use_G_Channel_Alpha) * _Intensity_Color * vColor.rgb;
   rgb = mix(rgb, _LerpColor.rgb * _LerpColor_Intensity, clamp((ramp + _LerpColor_Offset) * _LerpColor_Range, 0.0, 1.0));
   a = clamp(raw / (1.0001 - cut) * _Intensity_Alpha, 0.0, 1.0) * tint.a * vColor.a * clamp(_EffectAlpha, 0.0, 1.0);`,
+  // FX_Dissolve_Div_Distortion_AlphaTex — 모양은 _AlphaTex 초록 채널(사용자 값 tcd1.xy 만큼 밀어 짚는다).
+  // 잡음이 색 그림 UV 를 흔들고(세기 tcd0.w) 알파도 깎는다(잡음 + _Add_Noise_Alpha). 디졸브는 tcd0.z.
+  alphatex: `
+  ${TIME}
+  float noise = fxSample(_NoiseTex, vTex.xy * _NoiseTex_ST.xy + _NoiseTex_ST.zw + fxTimeWrap * vec2(_Noise_X_Speed, _Noise_Y_Speed), _NoiseTex_sRGB).g;
+  vec2 warp = (noise - 0.5) * vec2(_Distortion_X_Power, _Distortion_Y_Power) * vTex.w;
+  vec4 m = fxSample(_MainTex, vTex.xy * _MainTex_ST.xy + _MainTex_ST.zw + warp, _MainTex_sRGB);
+  float src = mix(m.a, m.g, _Use_G_Channel_Alpha);
+  float raw = src - vTex.z;
+  vec4 tint = mix(_SubColor, _MainColor, clamp((mix(raw, vTex.x, _ColorGradation) + _Color_Offset) * _Color_Range, 0.0, 1.0));
+  rgb = mix(m.rgb * vColor.rgb, vColor.rgb, _Use_G_Channel_Alpha) * _Intensity_Color * tint.rgb;
+  float shape = fxSample(_AlphaTex, vTex.xy * _AlphaTex_ST.xy + _AlphaTex_ST.zw + vExtra.xy, _AlphaTex_sRGB).g;
+  a = clamp(raw / max(1.0 - vTex.z, 0.0001) * _Intensity_Alpha, 0.0, 1.0) * src * vColor.a
+    * clamp(noise + _Add_Noise_Alpha, 0.0, 1.0) * shape * tint.a * clamp(_EffectAlpha, 0.0, 1.0);`,
   horn: `
   vec4 flow = vExtra.xyxy * _FlameNoiseTiling + fxTime * _FlameNoiseSpeed;
   float warp = fxSample(_FlameNoiseMap, flow.xy, _FlameNoiseMap_sRGB).r * 2.0 - 1.0;
@@ -227,11 +242,11 @@ const FLOATS = ['_Use_G_Channel_Alpha', '_Intensity_Color', '_Intensity_Alpha', 
   '_UVType', '_Twist', '_Noise_X_Speed', '_Noise_Y_Speed', '_ColorGradation', '_Color_Offset', '_Color_Range',
   '_LerpColor_Offset', '_LerpColor_Range', '_LerpColor_Intensity', '_Fresnel_OneMinus', '_DefaultValues',
   '_RimMin', '_RimMax', '_SequenceX', '_SequenceY', '_AddNoise_X_Speed', '_AddNoise_Y_Speed',
-  '_Distortion_Offset', '_Distortion_X_Power', '_Distortion_Y_Power',
+  '_Distortion_Offset', '_Distortion_X_Power', '_Distortion_Y_Power', '_Add_Noise_Alpha',
   '_FlameDistortionStrength', '_FlameInsideCenter', '_FlameInsideSoftness', '_FlameOuterEdgeFade',
   '_FlameAlphaIntensity', '_FlameAlphaThreshold', '_FlameAlphaSoftness', '_FlameWidth', '_FlameDepthPush'];
 const FLOAT_DEF = { _Intensity_Color: 1, _Intensity_Alpha: 1, _EffectAlpha: 1, _Color_Range: 1, _LerpColor_Intensity: 1,
-  _RimMax: 1, _SequenceX: 1, _SequenceY: 1, _FlameAlphaIntensity: 1, _FlameAlphaThreshold: 0.5, _FlameAlphaSoftness: 0.5,
+  _RimMax: 1, _SequenceX: 1, _SequenceY: 1, _Add_Noise_Alpha: 0.35, _FlameAlphaIntensity: 1, _FlameAlphaThreshold: 0.5, _FlameAlphaSoftness: 0.5,
   _FlameInsideCenter: 0.95, _FlameInsideSoftness: 1, _FlameOuterEdgeFade: 1, _FlameWidth: 0.3 };
 const COLORS = ['_Color', '_MainColor', '_SubColor', '_LerpColor', '_FlameColorBase', '_FlameColorTip', '_FlameNoiseTiling', '_FlameNoiseSpeed'];
 // 색 값 중 색이 아닌 것 (그대로 싣는다)
