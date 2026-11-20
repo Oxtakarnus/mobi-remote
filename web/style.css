@@ -1012,8 +1012,14 @@ tr.sec .muted { font-weight: 400; letter-spacing: 0; margin-left: 4px; }
 .ch-edit-id { flex: 1; display: flex; flex-direction: column; gap: 6px; min-width: 0; }
 .ch-edit-id input { min-width: 0; font-size: 16px; font-weight: 600; }
 .ch-edit-artbtns { display: flex; gap: 6px; }
-.ch-kv { grid-template-columns: 90px 1fr; align-items: center; gap: 8px 12px; }
-.ch-kv dd { display: flex; gap: 6px; justify-content: flex-start; text-align: left; }
+/* 표처럼: 줄마다 옅은 선, 이름 칸은 한 줄, 값 칸은 두 칸(왼쪽 고르기·체크 / 오른쪽 횟수·층·두 번째 체크)이 위아래로 맞게 */
+.ch-kv { grid-template-columns: 96px 1fr; align-items: stretch; gap: 0; border-top: 1px solid var(--line); }
+.ch-kv dt, .ch-kv dd { display: flex; align-items: center; min-height: 38px; padding: 4px 0; border-bottom: 1px solid var(--line); }
+.ch-kv dt { white-space: nowrap; }
+.ch-kv dd { display: grid; grid-template-columns: 150px 1fr; gap: 0 8px; justify-content: start; text-align: left; }
+.ch-kv dd > * { justify-self: start; }
+.ch-kv dd > select { width: 100%; }
+.ch-kv dd > select + select { width: 104px; }
 .ch-kv select { min-width: 0; }
 .ch-kv select:disabled { opacity: .45; }
 .modal-actions .ch-left { margin-right: auto; color: var(--bad); }
