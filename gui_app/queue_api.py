@@ -245,7 +245,7 @@ class AbyssKind(Kind):
                 + f" · {lim or '멈출 때까지'}" + (" · 쓰러지면 나감" if x.get("revive") is False else ""))
 
     # 고정 파티 역할 (카드 partyRole). 함께하기(mode 'party', 무작위 매칭)와는 다른 것이다.
-    # 파티장은 입장·반복, 파티원은 기다리다 입장 준비 창이 뜨면 준비 — 실행 흐름은 아직 없다 (패킷 확인 뒤 붙인다)
+    # 파티장은 입장·반복, 파티원은 기다리다 입장 준비 창이 뜨면 준비 (mabi.tasks.party)
     PARTY_ROLES = {"leader": "파티장", "member": "파티원"}
 
     def cuttable(self, it) -> bool:
@@ -305,6 +305,7 @@ class AbyssKind(Kind):
         t = api._repeat_launch(self.KIND, {
             "slot": it.get("slot"), place: it.get(place), "difficulty": it.get("difficulty"), "mode": it.get("mode"),
             "runs": runs, "minutes": minutes, "revive": it.get("revive") is not False,
+            "party_role": it.get("partyRole") or "",
             "interface": fit and not q.session.get("iface")}, on_event)
         t.join()
         q.patch(it["id"], {"doneRuns": int(it.get("doneRuns") or 0) + last["clears"],

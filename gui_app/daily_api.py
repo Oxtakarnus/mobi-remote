@@ -307,6 +307,7 @@ class DailyApi:
                 "slot": int(a["slot"]), "chars": [{"slot": c["slot"], "name": c["name"]} for c in prof.chars(self.paths)],
                 "minutes": float(a["minutes"]), "dungeons": abyss.dungeons(), "frontOnly": list(abyss.FRONT_ONLY),
                 "revive": bool(a["revive"]), "mode": a.get("mode") or self._rep_default("abyss", "mode"),
+                "partyRole": a.get("party_role") or "",
                 "difficulties": abyss.difficulties(),
                 "running": self._alive_now(self._rep("abyss").thread)}
 
@@ -394,6 +395,7 @@ class DailyApi:
             a["runs"] = max(0, int(v.get("runs") or 0))
             a["minutes"] = max(0, int(v.get("minutes") or 0))
             a["revive"] = v.get("revive") is not False
+            a["party_role"] = v.get("party_role") if v.get("party_role") in ("leader", "member") else ""  # 고정 파티
             userconfig.save(self.paths, doc)
         event({"type": "start"})
 

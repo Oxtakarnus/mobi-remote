@@ -1,10 +1,14 @@
 """고정 파티 패킷 — 파티장 읽기, 입장 진행 상태(파티원 목록·준비), 역할 판단 (녹화 party-1120b 모양)."""
+import logging
 import struct
+import time
 import unittest
+from unittest import mock
 
 from mabi.packet_monitor import PacketMonitor
 from mabi.packet_monitor.monitor import party_leader
 from mabi.packet_table import _read
+from mabi.tasks import party
 
 ME, FRIEND, PARTY = 0x174ADF700000, 0x178AF7E00001, 0x1A1F0A712DA
 
@@ -64,6 +68,38 @@ class PartyTest(unittest.TestCase):
         self.m.apply("party.enter_end", {"code": 3})
         self.assertIsNone(s.party_mark())
         self.assertEqual(s.party_end, 3)
+
+
+class FakeBot:
+    """준비 UI: 처음 두 번 보면 아직 없음 → 세 번째부터 내 상태 1, Space 를 누르면 준비 끝."""
+    def __init__(self, mon):
+        self.packets, self.keys, self.looks, self.input_mark = mon, [], 0, 0
+        self.log = logging.getLogger("test")
+
+    def sleep(self, *a):
+        self.looks += 1
+        if self.looks == 2:
+            self.packets.apply("party.play", {"stage": 2, "ids": [ME, FRIEND], "marks": [1, 0x0B]})
+
+    def key(self, k):
+        self.keys.append(k)
+        self.packets.apply("party.ready_ok", {})
+
+    def wait_packet(self, pred, timeout, since=0):
+        return pred(self.packets.state)
+
+
+class WaitReadyTest(unittest.TestCase):
+    def test_presses_space_once_when_ready_ui_opens(self):
+        m = PacketMonitor(None)
+        m.status, m.last_rx = "running", time.monotonic()
+        m.state.char_id = ME
+        m.apply("party.info", {"party": PARTY, "leader": FRIEND})
+        bot = FakeBot(m)
+        with mock.patch.object(party, "ready_button", return_value=False):
+            party.wait_ready(bot, 60)
+        self.assertEqual(bot.keys, ["space"])
+        self.assertEqual(m.state.party_mark(), m.state.PARTY_READY)
 
 
 if __name__ == "__main__":

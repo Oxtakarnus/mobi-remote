@@ -116,6 +116,17 @@ def chance_on(bot: Bot, now: Entry | None = None) -> None:
         bot.log.info("우연한 만남 켬")
 
 
+def chance_off(bot: Bot, now: Entry | None = None) -> None:
+    """'우연한 만남' 이 켜져 있으면 끈다 — 고정 파티 파티장은 끄고 들어가야 우리 파티끼리 입장한다 (사용자 11-20).
+    파티가 가득 차면 스위치가 안 보일 수 있다 — 그때는 그대로 간다."""
+    e = now or _settled(bot)
+    on = e.chance if e else None
+    if on and on[0]:
+        bot.click(on[1])
+        bot.sleep(1.0, 1.3)
+        bot.log.info("우연한 만남 끔 (고정 파티)")
+
+
 def _settled(bot: Bot, timeout: float = 3) -> Entry | None:
     """버튼까지 그려진 입장 창 — 스위치는 버튼과 같은 칸이라 버튼이 보이면 같이 그려져 있다. 끝내 버튼이 없으면 마지막 것."""
     end = time.monotonic() + timeout

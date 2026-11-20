@@ -24,6 +24,7 @@ from ..place import ABYSS, place
 from .. import monitor
 from ..monitor import detect as d, handlers
 from . import entry, press, ui_text
+from . import party as party_mod
 from .arrival import go_talk, wait_arrival, wait_settled, where_settled
 from .clear import touch_prompt_visible
 from .fight import Fight
@@ -230,19 +231,20 @@ def settle_loot(bot: Bot) -> None:
     bot.to_main()
 
 
-def enter_screen(bot: Bot, dungeon: str, difficulty: str = "", at: str = "", solo: bool = False) -> None:
+def enter_screen(bot: Bot, dungeon: str, difficulty: str = "", at: str = "", solo: bool = False,
+                 party: bool = False) -> None:
     """입장 시도 → 정산이 남았으면(LootPending) 입장을 멈추고 정산 과정 → 끝나면 입장을 다시 이어 간다 (목록부터 다시 연다
     — 정산하러 관청으로 옮겨 가 목록이 닫혀 있다). 정산을 LOOT_TRIES 번 하고도 남아 있으면 CannotProceed."""
     for _ in range(LOOT_TRIES):
         try:
-            return open_entry(bot, dungeon, difficulty, at=at, solo=solo)
+            return open_entry(bot, dungeon, difficulty, at=at, solo=solo, party=party)
         except LootPending:
             bot.log.info("주간 전리품이 남아 있음 → 입장을 멈추고 정산부터 (정산 전엔 어비스에 못 들어감)")
             settle_loot(bot)
         at = ""
         bot.step("abyss_open", f"어비스 입장 화면 ({dungeon}) — 정산 뒤 다시")
     try:
-        return open_entry(bot, dungeon, difficulty, solo=solo)
+        return open_entry(bot, dungeon, difficulty, solo=solo, party=party)
     except LootPending:
         raise CannotProceed(f"주간 전리품을 정산하지 못함 (목록에 '전리품 받기' 가 남음) → {bot.snapshot('abyss_loot_left').name}")
 
@@ -251,14 +253,15 @@ MOVE_TRIES = 3  # 입장 창 버튼이 '이동하기' 면 입구로 걸어가 �
 
 
 def open_entry(bot: Bot, dungeon: str, difficulty: str = "", _moved: int = 0, at: str = "",
-               solo: bool = False) -> None:
+               solo: bool = False, party: bool = False) -> None:
     """dungeon 입장 화면을 열고 탭('함께하기', solo 면 '혼자하기') · 난이도 · ('함께하기' 면) '우연한 만남' 을 누른다
     (누르기만 — 맞았는지는 입장하기 뒤 매칭·로딩 신호로 enter 가 안다).
     at(where 결과)이 입장 화면이나 어비스 목록이면 그 자리부터, 아니면 메인 화면 → 메뉴 → 어비스 → 목록에서 dungeon.
     버튼이 '이동하기' 면 입구로 간 뒤 다시 연다 (MOVE_TRIES 번까지 — 입구에서 먼 캐릭터는 거의 늘 이렇다, 2026-10-24).
     버튼 글자를 못 읽었으면 그대로 둔다 — 입장하기(Space)를 누르고 결과로 안다 (예전엔 '입장하기' 가 안 읽히면 한 번도
     눌러 보지 않고 실패했다).
-    주간 전리품 정산이 남았으면 LootPending 으로 멈춘다 — 정산은 별개 과정이라 여기서 하지 않는다 (enter_screen 으로 부를 것)."""
+    주간 전리품 정산이 남았으면 LootPending 으로 멈춘다 — 정산은 별개 과정이라 여기서 하지 않는다 (enter_screen 으로 부를 것).
+    party: 고정 파티 파티장 — 함께하기 탭에서 우연한 만남을 끈다 (tasks.party)."""
     if at == "entry" and not ui_text.find(bot, dungeon, gd.region("abyss_entry_title")):
         bot.log.info(f"다른 어비스의 입장 화면 → 닫고 '{dungeon}' 로")
         at = ""
@@ -296,10 +299,13 @@ def open_entry(bot: Bot, dungeon: str, difficulty: str = "", _moved: int = 0, at
         if _moved >= MOVE_TRIES:
             raise NotSeen(f"'{dungeon}' 입구로 {_moved}번 가도 버튼이 '이동하기' 그대로 → {bot.snapshot('abyss').name}")
         back = _travel_to_entry(bot)
-        return open_entry(bot, dungeon, difficulty, _moved=_moved + 1, solo=solo, at="entry" if back else "")
+        return open_entry(bot, dungeon, difficulty, _moved=_moved + 1, solo=solo, at="entry" if back else "",
+                          party=party)
     if not (e and e.button):
         bot.log.info("입장 창 버튼 글자를 못 읽음 → 그대로 진행 (입장하기 결과로 확인)")
-    if not solo:  # 혼자하기는 매칭(우연한 만남)이 없다
+    if party:
+        entry.chance_off(bot, e if e and e.button else None)
+    elif not solo:  # 혼자하기는 매칭(우연한 만남)이 없다
         entry.chance_on(bot, e if e and e.button else None)
 
 
@@ -308,17 +314,22 @@ ENTER_TRIES = 3  # 입장하기를 눌러도 매칭·입장이 시작되지 않�
 ENTER_TOOK = 8   # 입장하기 뒤 매칭·맵 로딩 신호를 기다리는 초
 
 
-def enter(bot: Bot, dungeon: str, difficulty: str = "", at: str = "", solo: bool = False) -> None:
+def enter(bot: Bot, dungeon: str, difficulty: str = "", at: str = "", solo: bool = False, party: bool = False) -> None:
     """입장 창을 맞추고(enter_screen — 탭·난이도·우연한 만남은 누르기만) 입장하기(Space). 패킷에 매칭(우연한 만남)이나
     맵 로딩 신호가 오면 된 것 (press.until — 안 오면 창을 다시 맞춰 ENTER_TRIES 번까지, 그래도면 까닭을 붙여 NotSeen).
     패킷을 모르면 신호를 기다리지 않는다 (뒤의 매칭·입장 기다림이 상한까지 본다).
-    2026-11-16 사용자: 입장 창인지만 알면 아는 자리를 누르고 결과로 확인."""
-    enter_screen(bot, dungeon, difficulty, at=at, solo=solo)
-    press.until(bot, lambda: bot.key("space"),
-                press.signal(bot, lambda s: s.abyss_matching in (1, 2, 3) or s.loading, ENTER_TOOK,
-                             still=lambda: entry.visible(bot)),
+    2026-11-16 사용자: 입장 창인지만 알면 아는 자리를 누르고 결과로 확인.
+    party: 고정 파티 파티장 — 인원이 모자라면 뜨는 '도전하시겠습니까?' 에 도전하기, 신호는 파티 입장 진행(준비 UI)."""
+    enter_screen(bot, dungeon, difficulty, at=at, solo=solo, party=party)
+
+    def push():
+        bot.key("space")
+        if party:
+            party_mod.confirm(bot)
+    ok = party_mod.started if party else (lambda s: s.abyss_matching in (1, 2, 3) or s.loading)
+    press.until(bot, push, press.signal(bot, ok, ENTER_TOOK, still=lambda: entry.visible(bot)),
                 "입장하기", tries=ENTER_TRIES, shot="abyss",
-                again=lambda: enter_screen(bot, dungeon, difficulty, at=where(bot, dungeon), solo=solo),
+                again=lambda: enter_screen(bot, dungeon, difficulty, at=where(bot, dungeon), solo=solo, party=party),
                 why=lambda: entry.describe(bot, solo))
 
 
@@ -332,15 +343,16 @@ def entered_since(bot: Bot, since: float) -> bool | None:
     return not st.loading and st.channel_type == ABYSS and st.entered_at > since
 
 
-def wait_entered(bot: Bot, timeout: float, since: float | None = None) -> bool:
+def wait_entered(bot: Bot, timeout: float, since: float | None = None, abort=None) -> bool:
     """매칭(우연한 만남)이 잡혀 어비스 안으로 들어갈 때까지. 모두 모이면 저절로 들어간다. 시간 안에 못 들어가면 False.
     패킷이 있으면 맵을 떠나는 순간 바로 알고, 로딩 동안은 화면을 보지 않는다. 어비스 맵에 들어온 지 10초가 지났는데
     나가기 버튼이 가려져 있으면 그래도 들어온 것으로 본다 (판 진행 쪽이 가린 창을 넘긴다). 기다리기 시작한 뒤에 들어간
-    어비스 맵만 센다 — '다시 하기' 뒤엔 지난 판 맵에 선 채로 매칭을 기다릴 수 있다. since: 입장·다시 하기를 누른 때."""
+    어비스 맵만 센다 — '다시 하기' 뒤엔 지난 판 맵에 선 채로 매칭을 기다릴 수 있다. since: 입장·다시 하기를 누른 때.
+    abort(): 참이면 더 기다리지 않고 False (고정 파티 입장 진행이 취소됨)."""
     end = time.monotonic() + timeout
     start = time.monotonic() if since is None else since
     while not (inside(bot) and entered_since(bot, start) is not False):
-        if time.monotonic() > end:
+        if time.monotonic() > end or (abort and abort()):
             return False
         loading = bot.map_loading()
         st = bot.packets.state
@@ -586,7 +598,13 @@ class AbyssRepeat(Repeat):
     @property
     def solo(self) -> bool:
         """혼자하기로 하나 ([abyss] mode = "solo"). 기본은 함께하기 (우연한 만남)."""
-        return self.a.get("mode") == "solo"
+        return self.a.get("mode") == "solo" and not self.party_role
+
+    @property
+    def party_role(self) -> str:
+        """고정 파티 역할 'leader' · 'member', 아니면 '' (카드 partyRole → [abyss] party_role)."""
+        r = self.a.get("party_role") or ""
+        return r if r in party_mod.ROLES else ""
 
     match_at = 0.0  # 입장·다시 하기를 누른 때 — 그 뒤에 새로 들어간 맵만 이번 판 (entered_since)
 
@@ -614,20 +632,34 @@ class AbyssRepeat(Repeat):
                           "matching": "매칭 중 → 들어가길 기다림", "entry": "어비스 입장 화면 → 그 자리부터",
                           "list": "어비스 목록 → 그 자리부터", "menu": "메뉴가 열려 있음 → 그 자리부터"}.get(at, f"알 수 없는 화면({at}) → 닫고 메뉴에서 입장"))
         while True:
+            if stage == "entry" and self.party_role == "member":
+                # 고정 파티 파티원: 입장은 파티장이 한다 — 준비 UI 가 뜨면 준비 완료만 누른다
+                self.wait_party(at)
+                at = ""
+                stage = "match"
             if stage == "entry":
                 # 입장은 메뉴·목록·버튼을 눌러야 해서 게임을 앞에 두고 한다. 들어간 뒤로는 다시 뒤에서
                 bot.step("abyss_open", f"어비스 입장 화면 ({a['dungeon']})")
                 bot.background = False
                 self.match_at = time.monotonic()
-                enter(bot, a["dungeon"], a.get("difficulty", ""), at=at, solo=self.solo)
+                enter(bot, a["dungeon"], a.get("difficulty", ""), at=at, solo=self.solo,
+                      party=self.party_role == "leader")
                 at = ""  # 처음 한 번만 — 다음 입장은 판이 끝난 자리(메인)에서
                 self.to_back()
                 stage = "match"
             if stage == "match" and not (inside(bot) and entered_since(bot, self.match_at) is not False):
-                bot.step("abyss_match", "입장 중 (혼자하기)" if self.solo else "우연한 만남 매칭 중")
+                bot.step("abyss_match", "파티원 준비 기다림" if self.party_role else
+                         "입장 중 (혼자하기)" if self.solo else "우연한 만남 매칭 중")
                 self.emit(stage="match")
-                if not wait_entered(bot, a["match_timeout"], self.match_at):
+                st = bot.packets.state
+                if not wait_entered(bot, a["match_timeout"], self.match_at,
+                                    abort=lambda: self.party_role and party_mod.cancelled(st, self.match_at)):
                     self.stat["retries"] += 1
+                    if self.party_role and party_mod.cancelled(st, self.match_at):
+                        bot.log.warning("파티 입장 준비가 취소됨 → 처음부터 다시")
+                        bot.to_main()
+                        stage = "entry"
+                        continue
                     bot.log.warning(f"{a['match_timeout'] / 60:.0f}분 안에 매칭·입장이 되지 않음 → 처음부터 다시 "
                                     f"→ {bot.snapshot('abyss_match').name}")
                     bot.to_main()
@@ -663,10 +695,23 @@ class AbyssRepeat(Repeat):
                 if self.yield_between(lambda: exit_reward(bot)) or self.repair_between(lambda: exit_reward(bot)):
                     stage = "entry"
                     continue
-                self._again()
+                if self.party_role == "member":
+                    self.wait_party("reward")  # 클리어 화면 '파티장 선택 대기' — 파티장이 다시 하기를 누르면 준비 UI
+                else:
+                    self._again()
                 stage = "match"
             if self.done():
                 break
+
+    PARTY_WAIT = 1800  # 파티원이 파티장의 입장 시작을 기다리는 상한 (초, [abyss] party_wait)
+
+    def wait_party(self, at):
+        """고정 파티 파티원: 파티장이 입장을 시작해 준비 UI 가 뜨면 준비 완료. at: 지금 화면 (보상 화면이면 그대로 기다린다)."""
+        bot = self.bot
+        bot.step("abyss_party", "파티장 입장 기다림")
+        self.emit(stage="match")
+        self.match_at = time.monotonic()
+        party_mod.wait_ready(bot, float(self.a.get("party_wait") or self.PARTY_WAIT))
 
     def _again(self):
         """보상 화면 '다시 하기' (Space) → 같은 던전·난이도로 다시 매칭. 보상 화면은 '나가기' 로도 알아보므로 '다시 하기' 가
@@ -678,9 +723,13 @@ class AbyssRepeat(Repeat):
             bot.log.info("보상 화면에 '다시 하기' 가 안 보임 → 그대로 Space (매칭 신호로 확인)")
         self.match_at = time.monotonic()
         bot.key("space")
+        leader = self.party_role == "leader"
+        if leader:  # 고정 파티: 인원이 모자라면 '도전하시겠습니까?' → 도전하기, 그 뒤 준비 UI
+            party_mod.confirm(bot)
+        ok = party_mod.started if leader else (lambda s: s.abyss_matching in (1, 2, 3) or s.loading)
         for _ in range(2):  # 키가 안 들었으면 — 뒤에서는 키를 한 번 더, 앞에서는 누른다
             # 패킷: 매칭 상태(요청·찾는 중·잡힘)나 맵 로딩이 오면 눌린 것. 모르면 2~3초 뒤 화면의 '다시 하기' 버튼으로
-            took = bot.wait_packet(lambda s: s.abyss_matching in (1, 2, 3) or s.loading, 3, since=bot.input_mark)
+            took = bot.wait_packet(ok, 3, since=bot.input_mark)
             if took or took is None:
                 # 패킷이 모르면 다시 누르지 않는다 — 다시 하기를 누른 뒤 매칭하는 동안에도 보상 화면(버튼)이 남아 있어,
                 # 버튼이 보인다고 또 누르면 매칭이 취소된다 (안 눌렸으면 매칭 상한 뒤 처음부터 다시 한다)
