@@ -72,6 +72,7 @@ class Events:
                 s.dungeon_state = NOT_IN_DUNGEON
             # 대화는 맵을 옮기면 끝난다 — 끝 패킷 없이 끊긴 대화가 '대화 중' 으로 남아 끼어들기·정리가 헛돌지 않게
             s.dialogue_npc, s.dialogue_action, s.dialogue_menu = None, "", False
+            s.party_marks = {}  # 입장 진행은 맵을 옮기면 끝났다 (끝 알림을 놓쳤어도)
             self.spear.reset(s.channel_type == ABYSS and MAP_NAME in (s.channel_name or ""))
             log.info("패킷: 맵 진입 %s (%s)", s.channel_name or s.channel, s.channel_type or "?")
         elif key == "session.logout_ok":  # 캐릭터 선택 화면으로 (me1 03:29:30 — 맵 떠남·세션 정리와 같은 때)
@@ -133,6 +134,30 @@ class Events:
             s.changed_at["abyss_matching"] = time.monotonic()
         elif key == "abyss.matching_cancel_ok":
             s.abyss_matching = 0
+        elif key == "party.info":
+            s.party_id = vals.get("party") or 0
+            s.party_leader = vals.get("leader") if s.party_id else None
+            if not s.party_id:
+                s.party_marks = {}
+        elif key == "party.leader":
+            s.party_leader = vals.get("leader")
+            log.info("패킷: 파티장 바뀜 (%s)", "나" if s.party_leader == s.char_id else "다른 파티원")
+        elif key == "party.play":
+            # 단계 2 만 본다 — 같은 때 단계 0 짜리가 하나 더 와서 단계 0 으로는 끝을 알 수 없다 (끝은 party.enter_end)
+            ids, marks = vals.get("ids") or [], vals.get("marks") or []
+            if vals.get("stage") == 2 and ids and len(ids) == len(marks):
+                if not s.party_marks:
+                    s.party_enter_at = time.monotonic()
+                    log.info("패킷: 파티 입장 준비 시작 (%d명)", len(ids))
+                s.party_marks = dict(zip(ids, marks))
+        elif key == "party.ready_ok":
+            if s.char_id in s.party_marks:
+                s.party_marks = {**s.party_marks, s.char_id: s.PARTY_READY}
+            log.info("패킷: 파티 입장 준비 누름")
+        elif key == "party.enter_end":
+            s.party_end, s.party_end_at = vals.get("code") or 0, time.monotonic()
+            s.party_marks = {}
+            log.info("패킷: 파티 입장 진행 끝 (%s)", {3: "입장", 4: "취소"}.get(s.party_end, s.party_end))
         elif key == "field.context":
             s.field_state = vals.get("state_name")
             log.info("패킷: 사냥터 상태 %s", s.field_state)

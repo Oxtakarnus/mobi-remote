@@ -88,8 +88,8 @@ class Field:
     type: str
     enum: str = ""
     lookup: str = ""
-    size: int = 0  # u64list: 항목 하나의 바이트 수
-    at: int = 0    # u64list: 항목 안에서 읽을 u64 위치
+    size: int = 0  # u64list·u32list: 항목 하나의 바이트 수
+    at: int = 0    # u64list·u32list: 항목 안에서 읽을 값 위치
     key: str = ""  # sjon: 이 이름 다음 문자열을 값으로 읽는다
     # 표식 — 패치로 앞 내용이 늘거나 줄어 칸이 밀려도 따라가게, 이 바이트 모양(16진, ?? 는 아무 바이트)을 찾아
     # 그 시작 + rel 에서 읽는다. 표식이 없으면 off 그대로 (11-05 패치로 물길 주술사 위치가 64바이트 밀림)
@@ -209,13 +209,14 @@ def _read(body: bytes, off: int, typ: str, size: int = 0, at: int = 0, key: str 
         if strs is None:
             return ""  # 대사 내용이 없는 메시지 (대화 끝 등)
         return next((strs[i + 1] for i in range(len(strs) - 1) if strs[i] == key), "")
-    if typ == "u64list":  # u32 개수 + size 바이트씩 — 각 항목 at 위치의 u64
+    if typ in ("u64list", "u32list"):  # u32 개수 + size 바이트씩 — 각 항목 at 위치의 u64 (u32list 는 u32)
+        fmt, w = ("<Q", 8) if typ == "u64list" else ("<I", 4)
         if off + 4 > len(body):
             return None
         n = struct.unpack_from("<I", body, off)[0]
-        if size < at + 8 or off + 4 + n * size > len(body):
+        if size < at + w or off + 4 + n * size > len(body):
             return None
-        return [struct.unpack_from("<Q", body, off + 4 + i * size + at)[0] for i in range(n)]
+        return [struct.unpack_from(fmt, body, off + 4 + i * size + at)[0] for i in range(n)]
     if typ == "bool":
         return bool(body[off]) if off < len(body) else None
     if typ == "str32":

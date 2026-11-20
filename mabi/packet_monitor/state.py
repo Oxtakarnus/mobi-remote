@@ -92,8 +92,33 @@ class PacketState:
     # 출석 대화 시작 (monotonic, 0 = 없음). 날짜가 바뀐 뒤 메인 화면으로 갈 때 NPC 가 한두 마디(무작위) 한 뒤 출석부와
     # '출석부 건너뛰기' 가 뜬다. 끝 신호는 아직 모른다 → 건너뛰기를 누르거나 맵을 옮기면 지우고, 오래되면 끝난 것으로 본다
     attendance_at: float = 0.0
+    # 고정 파티 (party-1120b). 파티 번호: 감시를 켠 뒤 파티 정보가 안 왔으면 None, 파티가 없으면 0. 정보는 서버를 옮길
+    # 때마다 다시 온다. 파티장은 캐릭터 고유 번호(char_id 와 같은 꼴), 파티가 없으면 None
+    party_id: int | None = None
+    party_leader: int | None = None
+    # 파티 입장 진행 중이면 {캐릭터 번호: 상태} — 0 응답 없음 · 1 준비 창 뜸 · 0x0b 준비 끝. 입장 끝·맵 이동이면 비운다
+    party_marks: dict = field(default_factory=dict)
+    party_enter_at: float = 0.0      # 이번 입장 진행이 시작된 때 (monotonic)
+    party_end: int = 0               # 마지막 입장 진행 끝 코드 3 입장함 · 4 취소
+    party_end_at: float = 0.0
     changed_at: dict = field(default_factory=dict)  # CLI_FACTS 필드 → 패킷이 마지막으로 바꾼 때 (monotonic)
     extra: dict = field(default_factory=dict)
+
+    PARTY_READY = 0x0B  # party_marks 의 준비 끝
+
+    def party_role(self) -> str | None:
+        """'leader' · 'member' · '' (파티 없음). 모르면 None (파티 정보·내 번호를 아직 못 받음)."""
+        if self.party_id is None:
+            return None
+        if not self.party_id:
+            return ""
+        if self.char_id is None or self.party_leader is None:
+            return None
+        return "leader" if self.party_leader == self.char_id else "member"
+
+    def party_mark(self) -> int | None:
+        """파티 입장 진행 중 내 상태 (0·1·0x0b). 진행 중이 아니거나 목록에 내가 없으면 None."""
+        return self.party_marks.get(self.char_id) if self.char_id is not None else None
 
     def attending(self, limit: float = 90) -> bool:
         """출석 대화 중 (시작 패킷을 받고 아직 건너뛰지 않음)."""
@@ -116,5 +141,5 @@ class PacketState:
 def _snapshot(s: "PacketState") -> "PacketState":
     """history 에 쌓을 상태 사본. copy.copy 만 하면 changed_at·extra 가 모든 사본과 같은 dict 라 지난 순간 값이 바뀐다."""
     snap = copy.copy(s)
-    snap.changed_at, snap.extra = dict(s.changed_at), dict(s.extra)
+    snap.changed_at, snap.extra, snap.party_marks = dict(s.changed_at), dict(s.extra), dict(s.party_marks)
     return snap

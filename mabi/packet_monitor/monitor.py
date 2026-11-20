@@ -2,6 +2,7 @@
 상태 반영은 Events, CLI 맞추기는 CliSync, 끊김 단서 로그는 LinkWatch 에서 상속한다."""
 import hashlib
 import logging
+import struct
 import threading
 import time
 from collections import deque
@@ -288,6 +289,8 @@ class PacketMonitor(LinkWatch, CliSync, Events):
                 self.look.appearing(body)
         elif ev.key == "char.personal_data":
             self.look.personal(body)
+        elif ev.key == "party.info":
+            vals["leader"] = party_leader(body)
         self.apply(ev.key, vals)
 
     def _spear(self, key: str, vals: dict) -> None:
@@ -312,6 +315,18 @@ class PacketMonitor(LinkWatch, CliSync, Events):
         상태를 모름으로 돌린다 (2026-10-30: 00:05 공백 뒤 지난밤 던전 Cleared 가 아침까지 남음)."""
         self.diag.record("stream_desync", why, server=f"{key[0]}:{key[1]}")
         self.forget(f"패킷 흐름 끊김 ({why})")
+
+
+def party_leader(body: bytes) -> int | None:
+    """파티 정보 본문의 파티장 캐릭터 번호. 파티 이름(길이가 바뀜) 뒤에 있어 표 칸으로 못 적는다 —
+    [27:31] 이름 바이트 길이 n, 이름 끝 + 12 에 u64 (party-1120b: 이름 20바이트 → 63, 파티 없음 → 43 에 ff…). 못 읽으면 None."""
+    if len(body) < 31:
+        return None
+    at = 31 + struct.unpack_from("<I", body, 27)[0] + 12
+    if at + 8 > len(body):
+        return None
+    v = struct.unpack_from("<Q", body, at)[0]
+    return None if v == 0xFFFFFFFFFFFFFFFF else v
 
 
 _shared: PacketMonitor | None = None
