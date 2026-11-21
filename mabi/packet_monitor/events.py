@@ -34,7 +34,7 @@ class Events:
     def _remember(self, key: str, vals: dict) -> None:
         """우리 판단에 쓰는 이벤트(days.KEYS)만 하루 기록에 남긴다. 잠금 안에서 부른다 (_apply 뒤라 char_id 가 새 값)."""
         if key in DAY_KEYS:
-            self.days.record(key, vals, self.state.char_id)
+            self.days.record(key, vals, self.state.char_id, name=self.state.my_name)
 
     def _apply(self, key: str, vals: dict) -> None:
         """이벤트 하나를 상태에 반영하고 기다리는 쪽을 깨운다. 잠금(self._cond) 안에서 부른다 (apply)."""

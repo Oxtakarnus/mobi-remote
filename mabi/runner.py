@@ -359,6 +359,13 @@ class Runner:
             chars = [first, *[ch for ch in chars if ch is not first]]
         if first:
             log.info(f"이어 하기: [{first['name']}] 부터 ({why})")
+        stopped = prog and (prog.get("stopped") or (prog.get("before") or {}).get("stopped"))
+        if stopped:  # 멈춘 뒤 관찰 기록 — 그사이 사람이 한 일·게임이 혼자 진행한 것
+            seen = self.bot.packets.days.since(stopped)
+            if seen:
+                from .packet_monitor.days import describe
+                log.info("멈춘 뒤 관찰: " + " · ".join(describe(r) for r in seen[-12:])
+                         + (f" (앞 {len(seen) - 12}건 생략)" if len(seen) > 12 else ""))
         return chars
 
     @staticmethod
@@ -392,7 +399,7 @@ class Runner:
                     bot.resume = last
                     log.info(f"  지난번에 {last.get('at', '')} [{last['step']}] {last.get('text', '')} 에서 끊김"
                              " → 거기서부터 이어 함")
-                state.set_progress(slot, tid)
+                state.set_progress(slot, tid, bot.packets.state.char_id if bot.packets.ok else None)
             report.task_start(tid)
             self._emit("task_start", slot=slot, task=tid, label=label)
             t0 = time.monotonic()
@@ -427,6 +434,8 @@ class Runner:
             # 단계 기록은 남아 있어 게임을 켜고 다시 시작(F12)하면 이 자리부터 이어 한다
             status, summary = outcome.escalate(bot, status, summary, err)
             halted = status == "STOP"
+            if halted and slot is not None:
+                state.mark_stopped()
             if bot.done_at_clear and status in ("STOP", "FAIL", "ERROR"):
                 # 클리어는 했다 — 보상 화면 정리 중 멈추거나 끊겨도 숙제는 끝난 것 (2026-11-06 사용자). 멈춤은 그대로 멈춘다
                 summary = f"{summary} — 클리어 뒤 {status}, 숙제는 완료"

@@ -66,11 +66,12 @@ class RememberTest(unittest.TestCase):
         m = PacketMonitor(None)
         m.state.me, m.state.char_id = 77, 15
         rec = []
-        m.days.record = lambda key, vals, char=None: rec.append((key, char))
-        m.apply("actor.combat_state", {"actor": 77, "state_name": "InCombat"})
-        m.apply("channel.entering", {"channel": 3})
+        m.days.record = lambda key, vals, char=None, name=None: rec.append((key, char))
+        m.apply("actor.combat_state", {"actor": 77, "state_name": "InCombat"})  # 순간 상태는 안 남긴다
+        m.apply("travel.begin", {"points": 3})
+        m.apply("channel.entering", {"channel": 3})  # 관찰 기록 (2026-11-22)
         m.apply("daily.attendance_start", {})
-        self.assertEqual(rec, [("daily.attendance_start", 15)])
+        self.assertEqual(rec, [("channel.entering", 15), ("daily.attendance_start", 15)])
 
     def test_today_needs_running(self):
         m = PacketMonitor(None)

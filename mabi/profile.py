@@ -173,15 +173,19 @@ class DailyState:
         """{"slot", "task", "at"} — 마지막으로 하던 숙제. 실행이 끝까지 돌면 지워진다."""
         return self.data.get(self.PROGRESS)
 
-    def set_progress(self, slot: int, task: str) -> None:
+    def set_progress(self, slot: int, task: str, char: int | None = None) -> None:
         """접속(login)으로 덮을 때는 그 전에 하던 숙제를 'before' 로 남긴다 — 접속의 시작 정리(login._leave_dungeon)가
-        끊긴 숙제를 보고 마무리한다 (요일 던전 추가 루팅·은동전 사냥터)."""
+        끊긴 숙제를 보고 마무리한다 (요일 던전 추가 루팅·은동전 사냥터).
+        ts(시각·초)와 char(패킷 캐릭터 고유 번호)도 남긴다 — 이어 할 때 관찰 기록에서 그 뒤 그 캐릭터에게 무슨 일이 있었나 본다."""
         old = self.data.get(self.PROGRESS)
-        rec = {"slot": slot, "task": task, "at": datetime.now().strftime("%H:%M:%S")}
+        now = datetime.now()
+        rec = {"slot": slot, "task": task, "at": now.strftime("%H:%M:%S"), "ts": round(now.timestamp(), 3)}
+        if char is not None:
+            rec["char"] = char
         if task == "login" and old:
             before = old.get("before") if old.get("task") == "login" else old
             if before:
-                rec["before"] = {k: before[k] for k in ("slot", "task", "at") if k in before}
+                rec["before"] = {k: before[k] for k in ("slot", "task", "at", "ts", "char", "stopped") if k in before}
         self.data[self.PROGRESS] = rec
         self._save()
 
@@ -221,6 +225,13 @@ class DailyState:
         counts[key] = counts.get(key, 0) + 1
         self._save()
         return counts[key]
+
+    def mark_stopped(self) -> None:
+        """하던 숙제가 멈춤(STOP)으로 끝난 때 — 이어 할 때 그 뒤의 관찰 기록을 본다."""
+        p = self.data.get(self.PROGRESS)
+        if p is not None:
+            p["stopped"] = round(datetime.now().timestamp(), 3)
+            self._save()
 
     def clear_progress(self) -> None:
         if self.data.pop(self.PROGRESS, None) is not None:

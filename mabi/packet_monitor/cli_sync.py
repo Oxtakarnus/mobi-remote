@@ -36,6 +36,7 @@ class CliSync:
         """이벤트로만 바뀌는 상태를 모름(None)으로. 다음 패킷이 오거나, 그 전엔 CLI·화면으로 판단한다.
         맵도 모름으로 둔다 — fresh 가 거짓이 되어 대화·컷신의 '없음' 도 믿지 않게 된다."""
         s = self.state
+        self.gap_at = time.time()  # 이 전후의 관찰 기록은 빠졌을 수 있다 (seen_since 가 '없음' 을 믿지 않는다)
         s.channel, s.channel_type, s.channel_name = None, "", ""
         s.dungeon_state = s.field_state = s.dead = s.traveling = s.fast_travel_ok = s.combat = None
         s.abyss_matching, s.boss_battle, s.cutscene = 0, False, False

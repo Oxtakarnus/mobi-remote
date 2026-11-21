@@ -7,6 +7,8 @@
                     (기본 2: 20개뿐이면 던전 1회만, 40개 이상이면 사냥터부터)
 예) 어떤 캐릭터 = 사냥터 2회, 남은 건 피오드 던전 → field_runs = 2, dungeon = "피오드 던전"
 """
+import time
+
 from .. import gamedata as gd
 from ..bot import Bot
 from ..exceptions import CannotProceed, NotSeen, StepTimeout
@@ -150,6 +152,25 @@ def run(bot: Bot, cfg: dict) -> str:
     return note
 
 
+def _cut_field_done(bot: Bot, pend: dict, coins: int, cost: int) -> bool:
+    """끊긴 사냥터 판을 한 것으로 셀까. 관찰 기록(패킷)에 그 뒤 이 캐릭터의 사냥터 클리어가 있으면 그것으로 —
+    은동전 셈은 그사이 사람이 은동전을 다른 데 쓰면 헷갈린다. 관찰 기록으로 모르면(감시 꺼짐·옛 기록) 은동전이
+    들어가기 전보다 줄었는지로 (그사이 저절로 차는 1~2개는 봐준다)."""
+    seen = bot.packets.seen_since(pend.get("ts"), "field.context", pend.get("char"),
+                                  lambda v: v.get("state_name") == "WaitingForChannelTransfer")
+    if seen:
+        bot.log.info(f"지난번 끊긴 사냥터 {pend.get('n')}회차: 관찰 기록에 {seen['t']} 클리어 → 한 것으로 셈")
+        return True
+    spent = pend.get("coins") is not None and coins <= pend["coins"] - cost + 2
+    if seen is False:
+        bot.log.info(f"지난번 끊긴 사냥터 {pend.get('n')}회차: 관찰 기록에 클리어 없음"
+                     + (" (은동전은 나감 — 들어간 뒤 그만둔 판)" if spent else "") + " → 안 한 것으로")
+        return False
+    if spent:
+        bot.log.info(f"지난번 끊긴 사냥터 {pend.get('n')}회차는 은동전이 나갔으므로 한 것으로 셈 (관찰 기록 없음)")
+    return spent
+
+
 def _run_round(bot: Bot, cfg: dict) -> tuple[str, int | None]:
     """지금 은동전으로 계획해 한 번 돈다 → (결과 글, 남은 은동전)."""
     c = settings(cfg, bot.character["slot"] if bot.character else None)
@@ -165,10 +186,9 @@ def _run_round(bot: Bot, cfg: dict) -> tuple[str, int | None]:
     # → 들어가기 전 은동전보다 줄었으면 그 판은 한 것으로 센다 (그사이 저절로 차는 1~2개는 봐준다)
     pend = bot.daily.get(slot, "silver_pending") if bot.daily and slot else None
     if isinstance(pend, dict):
-        if pend.get("kind") == "field" and pend.get("coins") is not None and coins <= pend["coins"] - c["dungeon_cost"] + 2:
+        if pend.get("kind") == "field" and _cut_field_done(bot, pend, coins, c["dungeon_cost"]):
             fields_done += 1
             bot.daily.set(slot, "silver_fields", fields_done)
-            bot.log.info(f"지난번 끊긴 사냥터 {pend.get('n')}회차는 은동전이 나갔으므로 한 것으로 셈")
         bot.daily.set(slot, "silver_pending", None)
     if fields_done:
         c = dict(c, field_runs=max(0, c["field_runs"] - fields_done))
@@ -190,7 +210,9 @@ def _run_round(bot: Bot, cfg: dict) -> tuple[str, int | None]:
                 kind = "field" if once is field_once else "dungeon"
                 bot.step(f"silver_{kind}", f"{label} {i + 1}/{runs}회 (은동전 {before})", n=i + 1, runs=runs)
                 if bot.daily and slot:
-                    bot.daily.set(slot, "silver_pending", {"kind": kind, "n": i + 1, "coins": before})
+                    # 들어가는 때·캐릭터를 같이 남긴다 — 이어 할 때 관찰 기록에서 그 뒤 이 캐릭터가 클리어했는지 본다
+                    bot.daily.set(slot, "silver_pending", {"kind": kind, "n": i + 1, "coins": before,
+                                                           "ts": time.time(), "char": bot.packets.state.char_id})
                 counted = []
                 last_run = i == runs - 1 and (once is dungeon_once or not dungeon_runs)
 

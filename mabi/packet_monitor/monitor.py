@@ -63,6 +63,8 @@ class PacketMonitor(LinkWatch, CliSync, Events):
         self._kick_done = 0.0        # 게임을 끄며 처리한 알림의 시각
         self._seq = 0
         self.started_at = 0.0        # 캡처를 시작한 때 (monotonic, 0 = 아직) — dye_open 이 본다
+        self.watch_from = 0.0        # 캡처를 시작한 시각 (time.time) — 관찰 기록이 어디부터 빠짐없나 (seen_since)
+        self.gap_at = 0.0            # 흐름이 끊겨 상태를 모름으로 돌린 마지막 시각 (time.time) — 그 전부터의 관찰은 빠졌을 수 있다
         self._cond = threading.Condition()  # 잠금은 RLock — 잠금 안에서 부르는 _apply 등이 다시 잡아도 된다
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
@@ -129,6 +131,19 @@ class PacketMonitor(LinkWatch, CliSync, Events):
         """오늘(게임 날짜, 오전 6시부터) key 이벤트를 처음 받은 시각 'HH:MM:SS' — 숙제를 돌리지 않을 때 받은 것과 리모콘을
         켜기 전 오늘 것(하루 기록 파일)까지. 감시가 안 돌면 None (모름)."""
         return self.days.today(key) if self.status == "running" else None
+
+    def seen_since(self, ts: float | None, key: str, char: int | None = None, check=None) -> dict | None | bool:
+        """관찰 기록에서 ts(초) 이후 char 캐릭터의 key 이벤트 중 check(vals) 가 참인 첫 줄. 없으면 False,
+        모르면 None (감시가 안 돎 · ts 가 없음 · ts 뒤에 감시를 켰거나 흐름이 끊겨 빠졌을 수 있음).
+        찾은 줄은 그대로 믿는다 — 받은 것은 사실이다. '없음' 만 빠짐없이 본 때에 한해 False."""
+        if not ts:
+            return None
+        for r in self.days.since(ts, key, char):
+            if check is None or check(r.get("vals") or {}):
+                return r
+        if self.status != "running" or not self.watch_from or self.watch_from > ts or self.gap_at > ts:
+            return None
+        return False
 
     def mark(self) -> int:
         """지금까지 본 이벤트 번호. wait(after=mark()) 로 '이 뒤에 온 것만' 기다린다."""
@@ -225,6 +240,7 @@ class PacketMonitor(LinkWatch, CliSync, Events):
             return
         self.status = "running"
         self.started_at = time.monotonic()
+        self.watch_from = time.time()
         log.info("패킷 감시 시작 (%s, 받는 칸 %s)", cap.device, f"{cap.buffer >> 20}MB" if cap.buffer else "기본")
         self._check_game()
         streams: dict[tuple, Stream] = {}
