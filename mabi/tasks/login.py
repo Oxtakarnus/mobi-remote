@@ -309,6 +309,10 @@ def _leave_dungeon(bot: Bot) -> bool:
     # 던전에서 나와 센마이 평원에 남은 채 다음 캐릭터 접속 → 캐릭터마다 40분씩 기다림). 퀘스트 조회가 안 되면 끊긴 숙제가 은동전일 때만 기다린다
     if _in_field(bot):
         hunt = hunt_quest(bot)
+        # CLI 퀘스트 목록은 화면에 보이는 추적 칸만 준다 — 창이 HUD 를 가리면 사냥 중이어도 '없음' 이다 (wait_field 와 같은 사정).
+        # 메인 화면이 아닐 때의 '없음' 은 모름으로 본다 (2026-11-21: 사냥터 안에서 멈췄다 이어 하자 기다리지 않고 지도를 열어 던전으로 가려 함)
+        if hunt == "" and not bot.at_main():
+            hunt = None
         if hunt or (hunt is None and cut == "silver"):
             bot.step("field_inside_at_login", f"사냥터 안에서 시작 ({hunt or '패킷'}) → 클리어까지 기다림")
             wait_field(bot, "", bot.cfg["silver"]["field_timeout"])

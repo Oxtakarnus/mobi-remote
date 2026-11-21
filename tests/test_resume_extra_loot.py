@@ -53,5 +53,40 @@ class LeaveDungeonLootTest(unittest.TestCase):
         self.assertEqual(self.leave({"slot": 2, "task": "login"}), 0)
 
 
+class LeaveFieldTest(unittest.TestCase):
+    """사냥터 안에서 멈췄다 이어 하면 클리어까지 기다린다 — 창이 HUD 를 가려 사냥 퀘스트가 안 보여도 (2026-11-21)."""
+
+    def leave(self, hunt, at_main, task="silver"):
+        from mabi.tasks import login
+        b = mock.MagicMock()
+        b.cfg = {"black_hole": {"space_keyword": "검은 구멍"}, "weekday_dungeon": {"extra_loot": 0},
+                 "silver": {"field_timeout": 2400}}
+        b.character = {"slot": 2}
+        b.daily.progress.return_value = {"slot": 2, "task": "login", "before": {"slot": 2, "task": task}}
+        b.at_main.return_value = at_main
+        b.exists.return_value = False  # 클리어·보상 화면 아님
+        here = SimpleNamespace(kind=None, in_field=True)
+        with (mock.patch("mabi.place.place", return_value=here),
+              mock.patch("mabi.tasks.space.game_space", return_value="창백한 산"),
+              mock.patch("mabi.tasks.space.hunt_quest", return_value=hunt),
+              mock.patch("mabi.tasks.space.dungeon_state", return_value="NotInDungeon"),
+              mock.patch("mabi.tasks.dungeon.wait_field") as wf):
+            login._leave_dungeon(b)
+        return wf.called
+
+    def test_hunt_seen_waits(self):
+        self.assertTrue(self.leave("창백한 산 사냥 IV", at_main=True, task="tribute"))
+
+    def test_hud_covered_waits_when_silver_was_cut(self):
+        self.assertTrue(self.leave("", at_main=False))
+
+    def test_hud_covered_other_task_does_not_wait(self):
+        self.assertFalse(self.leave("", at_main=False, task="arbeit"))
+
+    def test_main_screen_without_hunt_does_not_wait(self):
+        # 채집·사냥터 안 던전을 마치고 나와 있는 사냥터 — 판이 아니라 클리어가 오지 않는다
+        self.assertFalse(self.leave("", at_main=True))
+
+
 if __name__ == "__main__":
     unittest.main()
