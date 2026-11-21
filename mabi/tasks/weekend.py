@@ -23,6 +23,7 @@ from typing import NamedTuple
 from .. import gamedata as gd
 from ..bot import Bot
 from ..exceptions import CannotProceed
+from ..place import ABYSS, RAID, RAID_LOBBY
 from ..profile import RESET_HOUR
 from . import abyss, questwin, raid, ui_text
 from .steps import list_views
@@ -32,6 +33,8 @@ KINDS = {
     "abyss": ("주간 어비스", "dungeon", "weekend_abyss_quest"),
     "raid": ("주간 레이드", "raid", "weekend_raid_quest"),
 }
+# 끊긴 주말 숙제 → 그 판의 맵 종류. 접속의 시작 정리(login._finish_inside)가 이 판 안이면 나가지 않고 finish_inside 로 마친다
+INSIDE = {"weekend_abyss": (ABYSS,), "weekend_raid": (RAID, RAID_LOBBY)}
 QUEST_SCROLL = 3     # 퀘스트 창 목록을 한 번에 내리는 휠 칸 수
 QUEST_SCROLLS = 8    # 최대 몇 번 내려가며 볼지
 # 카드 제목 아래로 같은 카드의 '진행하기'·진행도를 찾는 높이. 고른(펼친) 카드는 목표 줄·답례까지 보여 제목→버튼이 276,
@@ -179,6 +182,16 @@ def _repeat(bot: Bot, cfg: dict, kind: str, runs: int, place: str) -> dict:
     cls = abyss.AbyssRepeat if kind == "abyss" else raid.RaidRepeat
     with _kept(bot):
         return cls(bot, sub, runs=runs).run()
+
+
+def finish_inside(bot: Bot, cfg: dict, task: str) -> None:
+    """끊긴 주말 숙제의 판 안에서 다시 시작함 (접속의 시작 정리가 부른다): 나가지 않고 반복으로 그 판을 한 판 마치고
+    나온다 — 예전엔 접속 단계가 바로 나가 함께하기 파티 판을 버리고 다시 매칭했다 (점검 2026-11-22).
+    남은 판은 숙제가 제 차례에 퀘스트 진행도로 다시 센다."""
+    from .exits import leave_instance
+    kind = "abyss" if task == "weekend_abyss" else "raid"
+    _repeat(bot, cfg, kind, 1, plan(picked(cfg, kind), kind, 1)[0][0])
+    leave_instance(bot)
 
 
 def run(bot: Bot, cfg: dict, kind: str) -> str:

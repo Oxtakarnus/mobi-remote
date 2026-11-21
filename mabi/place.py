@@ -78,7 +78,10 @@ def place(bot) -> Place:
         loading = bot.map_loading()
     s = p.state
     if loading is not None:  # 패킷이 맵을 안다
-        field = None if s.field_state is None else s.field_state != "NotInBattlefield"
+        # 사냥터 상태를 모르면(CLI 맞춤·작업 시작 점검이 모름으로 돌림 — CLI 는 진행 중과 클리어 뒤를 못 가른다) 맵 종류로.
+        # 예전엔 모름으로 둬 이어 하기가 사냥터 맵 안인 줄 몰랐다 (점검 2026-11-22)
+        field = (s.field_state != "NotInBattlefield" if s.field_state is not None
+                 else s.channel_type == FIELD if s.channel_type and not loading else None)
         return Place(loading, None if loading else (s.channel_type or None), "packet",
                      s.channel_name, s.dungeon_state, field)
     act = bot.activity()

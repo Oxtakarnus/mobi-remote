@@ -9,6 +9,21 @@ from unittest import mock
 from mabi.profile import DailyState
 
 
+def daily_of(progress):
+    """진행 기록이 progress 인 DailyState 흉내 — 끊긴 숙제 고르기(interrupted)는 진짜 규칙."""
+    d = mock.MagicMock()
+    d.progress.return_value = progress
+    d.interrupted.side_effect = lambda: DailyState.interrupted(d)
+    return d
+
+
+def unwatched(b):
+    """관찰 기록으로는 모름 (감시 꺼짐과 같다) — 끊긴 숙제를 예전처럼 믿는다."""
+    b.packets.seen_since.return_value = None
+    b.packets.state.char_id = None
+    return b
+
+
 class ProgressBeforeLoginTest(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -35,7 +50,8 @@ class LeaveDungeonLootTest(unittest.TestCase):
         b = mock.MagicMock()
         b.cfg = {"black_hole": {"space_keyword": "검은 구멍"}, "weekday_dungeon": {"extra_loot": 3}}
         b.character = {"slot": 2}
-        b.daily.progress.return_value = progress
+        b.daily = daily_of(progress)
+        unwatched(b)
         here = SimpleNamespace(kind=None, in_field=False)
         with (mock.patch("mabi.place.place", return_value=here),
               mock.patch("mabi.tasks.space.game_space", return_value="던전"),
@@ -62,7 +78,8 @@ class LeaveFieldTest(unittest.TestCase):
         b.cfg = {"black_hole": {"space_keyword": "검은 구멍"}, "weekday_dungeon": {"extra_loot": 0},
                  "silver": {"field_timeout": 2400}}
         b.character = {"slot": 2}
-        b.daily.progress.return_value = {"slot": 2, "task": "login", "before": {"slot": 2, "task": task}}
+        b.daily = daily_of({"slot": 2, "task": "login", "before": {"slot": 2, "task": task}})
+        unwatched(b)
         b.at_main.return_value = at_main
         b.exists.return_value = False  # 클리어·보상 화면 아님
         here = SimpleNamespace(kind=None, in_field=True)
@@ -70,6 +87,7 @@ class LeaveFieldTest(unittest.TestCase):
               mock.patch("mabi.tasks.space.game_space", return_value="창백한 산"),
               mock.patch("mabi.tasks.space.hunt_quest", return_value=hunt),
               mock.patch("mabi.tasks.space.dungeon_state", return_value="NotInDungeon"),
+              mock.patch("mabi.tasks.dungeon.touch_prompt_visible", return_value=False),
               mock.patch("mabi.tasks.dungeon.wait_field") as wf):
             login._leave_dungeon(b)
         return wf.called

@@ -185,7 +185,8 @@ class DailyState:
         if task == "login" and old:
             before = old.get("before") if old.get("task") == "login" else old
             if before:
-                rec["before"] = {k: before[k] for k in ("slot", "task", "at", "ts", "char", "stopped") if k in before}
+                rec["before"] = {k: before[k] for k in ("slot", "task", "at", "ts", "char", "stopped", "step", "stage")
+                                  if k in before}
         self.data[self.PROGRESS] = rec
         self._save()
 
@@ -225,6 +226,16 @@ class DailyState:
         counts[key] = counts.get(key, 0) + 1
         self._save()
         return counts[key]
+
+    def interrupted(self) -> dict | None:
+        """끊긴 숙제의 진행 기록 — 이어 하기(runner._arrange)와 접속의 시작 정리(login._leave_dungeon)가 같이 쓴다.
+        접속(login) 도중 끊겼으면 그 접속이 이어 하려던 같은 캐릭터의 숙제(before). 다음 캐릭터로 넘어가던 접속이면
+        아무것도 안 한 것이라 None (before 는 앞 캐릭터가 끝낸 숙제다)."""
+        p = self.progress()
+        if not p or p.get("task") != "login":
+            return p
+        b = p.get("before")
+        return b if b and b.get("slot") == p.get("slot") else None
 
     def mark_stopped(self) -> None:
         """하던 숙제가 멈춤(STOP)으로 끝난 때 — 이어 할 때 그 뒤의 관찰 기록을 본다."""

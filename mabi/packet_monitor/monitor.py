@@ -132,14 +132,14 @@ class PacketMonitor(LinkWatch, CliSync, Events):
         켜기 전 오늘 것(하루 기록 파일)까지. 감시가 안 돌면 None (모름)."""
         return self.days.today(key) if self.status == "running" else None
 
-    def seen_since(self, ts: float | None, key: str, char: int | None = None, check=None) -> dict | None | bool:
-        """관찰 기록에서 ts(초) 이후 char 캐릭터의 key 이벤트 중 check(vals) 가 참인 첫 줄. 없으면 False,
-        모르면 None (감시가 안 돎 · ts 가 없음 · ts 뒤에 감시를 켰거나 흐름이 끊겨 빠졌을 수 있음).
+    def seen_since(self, ts: float | None, keys, char: int | None = None, check=None) -> dict | None | bool:
+        """관찰 기록에서 ts(초) 이후 char 캐릭터(None 이면 누구든)의 keys 이벤트(이름 하나 또는 여럿) 중 check(줄) 가 참인
+        첫 줄. 없으면 False, 모르면 None (감시가 안 돎 · ts 가 없음 · ts 뒤에 감시를 켰거나 흐름이 끊겨 빠졌을 수 있음).
         찾은 줄은 그대로 믿는다 — 받은 것은 사실이다. '없음' 만 빠짐없이 본 때에 한해 False."""
         if not ts:
             return None
-        for r in self.days.since(ts, key, char):
-            if check is None or check(r.get("vals") or {}):
+        for r in self.days.since(ts, keys, char):
+            if check is None or check(r):
                 return r
         if self.status != "running" or not self.watch_from or self.watch_from > ts or self.gap_at > ts:
             return None

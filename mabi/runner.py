@@ -340,10 +340,11 @@ class Runner:
         chars = [ch for ch in chars if ch not in later] + later
 
         # 맨 앞에 둘 캐릭터: ① 지난번에 숙제 도중 끊긴 캐릭터 ② 아니면 지금 접속해 있는 캐릭터 (할 게 남았으면)
-        # — 접속 전환을 아끼고 하던 걸 그 자리에서 잇는다. 접속(login) 도중 끊긴 건 아무것도 안 한 것이라 치지 않는다
-        prog = state.progress()
+        # — 접속 전환을 아끼고 하던 걸 그 자리에서 잇는다. 접속(login) 도중 끊긴 건 그 접속이 이어 하려던 숙제로 본다
+        # (사냥터 판을 기다리던 접속 단계에서 다시 멈추면 예전엔 지금 캐릭터 이름만 보고 골라, 못 읽으면 다른 캐릭터로 바꿨다)
+        prog = state.interrupted()
         first, why = None, ""
-        if prog and prog.get("task") != "login":
+        if prog:
             first = next((ch for ch in chars if ch["slot"] == prog["slot"] and todo(ch)), None)
             why = (f"지난 실행이 {prog['at']} '{prog['task']}'"
                    f"{' · ' + prog['stage'] if prog.get('stage') else ''} 에서 멈춤")
@@ -359,7 +360,7 @@ class Runner:
             chars = [first, *[ch for ch in chars if ch is not first]]
         if first:
             log.info(f"이어 하기: [{first['name']}] 부터 ({why})")
-        stopped = prog and (prog.get("stopped") or (prog.get("before") or {}).get("stopped"))
+        stopped = (prog or {}).get("stopped") or (state.progress() or {}).get("stopped")
         if stopped:  # 멈춘 뒤 관찰 기록 — 그사이 사람이 한 일·게임이 혼자 진행한 것
             seen = self.bot.packets.days.since(stopped)
             if seen:

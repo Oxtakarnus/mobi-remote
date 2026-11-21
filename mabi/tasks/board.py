@@ -232,18 +232,27 @@ def _same_view(a: list[int], b: list[int]) -> bool:
     return len(a) == len(b) and all(abs(x - y) <= 12 for x, y in zip(a, b))
 
 
+def _cards(bot: Bot, region, timeout: float) -> list:
+    """보이는 카드. 하나도 안 보이면 보일 때까지 기다린다 — 빈 화면은 '모름' 이다 (그리는 중이거나 창이 가림).
+    카드가 그려지기 전에 읽으면 목록을 내려 첫 화면 카드를 건너뛰고, 빈 화면 둘을 '목록이 그대로 = 끝' 으로 보면
+    그 마을을 이번 주 완료로 적는다 (점검 2026-11-22). 끝내 안 보이면 NotSeen."""
+    end = time.monotonic() + timeout
+    while not (cards := parse_cards(find_texts(bot.frame(), region), region)):
+        if time.monotonic() > end:
+            raise NotSeen(f"게시판 상점에 카드가 안 보임 → {bot.snapshot('board_cards').name}")
+        bot.sleep(0.4, 0.6)
+    return cards
+
+
 def buy_all(bot: Bot, c: dict) -> list[str]:
     """보이는 제작 스크롤을 다 사고 목록을 내리기를 더 안 내려갈 때까지 → 산 물품 이름들.
     산 카드는 '일시 품절' 로 바뀌어 다시 읽으면 빠진다. 다 산 줄 몰랐던 카드(구입 창 버튼이 다름)는 넘긴다(skip)."""
     region = gd.region("board_cards")
     _close_panel(bot, c)  # 구입 창을 연 채 끊겼다 이어 하면 카드 칸이 가려져 있다
-    # 카드가 그려지기 전에 읽으면 빈 화면으로 보고 목록을 내려 첫 화면 카드를 건너뛴다 → 카드가 보일 때까지
-    if not _wait(lambda: parse_cards(find_texts(bot.frame(), region), region), c["buy_timeout"], bot):
-        raise NotSeen(f"게시판 상점에 카드가 안 보임 → {bot.snapshot('board_cards').name}")
     bought, skip, prev = [], set(), None
     for _ in range(c["max_pages"]):
         for _ in range(12):  # 한 화면 카드 8장 + 다시 읽기 여유
-            cards = parse_cards(find_texts(bot.frame(), region), region)
+            cards = _cards(bot, region, c["buy_timeout"])
             todo = [k for k in cards if k.craft and k.state != SOLD and k.key not in skip]
             if not todo:
                 break

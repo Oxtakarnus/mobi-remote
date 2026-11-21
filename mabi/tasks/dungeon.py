@@ -193,6 +193,14 @@ def play_field(bot: Bot, place: str, clear_timeout: float, on_enter=None, again:
     return wait_field(bot, place, clear_timeout, again)
 
 
+def hunt_covered(bot: Bot) -> bool:
+    """사냥 퀘스트 '없음' 을 믿을 수 없는 화면인가. CLI 퀘스트 목록은 화면에 보이는 추적 칸만 준다 → 지도 등 창이 열려
+    HUD 가 가려지면 사냥 중이어도 '없음' 으로 나온다 (2026-10-23: 사냥 중 지도가 열려 클리어로 오판, 다음 던전으로 떠남).
+    메인 화면도 클리어 화면(터치·보상 — 클리어하면 퀘스트가 사라진다)도 아니면 다른 창이 가린 것. 사냥터 판을 보는 곳
+    (wait_field · 접속의 시작 정리)이 이 기준 하나를 쓴다."""
+    return not bot.at_main() and not bot.exists(bot.ui["reward_exit"]) and not touch_prompt_visible(bot)
+
+
 def wait_field(bot: Bot, place: str, clear_timeout: float, again: str | None = None) -> str:
     """사냥터 안에서 클리어까지 기다리고 마무리. 반환 'clear' | 'again'.
     사냥터 안에서 끊긴 뒤 다시 시작했을 때도 이걸로 그 판을 끝까지 본다 (은동전은 이미 나갔다)."""
@@ -224,10 +232,8 @@ def wait_field(bot: Bot, place: str, clear_timeout: float, again: str | None = N
     # 조회 실패나 일시적인 빈 응답으로 끝났다고 오판하지 않도록 3번 연속 없어야 클리어로 본다
     while gone < 3:
         h = hunt()
-        # CLI 퀘스트 목록은 화면에 보이는 추적 칸만 준다 → 지도 등 창이 열려 HUD 가 가려지면 사냥 퀘스트가 '없음' 으로
-        # 나온다 (2026-10-23: 사냥 중 지도가 열려 클리어로 오판, 다음 던전으로 떠남). 메인 화면일 때만 셈에 넣는다
-        if h == "" and not bot.at_main() and not bot.exists(bot.ui["reward_exit"]) and not touch_prompt_visible(bot):
-            h = None  # 클리어 화면(터치·보상)도 아닌데 HUD 가 가려짐 = 다른 창이 열린 것
+        if h == "" and hunt_covered(bot):  # 창이 HUD 를 가려 '없음' 을 믿을 수 없다 — 셈에 넣지 않는다
+            h = None
             covered_since = covered_since or time.monotonic()
             if time.monotonic() - covered_since > 30:  # 창이 계속 열려 있으면 닫는다 (사냥터 시간은 흐르고 있다)
                 bot.log.info("사냥터: 창이 열려 진행 상황이 가려짐 → 닫음")

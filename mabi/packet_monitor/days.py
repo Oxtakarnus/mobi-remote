@@ -13,7 +13,7 @@ import threading
 from datetime import datetime, timedelta
 from pathlib import Path
 
-from ..profile import game_date
+from ..profile import RESET_HOUR, game_date
 
 # 하루 기록에 남기는 이벤트 — '오늘 이 신호가 있었나' 를 쓰는 판단이 생기면 여기에 넣는다 (Events._remember 가 거른다)
 KEYS = frozenset({
@@ -36,10 +36,21 @@ _SAY = {"session.logout_ok": "로그아웃", "char.personal_data": "접속", "da
 
 
 def describe(row: dict) -> str:
-    """관찰 기록 한 줄을 로그 글로 — 'HH:MM:SS 이름 맵 이멘 마하'."""
+    """관찰 기록 한 줄을 로그 글로 — 'HH:MM:SS 이름 맵 이멘 마하'. 이름을 모르면 캐릭터 번호."""
     v = row.get("vals") or {}
     what = v.get("channel_name") or v.get("state_name") or (f"{v['zone']}구역" if v.get("zone") else "")
-    return " ".join(x for x in (row.get("t", ""), row.get("name") or "", _SAY.get(row["key"], row["key"]), str(what)) if x)
+    who = row.get("name") or (f"#{row['char']}" if row.get("char") is not None else "")
+    return " ".join(x for x in (row.get("t", ""), who, _SAY.get(row["key"], row["key"]), str(what)) if x)
+
+
+def val(row: dict, name: str):
+    """관찰 기록 한 줄의 값 하나 (없으면 None)."""
+    return (row.get("vals") or {}).get(name)
+
+
+def day_start(now: datetime | None = None) -> float:
+    """지금 게임 날짜(오전 6시에 바뀜)가 시작된 시각(초) — '오늘 이 캐릭터가 …했나' 를 since 로 물을 때."""
+    return datetime.strptime(game_date(now), "%Y-%m-%d").replace(hour=RESET_HOUR).timestamp()
 
 
 def _oldest_kept(day: str) -> str:
@@ -54,6 +65,7 @@ class DayLog:
         self.day: str | None = None
         self.first: dict[str, str] = {}  # 오늘 key → 처음 받은 시각 'HH:MM:SS'
         self.rows: list[dict] = []  # 남긴 줄 (오늘·어제, ts 가 있는 것) — since 가 본다
+        self.names: dict[int, str] = {}  # 캐릭터 번호 → 이름 (접속 직후엔 이름이 아직 안 와 지난 줄에서 채운다)
         self._lock = threading.Lock()
 
     def open(self, root: Path | None, now: datetime | None = None) -> None:
@@ -88,6 +100,8 @@ class DayLog:
                             self.first.setdefault(row["key"], row["t"])
                         if row.get("ts"):
                             self.rows.append(row)
+                        if row.get("name") and row.get("char") is not None:
+                            self.names[row["char"]] = row["name"]
             self.rows = self.rows[-ROWS_MAX:]
         except OSError:
             pass
@@ -103,6 +117,10 @@ class DayLog:
             row = {"t": t, "ts": round(now.timestamp(), 3), "key": key}
             if char is not None:
                 row["char"] = char
+                if name:
+                    self.names[char] = name
+                else:
+                    name = self.names.get(char)
             if name:
                 row["name"] = name
             v = {k: x for k, x in vals.items()

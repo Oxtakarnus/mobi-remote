@@ -251,11 +251,23 @@ def leave(bot: Bot) -> None:
         bot.log.warning(f"보스 영역 나가기: {e}")
 
 
+def finish_inside(bot: Bot) -> bool:
+    """보스와 싸우던 중에 끊긴 채 보스 영역 안에서 다시 시작함: 나가지 않고 그 전투부터 마치고 나온다 — 예전엔 나가서
+    새 보스로 다시 들어가 쌓은 기여를 버렸다 (점검 2026-11-22). 보상을 받았으면 True (못 받았으면 run 이 다시 들어간다)."""
+    got = fight(bot)
+    leave(bot)
+    return got
+
+
 def run(bot: Bot, cfg: dict) -> str:
     fb = cfg["field_boss"]
     boss, difficulty = fb["boss"], fb["difficulty"]
     if done(bot):
         return "이번 주 이미 잡음"
+    if inside(bot) and (bot.resume or {}).get("step") == "fb_fight":
+        bot.log.info("보스와 싸우던 중에 끊김 → 그 전투부터")
+        if finish_inside(bot):
+            return f"{boss} {difficulty} 처치 (끊긴 전투를 이어서)"
     if inside(bot):
         bot.log.info("이미 보스 영역 안 → 나가서 다시")
         leave(bot)

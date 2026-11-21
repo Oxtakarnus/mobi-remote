@@ -47,6 +47,19 @@ class PlaceTest(unittest.TestCase):
         bot.packets.apply("channel.leaving", {})
         self.assertIsNone(on_map(bot, FIELD_BOSS))   # 로딩 중
 
+    def test_field_state_unknown_uses_map_kind(self):
+        """사냥터 상태를 모르면(작업 시작 점검에서 CLI 가 답을 못 해 지움) 맵 종류로 — 예전엔 모름이라 이어 하기가 사냥터
+        판 안인 줄 몰랐다 (점검 2026-11-22)."""
+        bot = FakeBot()
+        bot.packets.apply("channel.entering", {"channel": 1, "channel_type": FIELD, "channel_name": "창백한 산"})
+        self.assertIsNone(bot.packets.state.field_state)
+        self.assertIs(place(bot).in_field, True)
+        bot.packets.apply("field.context", {"state_name": "NotInBattlefield"})
+        self.assertIs(place(bot).in_field, False)  # 패킷이 알면 그것
+        bot.packets.apply("channel.entering", {"channel": 2, "channel_type": "Field", "channel_name": "이멘 마하"})
+        bot.packets.state.field_state = None
+        self.assertIs(place(bot).in_field, False)
+
     def test_cli_guesses(self):
         act = {"Dungeon": {"State": "NotInDungeon"}, "Battlefield": {"IsInBattleField": False}}
         self.assertEqual(place(FakeBot(act, "허상의 정박지")).kind, ABYSS)

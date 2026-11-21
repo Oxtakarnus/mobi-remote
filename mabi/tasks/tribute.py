@@ -20,6 +20,7 @@ from .steps import with_retries
 QUEST_TITLE = gd.text("tribute_quest")
 CARD_H = 450  # 퀘스트 카드 하나의 높이 (1920 기준, 제목 → '진행하기' 약 400px)
 LIST_X0, LIST_Y0 = 1220, 220  # 퀘스트 창 오른쪽 카드 목록의 왼쪽 위 (탭 줄 위까지가 목록)
+OPENED = ("tr_open", "travel", "dungeon_enter", "in_dungeon", "dungeon_reward")  # 퀘스트의 '진행하기' 를 누른 뒤 단계
 
 
 def quest_visible(bot: Bot) -> bool | None:
@@ -39,6 +40,27 @@ def not_yet(bot: Bot, cfg: dict, last: dict | None = None) -> str:
     if last and last.get("step") not in (None, "end", "tr_wait"):
         return ""
     return "고난도 퀘스트가 아직 없음" if quest_visible(bot) is False else ""
+
+
+def cleared_today(bot: Bot) -> str:
+    """고난도 퀘스트를 오늘 이미 깼다는 근거 (없으면 ""). 목록에 퀘스트가 없을 때 본다 — 접속 직후라 아직 안 뜬 것과 가른다.
+    예전엔 둘을 못 갈라, 끊긴 판을 접속 단계가 마친 뒤나 멈춘 사이 사람이 깬 뒤에도 오지 않을 퀘스트를 3~10분 기다리다
+    실패로 끝냈다 (점검 2026-11-22). ① 이 숙제가 퀘스트를 연 뒤(이동·던전 안)에 끊겼다 — 끊긴 판은 접속 단계가 클리어까지
+    봤다 ② 관찰 기록: 오늘 이 캐릭터가 심층 던전(맵 이름 '… 심층 던전 …')을 깼다."""
+    from ..packet_monitor.days import day_start, val
+    last = (bot.resume or {}).get("step")
+    if last in OPENED:
+        return f"지난번 [{last}] 에서 끊긴 판을 마침"
+    char = bot.packets.state.char_id if bot.packets.ok else None
+    if char is None:
+        return ""
+    deep, where = gd.text("dungeon_deep"), ""
+    for r in bot.packets.days.since(day_start(), ("channel.entering", "dungeon.state"), char):
+        if r["key"] == "channel.entering":
+            where = val(r, "channel_name") or ""
+        elif val(r, "state_name") == "Cleared" and deep in where:
+            return f"관찰 기록에 {r['t']} {where} 클리어"
+    return ""
 
 
 def _wait_until(bot: Bot, c: dict) -> float:
@@ -108,6 +130,8 @@ def run(bot: Bot, cfg: dict) -> str:
     if ready:
         return f"공물 {start} → " + _enter(bot, c, start)
     t0 = time.monotonic()
+    if quest_visible(bot) is False and (why := cleared_today(bot)):
+        return f"공물 {start}개 — 고난도 퀘스트는 이미 깸 ({why})"
     if not quest_visible(bot):
         bot.step("tr_wait", f"공물 {start}개 — 고난도 퀘스트가 나타나길 기다림 (최대 {end - t0:.0f}초)")
     while not (seen := quest_visible(bot)):

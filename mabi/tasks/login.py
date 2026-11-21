@@ -264,18 +264,77 @@ def name_in_frame(frame) -> str:
     return nospace(texts[0]) if len(texts) == 1 else ""
 
 
+def cut_task(bot: Bot) -> dict | None:
+    """끊긴 숙제의 진행 기록 — 지금 접속할 캐릭터의 것이고 멈춘 그 판이 아직 그대로일 때만.
+    멈춘 뒤 다른 캐릭터로 접속해 있거나(패킷 캐릭터 번호) 로그아웃·마을로 나간 것이 관찰됐으면 None — 그사이 사람이 다른
+    일을 했으니 지금 자리는 끊긴 그 판이 아니다 (남의 보상 화면에서 추가 루팅을 누르거나 끝난 판을 기다리지 않게).
+    관찰 기록으로 모르면(감시 꺼짐·리모콘을 다시 켬) 예전처럼 끊긴 숙제로 본다 (사용자 2026-11-22: 멈춘 뒤 관찰한 것으로
+    지금 상황을 알고 이어 한다)."""
+    from ..packet_monitor.days import describe, val
+    from ..place import OPEN_MAPS
+    prog = bot.daily.interrupted() if bot.daily else None
+    if not prog or not bot.character or prog.get("slot") != bot.character.get("slot"):
+        return None
+    char = prog.get("char")
+    now = bot.packets.state.char_id if bot.packets.ok else None
+    if char is not None and now is not None and char != now:
+        bot.log.info(f"끊긴 숙제 '{prog['task']}': 지금 다른 캐릭터로 접속해 있음 → 끊긴 판으로 보지 않음")
+        return None
+
+    def moved(r: dict) -> bool:
+        if r["key"] == "channel.entering":
+            return val(r, "channel_type") in OPEN_MAPS
+        if r["key"] == "char.personal_data":
+            return char is not None and r.get("char") != char
+        return True  # 로그아웃
+    seen = bot.packets.seen_since(prog.get("stopped"), ("session.logout_ok", "char.personal_data", "channel.entering"),
+                                  check=moved)
+    if seen:
+        bot.log.info(f"끊긴 숙제 '{prog['task']}': 멈춘 뒤 {describe(seen)} → 끊긴 판은 끝남")
+        return None
+    return prog
+
+
+def _finish_inside(bot: Bot, cut: dict, kind: str | None) -> bool:
+    """끊긴 숙제의 판 안이면 나가지 않고 그 숙제의 방식으로 판을 마친다. 마쳤으면 True.
+    주말 어비스·레이드는 나가면 파티 판을 버리고, 필드 보스 전투는 쌓은 기여가 날아간다 (점검 2026-11-22). 남은 판·다음
+    도전은 그 숙제가 제 차례에 게임 상태(퀘스트 진행도·성장 가이드)로 다시 센다."""
+    from . import field_boss, weekend
+    task = cut["task"]
+    if kind in weekend.INSIDE.get(task, ()):
+        bot.step("weekend_inside_at_login", f"끊긴 주말 숙제 판 안에서 시작 ({kind}) → 그 판을 마침")
+        with bot.npc_free():  # 그 숙제를 따로 돌릴 때처럼 (접속 단계는 NPC 대화를 스스로 다룬다 — run)
+            weekend.finish_inside(bot, bot.cfg, task)
+        return True
+    if task == "field_boss" and field_boss.inside(bot):
+        last = bot.daily.last_step(cut["slot"], task) or {}
+        if last.get("step") == "fb_fight":
+            bot.step("fb_inside_at_login", "보스와 싸우던 중에 끊김 → 그 전투부터 마침")
+            with bot.npc_free():
+                field_boss.finish_inside(bot)
+            return True
+    return False
+
+
 def _leave_dungeon(bot: Bot) -> bool:
     """던전 안이거나 클리어/보상 화면에 남아 있으면 (중단·충돌 뒤 다시 시작한 경우) 마무리하고 나온다."""
     from .clear import after_clear
-    from .dungeon import play_dungeon, wait_field
+    from .dungeon import hunt_covered, play_dungeon, wait_field
     from .space import dungeon_state, game_space, hunt_quest, inside_space
     from .steps import wait_until
     from .exits import leave_instance
-    from ..place import ABYSS, HOUSINGS, RAID, RAID_LOBBY, place
+    from ..place import ABYSS, DUNGEON, HOUSINGS, RAID, RAID_LOBBY, place
     ui = bot.ui
-    # 어비스·레이드·출항선 안이면 나온다 — 그 판은 숙제가 아니다 (반복 카드가 멈춘 뒤 숙제 카드가 이어 시작한 경우).
+    # 끊긴 숙제 — 접속 단계가 진행 기록을 'login' 으로 덮었으면 그 전 것(before)을 본다 (DailyState.interrupted).
+    # 요일 던전이면 보상 화면에서 추가 루팅까지 (그냥 나가면 숙제 쪽은 일일 달성만 보고 끝내 추가 루팅이 빠진다)
+    cut = cut_task(bot)
+    task = cut["task"] if cut else None
+    kind = place(bot).kind
+    if cut and _finish_inside(bot, cut, kind):
+        return True
+    # 어비스·레이드·출항선 안이면 나온다 — 끊긴 주말 숙제의 판이 아니면 숙제가 아니다 (반복 카드가 멈춘 뒤 숙제 카드가 이어 시작한 경우).
     # 여관 보관함 구역·마이 홈에서 접속을 끊었으면 거기서는 숙제 이동이 안 된다 → 먼저 나온다
-    if place(bot).kind in (ABYSS, RAID, RAID_LOBBY, *HOUSINGS):
+    if kind in (ABYSS, RAID, RAID_LOBBY, *HOUSINGS):
         return leave_instance(bot)
     # 드릴 안에서 쓰러진 채로 시작 — 드릴은 부활이 없어 그 구역은 끝났다 → 쓰러진 화면의 나가기로 나온다
     # (메인 화면으로 가려다 못 하고, 어두운 화면에서 이름을 못 읽어 다시 접속하게 되던 것, 2026-11-12).
@@ -285,13 +344,7 @@ def _leave_dungeon(bot: Bot) -> bool:
         bot.log.info("드릴 안에서 쓰러진 채로 시작 → 나가기")
         drill.leave(bot)
         return True
-    # 끊긴 숙제가 요일 던전이면 보상 화면에서 추가 루팅까지 (그냥 나가면 숙제 쪽은 일일 달성만 보고 끝내 추가 루팅이 빠진다)
-    # 접속 단계가 진행 기록을 'login' 으로 덮었으면 그 전 것(before)을 본다 — 예전엔 늘 'login' 이라 추가 루팅이 빠졌다
-    prog = bot.daily.progress() if bot.daily else None
-    if prog and prog.get("task") == "login":
-        prog = prog.get("before") or prog
-    cut = prog.get("task") if prog and bot.character and prog.get("slot") == bot.character.get("slot") else None
-    extra_loot = int(bot.cfg["weekday_dungeon"]["extra_loot"] or 0) if cut == "weekday_dungeon" else 0
+    extra_loot = int(bot.cfg["weekday_dungeon"]["extra_loot"] or 0) if task == "weekday_dungeon" else 0
     # 검은 구멍·사냥터 안에서 끊겼으면 나가지 않고 끝날 때까지 본다 — 캐릭터를 다시 고르면 그 판(횟수·은동전)이 날아간다.
     # 끝난 뒤 그 숙제를 하면 숙제 쪽이 게임 상태(일일 달성·은동전 수)와 자기 단계 기록을 보고 나머지만 한다
     bh = bot.cfg["black_hole"]
@@ -302,22 +355,29 @@ def _leave_dungeon(bot: Bot) -> bool:
         bot.sleep(2, 3)
         bot.dismiss_popups()
         # 사냥터 안의 검은 구멍이었으면 사냥터로 돌아온다 — 끝나지 않은 사냥터를 이어서 본다 (은동전은 이미 나갔다)
-        if not _in_field(bot):
+        if _in_field(bot) is False:
             return True
     # 사냥터 판인지는 사냥 퀘스트로 본다 (사냥터에 들어가면 늘 생긴다) — 채집(아르바이트)이나 사냥터 안 던전(페카 공물 던전)을
     # 마치고 나와 있는 사냥터는 판이 아니라 클리어가 오지 않는다 (2026-11-01 아르바이트 채집 중 이어 하기, 11-03 페카 공물
-    # 던전에서 나와 센마이 평원에 남은 채 다음 캐릭터 접속 → 캐릭터마다 40분씩 기다림). 퀘스트 조회가 안 되면 끊긴 숙제가 은동전일 때만 기다린다
-    if _in_field(bot):
+    # 던전에서 나와 센마이 평원에 남은 채 다음 캐릭터 접속 → 캐릭터마다 40분씩 기다림 — 그때 사냥터 상태 패킷은 오지 않았다).
+    # 사냥터 맵인데 퀘스트 조회가 안 되면 끊긴 숙제가 은동전일 때만 기다린다
+    inside = _in_field(bot)
+    if inside is not False:
         hunt = hunt_quest(bot)
         # CLI 퀘스트 목록은 화면에 보이는 추적 칸만 준다 — 창이 HUD 를 가리면 사냥 중이어도 '없음' 이다 (wait_field 와 같은 사정).
-        # 메인 화면이 아닐 때의 '없음' 은 모름으로 본다 (2026-11-21: 사냥터 안에서 멈췄다 이어 하자 기다리지 않고 지도를 열어 던전으로 가려 함)
-        if hunt == "" and not bot.at_main():
-            hunt = None
-        if hunt or (hunt is None and cut == "silver"):
-            bot.step("field_inside_at_login", f"사냥터 안에서 시작 ({hunt or '패킷'}) → 클리어까지 기다림")
+        # 짐작하지 않고 창을 닫고 다시 본다 (2026-11-21: 사냥터 안에서 멈췄다 이어 하자 기다리지 않고 지도를 열어 던전으로 가려 함)
+        if hunt == "" and hunt_covered(bot):
+            hunt = _hunt_uncovered(bot)
+        if hunt or (hunt is None and inside and task == "silver"):
+            bot.step("field_inside_at_login", f"사냥터 안에서 시작 ({hunt or '퀘스트 모름'}) → 클리어까지 기다림")
             wait_field(bot, "", bot.cfg["silver"]["field_timeout"])
             return True
     state = dungeon_state(bot)  # 패킷, 모르면 CLI
+    if state is None and place(bot).kind == DUNGEON:
+        # 던전 맵인데 상태를 모름 (CLI 가 답을 못 함) — '던전 아님' 으로 보면 다음 숙제가 던전 안에서 창을 열다 실패하고
+        # 정리가 판을 버리고 나온다. 진행 중으로 보고 기다린다 (play_dungeon 이 상태를 모르면 화면으로 본다)
+        bot.log.info("던전 맵인데 던전 상태를 모름 → 진행 중으로 보고 기다림")
+        state = "InProgress"
     if state == "InProgress":
         bot.step("dungeon_inside_at_login", "던전 안에서 시작 → 클리어까지 기다렸다가 나옴")
         play_dungeon(bot, bot.cfg["tribute"]["clear_timeout"], extra_loot)
@@ -329,14 +389,24 @@ def _leave_dungeon(bot: Bot) -> bool:
     return False
 
 
-def _in_field(bot: Bot) -> bool:
-    """사냥터 안인가. 자리(place — 패킷 사냥터 상태, 패킷이 맵을 모르면 CLI 의 사냥터 안 여부)로, 그것도 모르면
-    진행 중인 사냥터 퀘스트(CLI)가 있는 것으로."""
+def _in_field(bot: Bot) -> bool | None:
+    """사냥터(맵) 안인가 — 참·거짓·모름. 자리(place — 패킷 사냥터 상태·맵 종류, 패킷이 맵을 모르면 CLI)로.
+    판 중인지는 부르는 쪽이 사냥 퀘스트로 본다."""
     from ..place import place
+    return place(bot).in_field
+
+
+def _hunt_uncovered(bot: Bot) -> str | None:
+    """창이 HUD 를 가려 사냥 퀘스트를 못 본 때: 창을 닫고 다시 본다. 그래도 가려져 있으면 None (모름)."""
+    from .dungeon import hunt_covered
     from .space import hunt_quest
-    if (inside := place(bot).in_field) is not None:
-        return inside
-    return bool(hunt_quest(bot))
+    bot.log.info("시작 정리: 창이 HUD 를 가려 사냥 퀘스트를 못 봄 → 창을 닫고 다시 봄")
+    try:
+        bot.to_main(tries=4)
+    except StepTimeout:
+        return None
+    hunt = hunt_quest(bot)
+    return None if hunt == "" and hunt_covered(bot) else hunt
 
 
 def run(bot: Bot, cfg: dict, character: dict | None = None) -> str:

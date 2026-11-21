@@ -5,6 +5,7 @@ from types import SimpleNamespace
 from unittest import mock
 
 from mabi.runner import FailStreak
+from test_resume_extra_loot import daily_of, unwatched
 
 
 class FailStreakTest(unittest.TestCase):
@@ -172,13 +173,15 @@ class FieldAtLoginTest(unittest.TestCase):
         b.cfg = {"black_hole": {"space_keyword": "검은 구멍"}, "silver": {"field_timeout": 2400},
                  "weekday_dungeon": {}}
         b.character = {"slot": 1}
-        b.daily.progress.return_value = {"task": task, "slot": 1}
+        b.daily = daily_of({"task": task, "slot": 1})
+        unwatched(b)
         b.exists.return_value = False
         here = SimpleNamespace(kind=None, in_field=True)
         with (mock.patch("mabi.place.place", return_value=here),
               mock.patch("mabi.tasks.space.game_space", return_value="센마이 평원"),
               mock.patch("mabi.tasks.space.hunt_quest", return_value=hunt),
               mock.patch("mabi.tasks.space.dungeon_state", return_value="NotInDungeon"),
+              mock.patch("mabi.tasks.dungeon.touch_prompt_visible", return_value=False),
               mock.patch("mabi.tasks.dungeon.wait_field") as wf):
             login._leave_dungeon(b)
         return wf.called

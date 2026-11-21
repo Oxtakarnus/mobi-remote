@@ -67,19 +67,29 @@ def _item_name(desc: str) -> str:
     return re.sub(rf"\s*{HAVE}.*$", "", desc).strip()
 
 
-def gatherable(bot: Bot) -> set[str]:
-    """채집으로 구할 수 있는 물품 이름 (CLI get_gatherable_items, 도구가 맞는 것). 한 번 묻고 기억한다."""
-    if bot.marks.gatherable is None:
-        data = bot.state.query("get_gatherable_items") or {}
+def gatherable(bot: Bot) -> set[str] | None:
+    """채집으로 구할 수 있는 물품 이름 (CLI get_gatherable_items, 도구가 맞는 것). 캐릭터마다 한 번 묻고 기억한다 —
+    도구는 캐릭터마다 다르다. 조회가 안 되면 None (모름 — 기억하지 않는다. 예전엔 빈 목록을 실행 내내 기억해 모자란
+    물품을 모두 '채집 불가' 로 보고 그날 일을 건너뛰었다, 점검 2026-11-22)."""
+    who = (bot.character or {}).get("slot")
+    memo = bot.marks.gatherable
+    if memo is None or memo[0] != who:
+        data = bot.state.query("get_gatherable_items")
+        if data is None:
+            return None
         items = data.get("items", data) if isinstance(data, dict) else data
-        bot.marks.gatherable = {i.get("DisplayName") for i in items if isinstance(i, dict) and i.get("ToolOk", True)}
-    return bot.marks.gatherable
+        memo = bot.marks.gatherable = (who, {i.get("DisplayName") for i in items
+                                             if isinstance(i, dict) and i.get("ToolOk", True)})
+    return memo[1]
 
 
 def ungatherable(bot: Bot, job: dict) -> list[str]:
     """모자란 물품 중 채집으로 못 구하는 것 (가공품 등). CLI 채집 가능 목록(조회)과 대조한다.
-    사용자 규칙: 모자란 게 채집품뿐이면 채집해서 완료, 가공품이 하나라도 모자라면 포기."""
+    사용자 규칙: 모자란 게 채집품뿐이면 채집해서 완료, 가공품이 하나라도 모자라면 포기.
+    채집 가능 목록을 모르면 [] — 건너뛰지 않고 해 본다."""
     can = gatherable(bot)
+    if can is None:
+        return []
     return [n for n in (_item_name(d) for d in missing_items(job)) if n not in can]
 
 
@@ -678,7 +688,7 @@ class _Round:
                 if not missing_items(j):
                     bot.log.info(f"아르바이트 '{t}': 건너뛴 일인데 물품이 다 모임 → 다시 진행")
                     skipped.pop(t)
-                elif skipped[t] == "가공 필요" and (not (al := alter_missing(j, gatherable(bot))) or quick_alter(bot, al)):
+                elif skipped[t] == "가공 필요" and (not (al := alter_missing(j, gatherable(bot) or frozenset())) or quick_alter(bot, al)):
                     # 가공 규칙이 바뀐 뒤(채집 가능·짧은 가공은 진행) 같은 날 다시 돌리면 앞서 건너뛴 일도 다시 본다
                     bot.log.info(f"아르바이트 '{t}': 가공 필요로 건너뛴 일인데 채집·짧은 가공으로 할 수 있음 → 다시 진행")
                     skipped.pop(t)

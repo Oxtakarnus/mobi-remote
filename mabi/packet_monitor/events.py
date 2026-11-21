@@ -28,13 +28,16 @@ class Events:
         """상태를 고치는 일은 모두 잠금 안에서 — 패킷 받는 스레드(apply)와 작업 스레드(merge_cli·reconcile·forget)가
         같은 상태를 고친다. 자세한 것은 _apply."""
         with self._cond:
+            was = self.state.char_id
             self._apply(key, vals)
-            self._remember(key, vals)
+            self._remember(key, vals, was)
 
-    def _remember(self, key: str, vals: dict) -> None:
-        """우리 판단에 쓰는 이벤트(days.KEYS)만 하루 기록에 남긴다. 잠금 안에서 부른다 (_apply 뒤라 char_id 가 새 값)."""
-        if key in DAY_KEYS:
-            self.days.record(key, vals, self.state.char_id, name=self.state.my_name)
+    def _remember(self, key: str, vals: dict, was_char: int | None = None) -> None:
+        """우리 판단에 쓰는 이벤트(days.KEYS)만 하루 기록에 남긴다. 잠금 안에서 부른다 (_apply 뒤라 char_id 가 새 값).
+        접속한 캐릭터(char.personal_data)는 맵을 옮길 때마다 오므로 캐릭터가 바뀐 때만 남긴다."""
+        if key not in DAY_KEYS or key == "char.personal_data" and self.state.char_id == was_char:
+            return
+        self.days.record(key, vals, self.state.char_id, name=self.state.my_name)
 
     def _apply(self, key: str, vals: dict) -> None:
         """이벤트 하나를 상태에 반영하고 기다리는 쪽을 깨운다. 잠금(self._cond) 안에서 부른다 (apply)."""
@@ -79,6 +82,7 @@ class Events:
             s.in_game, s.loading = False, False
             s.me = s.my_name = None
             s.drill_best = None  # 다음에 접속하는 캐릭터의 기록은 맵 진입 때 새로 온다
+            s.dimensions_cleared = None  # 검은 구멍 깬 목록도 캐릭터마다 다르다 — 앞 캐릭터 것으로 '완료' 라 보지 않게
             s.attendance_at = 0.0
             s.dialogue_npc, s.dialogue_action, s.dialogue_menu = None, "", False
             log.info("패킷: 로그아웃 → 캐릭터 선택 화면")
@@ -190,6 +194,7 @@ class Events:
                 s.me = s.my_name = None
                 s.durability = None
                 s.recommend = None  # 앞 캐릭터의 추천 항목 (요일 던전 '안 함' 판단)이 남지 않게
+                s.dimensions_cleared = None  # 앞 캐릭터의 검은 구멍 깬 목록 (점검 2026-11-22)
             s.char_id = vals.get("char_id")
         elif key == "char.appearing":
             if vals.get("mine"):

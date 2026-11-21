@@ -38,7 +38,7 @@ class Marks:
     confirm_keyed: float = 0.0        # 뒤에서 '확인' 을 Space 로 보낸 때 (handlers.confirm)
     attendance_clicked: float = 0.0   # 출석 대사를 누른 때 (situation)
     # 아르바이트 (tasks.arbeit)
-    gatherable: set[str] | None = None  # 채집으로 구할 수 있는 물품 (한 번 묻고 기억)
+    gatherable: tuple[int | None, set[str]] | None = None  # (캐릭터 슬롯, 채집으로 구할 수 있는 물품) — 캐릭터마다 한 번 묻고 기억
     arb_titles: set[str] | None = None  # 아르바이트 탭에서 본 카드 제목 (None = 아직 안 봄)
     arb_read: list[list[str]] = field(default_factory=list)  # 카드 버튼을 못 찾았을 때 쪽마다 읽은 글자
     arb_scrolled: int = 0             # 아르바이트 목록을 내린 쪽 수
@@ -329,6 +329,16 @@ class Bot:
             yield
         finally:
             self._npc_owned -= 1
+
+    @contextmanager
+    def npc_free(self):
+        """npc_talk 안에서 다른 숙제의 판(끊긴 주말 어비스·필드 보스 전투)을 마칠 때 — 그동안 NPC 대화는 그 숙제를 따로
+        돌릴 때처럼 끼어들기·점검자 몫으로 돌려놓는다."""
+        prev, self._npc_owned = self._npc_owned, 0
+        try:
+            yield
+        finally:
+            self._npc_owned = prev
 
     def npc_owned(self) -> bool:
         return self._npc_owned > 0
