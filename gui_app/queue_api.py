@@ -294,6 +294,8 @@ class AbyssKind(Kind):
                 q.session["iface"] = True
             if e.get("clears") is not None:
                 last.update(clears=e["clears"], secs=e.get("seconds") or 0)
+            if e.get("type") == self.KIND and e.get("stage") == "party_out":
+                last["note"] = "고정 파티에서 누가 나가 끝냄"
             if e.get("type") == self.KIND:  # 진행은 카드의 진행 줄(view)로 보인다
                 p = dict(it.get("prog") or {})
                 p["stage"] = e.get("stage") or p.get("stage")
@@ -321,6 +323,8 @@ class AbyssKind(Kind):
                 q.note(it, r["message"])
             q.set_stop("stopped")
             return False
+        if last.get("note"):
+            q.note(it, last["note"])
         return True
 
     def stop(self, reason):

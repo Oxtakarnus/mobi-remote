@@ -101,6 +101,7 @@ class PacketState:
     party_enter_at: float = 0.0      # 이번 입장 진행이 시작된 때 (monotonic)
     party_end: int = 0               # 마지막 입장 진행 끝 코드 3 입장함 · 4 취소
     party_end_at: float = 0.0
+    party_out_at: float = 0.0        # 파티에서 누가 빠진 때 — 파티원이 나감·내가 나감·파티가 없어짐 (monotonic)
     changed_at: dict = field(default_factory=dict)  # CLI_FACTS 필드 → 패킷이 마지막으로 바꾼 때 (monotonic)
     extra: dict = field(default_factory=dict)
 

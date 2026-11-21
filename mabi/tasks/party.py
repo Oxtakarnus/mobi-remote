@@ -34,6 +34,12 @@ def confirm(bot: Bot) -> bool:
     return False
 
 
+def broken(s, since: float) -> bool:
+    """패킷: since 뒤에 파티에서 누가 빠졌나 (파티원이 나감·내가 나감), 또는 지금 파티가 없나.
+    파티 정보가 아직 안 왔으면(party_id None) 모른다 → False."""
+    return s.party_out_at > since or s.party_id == 0
+
+
 def started(s) -> bool:
     """패킷: 파티 입장 진행이 시작됐나 (준비 UI) 또는 이미 맵을 옮기는 중."""
     return bool(s.party_marks) or s.loading
@@ -55,22 +61,25 @@ def entering(s) -> bool:
     return s.party_mark() == s.PARTY_READY or s.loading
 
 
-def wait_ready(bot: Bot, timeout: float) -> None:
+def wait_ready(bot: Bot, timeout: float, abort=None) -> bool:
     """파티원: 파티장이 입장을 시작해 준비 UI 가 뜨길 기다렸다가 '준비 완료'(Space). 내 준비가 끝나면(패킷 0x0b 또는
     버튼이 '준비 취소' 로 바뀜) 돌아간다 — 그 뒤 입장은 부르는 쪽이 기다린다. 신호: 패킷에서 내 상태 1(준비 창 뜸)
-    또는 화면의 '준비 완료' 버튼 (패킷이 없는 PC 도 된다). timeout 안에 파티장이 시작하지 않으면 CannotProceed."""
+    또는 화면의 '준비 완료' 버튼 (패킷이 없는 PC 도 된다). timeout 안에 파티장이 시작하지 않으면 CannotProceed.
+    abort() 가 참이 되면(파티가 깨짐) 준비하지 않고 False. 준비했으면 True."""
     end = time.monotonic() + timeout
     pressed = 0
     told = False
     while True:
         p = bot.packets
         s = p.state if p.ok else None
+        if abort and abort():
+            return False
         if s is not None and entering(s):
-            return
+            return True
         mark = s.party_mark() if s is not None else None
         button = ready_button(bot)
         if pressed and not button and (s is None or mark != 1):
-            return  # 눌렀고 버튼이 바뀜 (패킷이 없거나 이미 넘어감)
+            return True  # 눌렀고 버튼이 바뀜 (패킷이 없거나 이미 넘어감)
         if mark == 1 or button:
             if pressed >= 5:
                 raise CannotProceed(f"준비 완료를 {pressed}번 눌러도 준비가 안 됨 → {bot.snapshot('party_ready').name}")
@@ -78,7 +87,7 @@ def wait_ready(bot: Bot, timeout: float) -> None:
             pressed += 1
             bot.log.info("파티 준비 UI → 준비 완료 (Space)")
             if bot.wait_packet(entering, 3, since=bot.input_mark):
-                return
+                return True
             continue
         if not told:
             bot.log.info("파티장이 입장을 시작하길 기다림 (준비 UI 가 뜨면 준비 완료)")

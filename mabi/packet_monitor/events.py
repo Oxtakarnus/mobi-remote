@@ -135,10 +135,20 @@ class Events:
         elif key == "abyss.matching_cancel_ok":
             s.abyss_matching = 0
         elif key == "party.info":
+            had = s.party_id
             s.party_id = vals.get("party") or 0
             s.party_leader = vals.get("leader") if s.party_id else None
             if not s.party_id:
                 s.party_marks = {}
+                if had:
+                    s.party_out_at = time.monotonic()
+                    log.info("패킷: 파티가 없어짐")
+        elif key == "party.member_out":
+            s.party_out_at = time.monotonic()
+            log.info("패킷: 파티원이 파티에서 나감")
+        elif key == "party.left":
+            s.party_out_at = time.monotonic()
+            log.info("패킷: 내가 파티에서 나감")
         elif key == "party.leader":
             s.party_leader = vals.get("leader")
             log.info("패킷: 파티장 바뀜 (%s)", "나" if s.party_leader == s.char_id else "다른 파티원")

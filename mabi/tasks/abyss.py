@@ -613,6 +613,23 @@ class AbyssRepeat(Repeat):
         return r if r in party_mod.ROLES else ""
 
     match_at = 0.0  # 입장·다시 하기를 누른 때 — 그 뒤에 새로 들어간 맵만 이번 판 (entered_since)
+    party_since = 0.0  # 반복을 시작한 때 — 그 뒤에 파티에서 누가 빠지면 카드를 끝낸다 (party_broken)
+
+    def party_broken(self) -> bool:
+        """고정 파티에서 누가 빠졌나 (파티원이 나감·내가 나감·파티 없음, 패킷). 그러면 카드를 끝낸다 — 판 도중이면
+        그 판은 마저 하고 보상 화면에서 나간다 (사용자 11-21)."""
+        return bool(self.party_role and self.bot.packets.ok and party_mod.broken(self.bot.packets.state, self.party_since))
+
+    def done(self) -> bool:
+        if self.party_broken():
+            if not self.party_told:
+                self.party_told = True
+                self.bot.log.warning("고정 파티에서 누가 나감 → 이 카드는 여기서 끝냄")
+                self.emit(stage="party_out")
+            return True
+        return super().done()
+
+    party_told = False
 
     def setup(self):
         self.bot.scene_skip = False  # 연출은 누르지 않고 기다린다 — 누르면 뒤에서 돌던 게임이 앞으로 나온다 (2026-10-25 사용자)
@@ -629,6 +646,7 @@ class AbyssRepeat(Repeat):
     def loop(self, at):
         bot, a = self.bot, self.a
         bot.background = self.behind
+        self.party_since = time.monotonic()
         stage = {"play": "play", "reward": "reward", "matching": "match"}.get(at, "entry")
         # 시작 전에 이미 끝난 판 — 보상만 받고 판 수에는 넣지 않는다 (레이드와 같다). 그 판은 결과가 온 순간 이미 셌다 —
         # 보상 화면에서 멈췄다가 ▶ 하면 두 번 세어 7판 카드가 4판 만에 끝났다 (11-19 16:23·16:37·16:43)
@@ -638,9 +656,12 @@ class AbyssRepeat(Repeat):
                           "matching": "매칭 중 → 들어가길 기다림", "entry": "어비스 입장 화면 → 그 자리부터",
                           "list": "어비스 목록 → 그 자리부터", "menu": "메뉴가 열려 있음 → 그 자리부터"}.get(at, f"알 수 없는 화면({at}) → 닫고 메뉴에서 입장"))
         while True:
+            if stage in ("entry", "match") and self.done():  # 고정 파티가 깨짐 — 기다리던 자리에서 끝
+                break
             if stage == "entry" and self.party_role == "member":
                 # 고정 파티 파티원: 입장은 파티장이 한다 — 준비 UI 가 뜨면 준비 완료만 누른다
-                self.wait_party(at)
+                if not self.wait_party(at):
+                    break
                 at = ""
                 stage = "match"
             if stage == "entry":
@@ -659,7 +680,11 @@ class AbyssRepeat(Repeat):
                 self.emit(stage="match")
                 st = bot.packets.state
                 if not wait_entered(bot, a["match_timeout"], self.match_at,
-                                    abort=lambda: self.party_role and party_mod.cancelled(st, self.match_at)):
+                                    abort=lambda: self.party_role and (party_mod.cancelled(st, self.match_at)
+                                                                       or self.party_broken())):
+                    if self.done():
+                        bot.to_main()
+                        break
                     self.stat["retries"] += 1
                     if self.party_role and party_mod.cancelled(st, self.match_at):
                         bot.log.warning("파티 입장 준비가 취소됨 → 처음부터 다시")
@@ -702,7 +727,10 @@ class AbyssRepeat(Repeat):
                     stage = "entry"
                     continue
                 if self.party_role == "member":
-                    self.wait_party("reward")  # 클리어 화면 '파티장 선택 대기' — 파티장이 다시 하기를 누르면 준비 UI
+                    # 클리어 화면 '파티장 선택 대기' — 파티장이 다시 하기를 누르면 준비 UI
+                    if not self.wait_party("reward"):
+                        exit_reward(bot)
+                        break
                 else:
                     self._again()
                 stage = "match"
@@ -711,13 +739,14 @@ class AbyssRepeat(Repeat):
 
     PARTY_WAIT = 1800  # 파티원이 파티장의 입장 시작을 기다리는 상한 (초, [abyss] party_wait)
 
-    def wait_party(self, at):
-        """고정 파티 파티원: 파티장이 입장을 시작해 준비 UI 가 뜨면 준비 완료. at: 지금 화면 (보상 화면이면 그대로 기다린다)."""
+    def wait_party(self, at) -> bool:
+        """고정 파티 파티원: 파티장이 입장을 시작해 준비 UI 가 뜨면 준비 완료. at: 지금 화면 (보상 화면이면 그대로 기다린다).
+        기다리는 사이 파티가 깨지면 준비하지 않고 False."""
         bot = self.bot
         bot.step("abyss_party", "파티장 입장 기다림")
         self.emit(stage="match")
         self.match_at = time.monotonic()
-        party_mod.wait_ready(bot, float(self.a.get("party_wait") or self.PARTY_WAIT))
+        return party_mod.wait_ready(bot, float(self.a.get("party_wait") or self.PARTY_WAIT), abort=self.done)
 
     def _again(self):
         """보상 화면 '다시 하기' (Space) → 같은 던전·난이도로 다시 매칭. 보상 화면은 '나가기' 로도 알아보므로 '다시 하기' 가
