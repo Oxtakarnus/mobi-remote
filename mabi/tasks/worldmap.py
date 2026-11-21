@@ -139,8 +139,14 @@ def _pick_from_list(bot: Bot, place: dict, name: str) -> bool:
     y = (mc["list_y_tabbed"] if place.get("tab") else mc["list_y"])[place["index"]]
     m = bot.find(place["label"], region=[70, y - 30, 180, 60], threshold=mc["list_threshold"])
     if not m:
-        bot.log.debug(f"목록 {place['index']}번 칸이 '{name}' 이 아님")
-        return False
+        # 던전 칸은 이름 아래에 진행도('일반 100%')가 붙기도 한다 — 이름이 위로 올라가 템플릿 점수가 0.91 로 떨어졌다
+        # (2026-11-21 친구 PC). 그 칸 글자를 읽어 이름이 맞으면 누른다 (다른 장소 이름과는 0.5 안팎)
+        from ..ocr import find_texts
+        texts = [t for t, _, _ in find_texts(bot.frame(), (20, y - 35, 260, 70))]
+        if not any(similar(t, name) >= 0.8 for t in texts):
+            bot.log.debug(f"목록 {place['index']}번 칸이 '{name}' 이 아님 (글자 {texts})")
+            return False
+        bot.log.debug(f"목록 {place['index']}번 칸 템플릿은 안 맞지만 글자 {texts} 로 '{name}' 확인")
     bot.click((mc["list_x"], y))
     try:
         bot.wait(bot.ui["map_go_here"], timeout=5)
