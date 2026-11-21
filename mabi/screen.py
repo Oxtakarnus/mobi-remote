@@ -45,6 +45,31 @@ def grab_window(hwnd: int) -> np.ndarray | None:
         u.ReleaseDC(hwnd, hdc)
 
 
+# 찍는 동안 가려야 하는 우리 창 — 캡처 제외(SetWindowDisplayAffinity)가 안 걸린 창이 스스로 등록한다 (작업 큐 오버레이).
+# 각 항목은 before() → 가렸으면 True, after() → 되돌린다. 가린 뒤 화면 합성이 한 번 돌아야 찍힌 그림에서 빠진다 (DwmFlush).
+_grab_veils: list = []
+
+
+def add_grab_veil(veil) -> None:
+    if veil not in _grab_veils:
+        _grab_veils.append(veil)
+
+
+def remove_grab_veil(veil) -> None:
+    if veil in _grab_veils:
+        _grab_veils.remove(veil)
+
+
+def _veil_before() -> list:
+    hid = [v for v in list(_grab_veils) if v.before()]
+    if hid:
+        try:
+            ctypes.windll.dwmapi.DwmFlush()
+        except OSError:
+            pass
+    return hid
+
+
 # 판단 기준 화면 크기. 템플릿·좌표·영역은 전부 이 크기의 화면 기준이다
 BASE_W, BASE_H = 1920, 1080
 
@@ -110,7 +135,12 @@ class Screen:
     def grab(self) -> np.ndarray:
         """클라이언트 영역을 1920x1080 BGR ndarray 로 반환. 좌표는 클라이언트(1920x1080 기준)."""
         r = self.window.client_rect()
-        shot = self._sct.grab({"left": r.left, "top": r.top, "width": r.width, "height": r.height})
+        hid = _veil_before() if _grab_veils else []
+        try:
+            shot = self._sct.grab({"left": r.left, "top": r.top, "width": r.width, "height": r.height})
+        finally:
+            for v in hid:
+                v.after()
         img = np.asarray(shot)[:, :, :3]
         if (r.width, r.height) == (BASE_W, BASE_H):
             return img.copy()

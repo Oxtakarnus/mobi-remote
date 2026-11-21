@@ -2,6 +2,7 @@
 
 봇이 화면을 찍어도 이 창은 찍히지 않는다 (SetWindowDisplayAffinity 캡처 제외 — 염색 도우미 겹쳐 그리기와 같다).
 일일 숙제는 mss 로 화면 전체를 찍으므로 빼지 않으면 그 자리의 버튼·글자를 못 알아본다.
+제외가 안 걸리는 PC(윈도 10 에서 본 일 있음)에선 로그에 남기고, 봇이 찍는 동안만 숨긴다 (screen.add_grab_veil).
 클릭은 통과하고(WindowTransparentForInput) 포커스도 가져가지 않아 봇의 클릭·'게임이 앞에 있나' 확인과 겹치지 않는다.
 
 글은 작업 큐 카드와 같은 view (gui_app/queue_api.py 의 Kind.view) 를 쓴다 — 카드와 오버레이가 같은 말을 한다.
@@ -9,6 +10,8 @@
 alpha(배경 불투명도 %) · size(s/m/l) · corner(bl/br/tl/tr) · dx·dy(가장자리에서 떨어질 거리, 게임 화면 픽셀) · next(다음 카드 몇 장).
 """
 import ctypes
+import logging
+import threading
 import time
 
 from PySide6.QtCore import QObject, QPointF, QRectF, Qt, QTimer, Signal, Slot
@@ -16,8 +19,11 @@ from PySide6.QtGui import QColor, QFont, QFontMetricsF, QGuiApplication, QPainte
 from PySide6.QtWidgets import QWidget
 
 from mabi import gamedata as gd
+from mabi import screen as scr
 
 from .dye_tab import exclude_from_capture
+
+log = logging.getLogger("mabi")
 
 DEFAULTS = {"on": True, "when": "active", "bg": "panel", "alpha": 55, "size": "m", "corner": "bl",
             "dx": 24, "dy": 200, "next": 2}
@@ -218,6 +224,7 @@ class OverlayService(QObject):
     """화면 스레드에 산다. push() 는 어느 스레드에서 불러도 된다 (시그널이 화면 스레드로 옮긴다)."""
     _snap = Signal(object)
     _cfg = Signal(object)
+    _veil = Signal(bool, object)
 
     def __init__(self, title: str, cfg: dict, snap: dict | None = None):
         super().__init__()
@@ -225,8 +232,10 @@ class OverlayService(QObject):
         self.cfg = clean(cfg)
         self.snap = snap or {}
         self.win: QueueOverlay | None = None
+        self.excluded: bool | None = None  # 캡처 제외가 걸렸나 (None = 아직 안 띄움)
         self._snap.connect(self._on_snap)
         self._cfg.connect(self._on_cfg)
+        self._veil.connect(self._on_veil)
         self.timer = QTimer(self)
         self.timer.timeout.connect(self.refresh)
         self.timer.start(1000)  # 걸린 시간 · 게임 창이 움직였으면 따라가기
@@ -263,8 +272,45 @@ class OverlayService(QObject):
         w.setGeometry(round(x), round(y), round(pw), round(ph))
         if not w.isVisible():
             w.show()
-            exclude_from_capture(w)  # 창 핸들이 생긴 뒤에 (보이기 전엔 없다)
+            self._check_excluded(*exclude_from_capture(w))  # 창 핸들이 생긴 뒤에 (보이기 전엔 없다)
         w.update()
+
+    def _check_excluded(self, ok: bool, detail: str) -> None:
+        """캡처 제외 결과를 로그에 남기고 (바뀔 때만), 안 걸렸으면 봇이 찍는 동안 가리도록 등록한다."""
+        if ok != self.excluded:
+            if ok:
+                log.info("작업 큐 오버레이: 캡처 제외 걸림 (%s)", detail)
+            else:
+                log.warning("작업 큐 오버레이: 캡처 제외가 걸리지 않음 (%s) → 화면을 찍는 동안만 가린다", detail)
+        self.excluded = ok
+        (scr.remove_grab_veil if ok else scr.add_grab_veil)(self)
+
+    # ---- 찍는 동안 가리기 (screen.Screen.grab 이 작업 스레드에서 부른다)
+    def before(self) -> bool:
+        """오버레이가 떠 있으면 화면 스레드에서 숨기고 끝날 때까지 기다린다. 가렸으면 True."""
+        w = self.win
+        if w is None or not w.isVisible():
+            return False
+        if threading.current_thread() is threading.main_thread():
+            self._on_veil(True, None)
+            return True
+        done = threading.Event()
+        self._veil.emit(True, done)
+        done.wait(0.3)  # 화면 스레드가 바쁘면 너무 오래 막지 않는다
+        return True
+
+    def after(self) -> None:
+        self._veil.emit(False, None)
+
+    @Slot(bool, object)
+    def _on_veil(self, on: bool, done) -> None:
+        # Qt 의 hide/show 대신 창만 잠깐 숨긴다 — Qt 상태(isVisible)는 그대로라 refresh 와 엇갈리지 않는다.
+        # setWindowOpacity 는 반투명 창에서 1.0 으로 되돌려도 다시 보이지 않았다 (2026-11-21 시험)
+        w = self.win
+        if w is not None and w.isVisible():
+            ctypes.windll.user32.ShowWindow(int(w.winId()), 0 if on else 8)  # SW_HIDE / SW_SHOWNA
+        if done is not None:
+            done.set()
 
     def _place(self, rect, pw: float, ph: float) -> tuple[float, float]:
         """게임 화면(실제 픽셀)의 구석 → Qt 좌표(논리 픽셀)."""

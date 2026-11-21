@@ -12,11 +12,20 @@ from PySide6.QtWidgets import QWidget
 WDA_EXCLUDEFROMCAPTURE = 0x11
 
 
-def exclude_from_capture(widget: QWidget, on: bool = True) -> None:
+def exclude_from_capture(widget: QWidget, on: bool = True) -> tuple[bool, str]:
+    """캡처 제외를 걸고(끄고) 실제로 걸렸는지 (GetWindowDisplayAffinity 로 다시 읽어) 돌려준다 — (됐나, 사정 글).
+    윈도 10 PC 에서 제외가 걸리지 않아 작업 큐 오버레이가 봇 화면에 찍힌 일이 있었다 (2026-11-21)."""
+    want = WDA_EXCLUDEFROMCAPTURE if on else 0
     try:
-        ctypes.windll.user32.SetWindowDisplayAffinity(int(widget.winId()), WDA_EXCLUDEFROMCAPTURE if on else 0)
-    except Exception:
-        pass
+        u = ctypes.WinDLL("user32", use_last_error=True)
+        hwnd = int(widget.winId())
+        ok = u.SetWindowDisplayAffinity(hwnd, want)
+        err = ctypes.get_last_error() if not ok else 0
+        cur = ctypes.c_uint32(0xFFFFFFFF)
+        u.GetWindowDisplayAffinity(hwnd, ctypes.byref(cur))
+        return cur.value == want, f"설정 결과 {ok} · 오류 {err} · 지금 값 0x{cur.value:X} (원한 값 0x{want:X})"
+    except Exception as e:  # noqa: BLE001
+        return False, f"예외 {e}"
 
 
 def _qc(c) -> QColor:
