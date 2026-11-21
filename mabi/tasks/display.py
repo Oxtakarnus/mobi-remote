@@ -161,6 +161,26 @@ def read_prefs() -> dict[str, str]:
     return out
 
 
+def saved_problems() -> list[str]:
+    """저장된 화면 설정(레지스트리·설정 파일)만 보고 기준과 다른 것 — 리모콘 메인 화면 띠용. 게임을 앞으로 가져오지도,
+    켜져 있는지 보지도 않는다. 설정 파일은 게임을 끌 때 쓰이므로(2026-10-23) 게임 안에서 막 바꾼 값은 끌 때까지 옛 값이다.
+    '전체화면' 은 게임이 내려가 있는 동안 레지스트리가 창모드로 바뀌어 그때는 못 짚는다."""
+    out: list[str] = []
+    mode, w, h = screen_mode()
+    if mode == 0:
+        out.append("화면 모드가 '전체화면' — '테두리 없는 전체화면' 으로")
+    if w and h and (bad := size_problem(w, h)):
+        out.append(bad)
+    prefs = read_prefs()
+    for key, (_, want) in PREFS.items():
+        have = prefs.get(key)
+        if key.endswith("InterfaceStyleScale") and prefs.get("GraphicsUserSetting.InterfaceStyleType") not in (None, "1"):
+            continue  # 스케일은 PC 스타일에만 있다
+        if have is not None and float(have) != float(want):
+            out.append(f"{PREFS_LABEL[key]}: {_shown(key, have)} ({_shown(key, want)} 이어야 함)")
+    return out
+
+
 def game_running(window) -> bool:
     return bool(window.hwnd and ctypes.windll.user32.IsWindow(window.hwnd)) or window.find()
 

@@ -768,6 +768,15 @@ class Api(DailyApi, CharsApi, QueueApi):
         """패킷 감시 상태만 (화면이 주기적으로 묻는다 — version_info 는 CLI 판도 읽어 무겁다)."""
         return self.packet_status()
 
+    def version_display(self):
+        """저장된 게임 화면 설정이 기준과 다른 것 [문구] — 메인 화면 띠가 주기적으로 묻는다 (게임은 건드리지 않음)."""
+        try:
+            from mabi.tasks import display
+            return display.saved_problems()
+        except Exception:
+            log.exception("화면 설정 읽기 실패")
+            return []
+
     def version_npcap(self):
         webbrowser.open(self.NPCAP_PAGE)
         return True

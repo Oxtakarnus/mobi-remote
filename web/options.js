@@ -91,6 +91,24 @@ async function wireNpcap() {
     if (!pref('npcapNoAsk', false) && info && info.packet === 'no_npcap') $('#npcap-banner').classList.remove('hidden');
   }, 5000);
   wireStaleTable();
+  wireDisplayCheck();
+}
+
+/** 저장된 게임 화면 설정(해상도·화면 모드·인터페이스)이 기준과 다르면 위에 띠. 다른 것은 풍선으로.
+ *  설정 파일은 게임을 끌 때 쓰여 게임 안에서 바꾼 값은 늦게 반영된다. 닫으면 이번에 켠 동안은 다시 띄우지 않는다 */
+function wireDisplayCheck() {
+  let closed = false;
+  const bar = $('#display-banner');
+  $('#display-later').addEventListener('click', () => { closed = true; bar.classList.add('hidden'); });
+  const look = async () => {
+    const bad = await mm.version.display().catch(() => null);
+    if (!bad) return;
+    bar.title = bad.join('\n') + '\n\n기준: 테두리 없는 전체화면 · 1920x1080 (16:9) · 렌더링 100% · 인터페이스 PC 80%' +
+      '\n게임 설정 파일은 게임을 끌 때 저장돼, 게임 안에서 바꾼 값은 다시 켠 뒤에 반영됩니다.';
+    bar.classList.toggle('hidden', closed || !bad.length);
+  };
+  setTimeout(look, 3000);
+  setInterval(look, 120000);
 }
 
 /** 패킷 표가 게임과 어긋나면(게임 패치) 위에 띠를 띄우고 새 판을 묻는다. 켠 채 게임이 패치될 수도 있어 계속 본다.

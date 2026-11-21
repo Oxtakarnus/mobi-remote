@@ -114,7 +114,7 @@
     },
     fav: { all: c('fav.all'), toggle: c('fav.toggle'), clear: c('fav.clear') },
     version: { info: c('version.info'), check: c('version.check'), accept: c('version.accept'), npcap: c('version.npcap'),
-      packetRetry: c('version.packetRetry'), packet: c('version.packet') },
+      packetRetry: c('version.packetRetry'), packet: c('version.packet'), display: c('version.display') },
     cache: { list: c('cache.list'), clear: c('cache.clear') },
 
     // 일일 숙제 (파이썬판에서 새로 생긴 것)
