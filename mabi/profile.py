@@ -78,6 +78,57 @@ def game_day_start(now: datetime | None = None) -> datetime:
     return (now - timedelta(hours=RESET_HOUR)).replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(hours=RESET_HOUR)
 
 
+WEEKLY_TASKS = ("field_boss", "vanguard", "board")  # 주 1번 숙제 — 결과를 state/week-<주 시작일>.json 에도 남긴다
+KEEP_WEEKS = 4  # 주간 기록 파일을 몇 주치 남길지
+
+
+class WeeklyState:
+    """이번 게임 주(월요일 오전 6시부터) 캐릭터별 주간 숙제 결과 — 숙제 탭의 주간 숙제 카드가 완료 표시에 쓴다.
+    그 주에 한 번 'done' 이 되면 뒤의 다른 결과로 덮지 않는다 (이미 한 것을 다시 확인하다 끊긴 경우)."""
+
+    def __init__(self, state_dir: Path, now: datetime | None = None):
+        self.dir = state_dir
+        self.week = game_week(now)
+        self.path = self.dir / f"week-{self.week}.json"
+        self.data: dict = json.loads(self.path.read_text(encoding="utf-8")) if self.path.exists() else self._from_days()
+
+    def _from_days(self) -> dict:
+        """주간 파일이 아직 없으면 이번 주 하루 기록(state/날짜.json)에서 모은다 — 이 기록이 생기기 전에 한 것도 보이게."""
+        out: dict = {}
+        for f in sorted(self.dir.glob("????-??-??.json")) if self.dir.exists() else []:
+            if f.stem < self.week:
+                continue
+            try:
+                day = json.loads(f.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                continue
+            for slot, rec in day.items():
+                if not slot.isdigit() or not isinstance(rec, dict):
+                    continue
+                for task in WEEKLY_TASKS:
+                    if task in rec and out.get(slot, {}).get(task) != "done":
+                        out.setdefault(slot, {})[task] = rec[task]
+        return out
+
+    def get(self, slot: int, task: str) -> str | None:
+        return self.data.get(str(slot), {}).get(task)
+
+    def set(self, slot: int, task: str, status: str) -> None:
+        if self.get(slot, task) == "done" and status != "done":
+            return
+        self.data.setdefault(str(slot), {})[task] = status
+        self.dir.mkdir(exist_ok=True)
+        self.path.write_text(json.dumps(self.data, ensure_ascii=False, indent=2), encoding="utf-8")
+        self.prune()
+
+    def prune(self, keep_weeks: int = KEEP_WEEKS) -> None:
+        """keep_weeks 주보다 오래된 주간 기록 파일은 지운다."""
+        cutoff = (datetime.strptime(self.week, "%Y-%m-%d") - timedelta(weeks=keep_weeks)).strftime("%Y-%m-%d")
+        for f in self.dir.glob("week-????-??-??.json"):
+            if f.stem[5:] < cutoff:
+                f.unlink(missing_ok=True)
+
+
 class DailyState:
     """오늘(게임 날짜) 캐릭터별 숙제 결과. 'done' 이면 다음 실행 때 건너뛴다."""
 
@@ -108,6 +159,8 @@ class DailyState:
     def set(self, slot: int, task: str, status: str) -> None:
         self.data.setdefault(str(slot), {})[task] = status
         self._save()
+        if task in WEEKLY_TASKS:
+            WeeklyState(self.dir).set(slot, task, status)
 
     def _save(self) -> None:
         self.dir.mkdir(exist_ok=True)

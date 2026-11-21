@@ -33,10 +33,10 @@ function charOptions(chars, cur, zeroLabel) {
   return selectOptions([[0, zeroLabel]].concat(chars.map((c) => [c.slot, charLabel(c)])), cur);
 }
 
-/** 캐릭터 체크박스 하나. attr: input 에 붙일 속성 이름 (값은 슬롯), cls: label 에 더할 클래스 */
-function charCheck(c, on, attr, cls) {
+/** 캐릭터 체크박스 하나. attr: input 에 붙일 속성 이름 (값은 슬롯), cls: label 에 더할 클래스, tail: 이름 뒤에 붙일 html */
+function charCheck(c, on, attr, cls, tail) {
   return '<label class="chk' + (cls ? ' ' + cls : '') + '"><input type="checkbox" ' + attr + '="' + c.slot + '"' +
-    (on ? ' checked' : '') + '>' + esc(charLabel(c)) + '</label>';
+    (on ? ' checked' : '') + '>' + esc(charLabel(c)) + (tail || '') + '</label>';
 }
 
 /* ── 시간 글자 (화면 어디서나 이것으로) ── */

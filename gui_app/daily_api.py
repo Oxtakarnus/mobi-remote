@@ -88,10 +88,13 @@ class DailyApi:
         cfg = load_config(self.paths)
         reg = tasks.build(cfg)
         st = prof.DailyState(self.paths.state)
+        wk = prof.WeeklyState(self.paths.state)
         chars = prof.chars(self.paths)
         by_slot = tasks_by_slot(cfg)
         return {"chars": chars, "order": cfg["run"]["order"], "labels": {"login": "접속", **{t: l for t, (l, _) in reg.items()}},
                 "today": {str(c["slot"]): st.data.get(str(c["slot"]), {}) for c in chars}, "date": st.date,
+                # 주간 숙제(필드 보스·뱅가드·임무 게시판) 이번 주 결과 — 월요일 오전 6시에 새 주
+                "week": {str(c["slot"]): wk.data.get(str(c["slot"]), {}) for c in chars}, "weekStart": wk.week,
                 "skip": {k: list(v) for k, v in cfg["run"].get("skip_by_slot", {}).items()},
                 # 캐릭터마다 실제로 도는 숙제 (끈 숙제·아르바이트 안 켠 캐릭터는 빠짐) — '결과 보기' 가 쓴다
                 "orders": {str(c["slot"]): task_order(cfg, c, by_slot=by_slot) for c in chars},

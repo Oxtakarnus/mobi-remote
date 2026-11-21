@@ -100,6 +100,7 @@ mm.daily.onEvent((e) => {
     say('진행 중: ' + e.label);
   } else if (e.type === 'task_end') {
     setCell(e.slot, e.task, e.status, (e.summary || '') + ' (' + e.seconds + '초)');
+    weekEnded(e.slot, e.task, e.status, e.summary);
   } else if (e.type === 'done') {
     paintDailyRunning(false);  // 결과 창은 작업 큐가 다 비었을 때 큐 전체 결과로 (queue.js showQueueReport)
   } else if (e.type === 'paused') {
@@ -156,15 +157,38 @@ function dailySpec() {
  * 고른 캐릭터는 settings 의 picks[key] 로 기억한다 (리모콘을 다시 켜도 그대로) */
 function paintPick(pre, key) {
   const chars = (dl.st && dl.st.chars) || [];
+  const task = WEEK_PICKS[pre];  // 주간 숙제 카드면 이름 뒤에 이번 주 결과
   // 캐릭터 탭에서 뺀 캐릭터는 고른 목록에서도 지운다 (숙제 탭을 열 때마다 캐릭터 목록을 새로 받아 다시 그린다)
   dl[key] = new Set([...(dl[key] || pref('picks', {})[key] || [])].filter((s) => chars.some((c) => c.slot === s)));
   const allOn = chars.length > 0 && chars.every((c) => dl[key].has(c.slot));
   $('#' + pre + '-all').checked = allOn;
   $('#' + pre + '-all').disabled = !chars.length;
   $('#' + pre + '-chars').innerHTML = chars.length
-    ? chars.map((c) => charCheck(c, dl[key].has(c.slot), 'data-pick-char')).join('')
+    ? chars.map((c) => charCheck(c, dl[key].has(c.slot), 'data-pick-char', '', task ? weekMark(c.slot, task) : '')).join('')
     : '<span class="muted">캐릭터 탭에서 캐릭터를 추가하세요</span>';
   $('#' + pre + '-pick-note').textContent = dl[key].size + '명';
+}
+
+/* 주간 숙제 카드 → 숙제 이름. 이번 주 결과는 파이썬이 state/week-<월요일>.json 에 남기고 dl.st.week 로 준다 (월요일 오전 6시에 새 주) */
+const WEEK_PICKS = { fb: 'field_boss', vg: 'vanguard', bd: 'board' };
+const WEEK_KEYS = { fb: 'fbChars', vg: 'vgChars', bd: 'bdChars' };
+
+function weekMark(slot, task) {
+  const v = ((dl.st.week || {})[String(slot)] || {})[task];
+  const s = stateOf(v);
+  return s ? ' <small class="st-' + s + '" title="' + esc(v) + ' · 이번 주 (월요일 오전 6시에 초기화)">' +
+    esc(ST_TEXT[s] || s) + '</small>' : '';
+}
+
+/* 숙제가 끝날 때 주간 숙제면 그 카드의 표시를 바로 고친다 (한 번 완료면 그 주엔 완료 유지 — 파이썬 WeeklyState 와 같게) */
+function weekEnded(slot, task, status, summary) {
+  const pre = Object.keys(WEEK_PICKS).find((p) => WEEK_PICKS[p] === task);
+  if (!pre || !dl.st) return;
+  const week = dl.st.week = dl.st.week || {};
+  const mine = week[String(slot)] = week[String(slot)] || {};
+  const ok = status === 'OK' || status === 'DONE';
+  if (ok || mine[task] !== 'done') mine[task] = ok ? 'done' : status + (summary ? ': ' + summary : '');
+  paintPick(pre, WEEK_KEYS[pre]);
 }
 
 function bindPick(pre, key) {
