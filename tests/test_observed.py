@@ -106,6 +106,20 @@ class ProgressStopTest(unittest.TestCase):
             st.set_progress(3, "login")  # 앞 캐릭터가 끝내고 다음 캐릭터로
             self.assertIsNone(st.interrupted())
 
+    def test_login_takes_before_only_from_same_slot(self):
+        """다른 자리의 접속 기록에 딸린 옛 숙제를 끌고 오지 않는다 (점검 2026-11-22)."""
+        from mabi.profile import DailyState
+        with tempfile.TemporaryDirectory() as d:
+            st = DailyState(Path(d))
+            st.set_progress(1, "silver")
+            st.set_progress(2, "login")  # 다른 자리 접속이 끊김 — 그 before 는 1번의 은동전
+            st.set_progress(1, "login")  # 1번부터 다시 — 2번으로 넘어갔으니 1번 은동전 판은 끝났다
+            self.assertIsNone(st.interrupted())
+            st.set_progress(1, "silver")
+            st.set_progress(1, "login")
+            st.set_progress(1, "login")  # 같은 자리 접속이 또 끊김 — 이어 하려던 숙제는 그대로
+            self.assertEqual(st.interrupted()["task"], "silver")
+
 
 class CharacterRecordTest(unittest.TestCase):
     """관찰 기록에 캐릭터가 바뀐 것·이름을 남긴다 (사용자 2026-11-22)."""
@@ -123,6 +137,16 @@ class CharacterRecordTest(unittest.TestCase):
                                 ("session.logout_ok", 7, "가"), ("char.personal_data", 8, None)])
         m.apply("char.personal_data", {"char_id": 7})  # 돌아옴 — 전에 본 이름을 채운다
         self.assertEqual(m.days.since(0)[-1].get("name"), "가")
+
+    def test_same_character_relogin_recorded(self):
+        # 같은 캐릭터로 다시 접속(게임을 다시 켬 등)도 '접속' 으로 — 맵을 옮길 때마다 오는 것은 그대로 거른다
+        m = PacketMonitor(None)
+        m.apply("char.personal_data", {"char_id": 7})
+        m.apply("session.logout_ok", {})
+        m.apply("char.personal_data", {"char_id": 7})
+        m.apply("char.personal_data", {"char_id": 7})
+        self.assertEqual([r["key"] for r in m.days.since(0)],
+                         ["char.personal_data", "session.logout_ok", "char.personal_data"])
 
     def test_black_hole_list_cleared_with_character(self):
         m = PacketMonitor(None)

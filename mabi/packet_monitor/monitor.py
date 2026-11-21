@@ -65,6 +65,7 @@ class PacketMonitor(LinkWatch, CliSync, Events):
         self.started_at = 0.0        # 캡처를 시작한 때 (monotonic, 0 = 아직) — dye_open 이 본다
         self.watch_from = 0.0        # 캡처를 시작한 시각 (time.time) — 관찰 기록이 어디부터 빠짐없나 (seen_since)
         self.gap_at = 0.0            # 흐름이 끊겨 상태를 모름으로 돌린 마지막 시각 (time.time) — 그 전부터의 관찰은 빠졌을 수 있다
+        self._relogin = True         # 다음 접속 이벤트는 같은 캐릭터여도 관찰 기록에 남긴다 (감시를 켠 뒤·로그아웃 뒤 — _remember)
         self._cond = threading.Condition()  # 잠금은 RLock — 잠금 안에서 부르는 _apply 등이 다시 잡아도 된다
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None

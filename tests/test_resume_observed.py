@@ -70,11 +70,12 @@ class CutTaskTest(unittest.TestCase):
 
 
 class LeaveAtLoginTest(unittest.TestCase):
-    def leave(self, kind=None, in_field=False, hunts=("",), at_main=(False,), state="NotInDungeon", task="silver"):
+    def leave(self, kind=None, in_field=False, hunts=("",), at_main=(False,), state="NotInDungeon", task="silver",
+              shown=False):
         from mabi.tasks import login
         b = unwatched(bot({"slot": 2, "task": task}))
         b.at_main.side_effect = list(at_main) + [at_main[-1]] * 10
-        b.exists.return_value = False
+        b.exists.return_value = shown  # 던전 클리어 화면(터치·보상 나가기)이 보이나
         here = SimpleNamespace(kind=kind, in_field=in_field)
         with (mock.patch("mabi.place.place", return_value=here),
               mock.patch("mabi.tasks.space.game_space", return_value=""),
@@ -83,9 +84,11 @@ class LeaveAtLoginTest(unittest.TestCase):
               mock.patch("mabi.tasks.dungeon.touch_prompt_visible", return_value=False),
               mock.patch("mabi.tasks.dungeon.wait_field") as wf,
               mock.patch("mabi.tasks.dungeon.play_dungeon") as pd,
+              mock.patch("mabi.tasks.clear.after_clear") as ac,
               mock.patch("mabi.tasks.exits.leave_instance") as li):
             login._leave_dungeon(b)
-        return SimpleNamespace(field=wf.called, dungeon=pd.called, left=li.called, closed=b.to_main.called)
+        return SimpleNamespace(field=wf.called, dungeon=pd.called, left=li.called, closed=b.to_main.called,
+                               reward=ac.called)
 
     def test_covered_hud_closes_and_looks_again(self):
         # 지도 창이 HUD 를 가림 → 닫고 다시 보니 사냥 퀘스트가 있다 → 끊긴 숙제가 무엇이든 기다린다
@@ -105,12 +108,32 @@ class LeaveAtLoginTest(unittest.TestCase):
         self.assertTrue(r.dungeon)
         self.assertFalse(self.leave(kind=None, state=None, task="tribute").dungeon)
 
+    def test_reward_screen_with_unknown_state_takes_reward(self):
+        # 상태를 몰라도 클리어 화면이 보이면 보상부터 — 진행 중으로 보고 끝난 판을 기다리지 않는다
+        r = self.leave(kind=DUNGEON, state=None, task="tribute", shown=True)
+        self.assertTrue(r.reward)
+        self.assertFalse(r.dungeon)
+
     def test_abyss_left_unless_weekend_cut(self):
         self.assertTrue(self.leave(kind=ABYSS, task="arbeit").left)
         with mock.patch("mabi.tasks.weekend.finish_inside") as fin:
             r = self.leave(kind=ABYSS, task="weekend_abyss")
         self.assertTrue(fin.called)
         self.assertFalse(r.left)
+
+    def test_finish_blocked_leaves_and_goes_on(self):
+        # 끊긴 판을 마치다 막히면 예전처럼 나와서 접속을 잇는다 — 예외로 이 캐릭터의 숙제를 통째로 건너뛰지 않게
+        from mabi.exceptions import CannotProceed
+        with (mock.patch("mabi.tasks.weekend.finish_inside", side_effect=CannotProceed("시간 초과")),
+              mock.patch("mabi.tasks.field_boss.inside", return_value=False)):
+            r = self.leave(kind=ABYSS, task="weekend_abyss")
+        self.assertTrue(r.left)
+
+    def test_stop_while_finishing_goes_up(self):
+        from mabi.exceptions import StopRequested
+        with mock.patch("mabi.tasks.weekend.finish_inside", side_effect=StopRequested("멈춤")):
+            with self.assertRaises(StopRequested):
+                self.leave(kind=ABYSS, task="weekend_abyss")
 
     def test_field_boss_fight_cut_finishes_fight(self):
         from mabi.tasks import login
@@ -284,6 +307,49 @@ class FinishCutRoundTest(unittest.TestCase):
             weekend.finish_inside(mock.MagicMock(), cfg, "weekend_abyss")
         self.assertTrue(made[0].finish)
         self.assertTrue(li.called)
+
+    def test_finish_runs_the_abyss_map_here(self):
+        # 계획의 첫 던전이 아니라 지금 선 맵의 던전으로 마친다 (흩어진 물길은 게임을 앞에 두고 — setup)
+        from mabi.tasks import weekend
+        got = []
+
+        class Fake:
+            finish = False
+
+            def __init__(self, bot, cfg, runs=0):
+                got.append(cfg["abyss"]["dungeon"])
+
+            def run(self):
+                return {}
+        here = SimpleNamespace(kind=ABYSS, name="흩어진 물길 (어비스 시즌2 3구역 매우 어려움2)")
+        cfg = {"abyss": {"dungeon": "허상의 정박지"}, "weekend": {"abyss": {}}}
+        with (mock.patch.object(weekend.abyss, "AbyssRepeat", Fake),
+              mock.patch.object(weekend, "_kept", return_value=mock.MagicMock()),
+              mock.patch("mabi.place.place", return_value=here),
+              mock.patch("mabi.tasks.exits.leave_instance")):
+            weekend.finish_inside(mock.MagicMock(), cfg, "weekend_abyss")
+        self.assertEqual(got, ["흩어진 물길"])
+
+    def test_kept_restores_weight_watch(self):
+        # 접속 단계 안에서 판을 마친 뒤 무게 감시가 켜진 채 남지 않는다 (접속 중엔 앞 캐릭터 무게를 보지 않는다)
+        from mabi.tasks import weekend
+        b = SimpleNamespace(background=True, scene_skip=False, watch_weight=False)
+        with weekend._kept(b):
+            b.background, b.scene_skip, b.watch_weight = False, True, True  # 반복이 바꾼 것 (Repeat.run)
+        self.assertEqual((b.background, b.scene_skip, b.watch_weight), (True, False, False))
+
+    def test_matching_start_counts_only_a_later_map(self):
+        # 매칭 중에 시작 — 지금 선 맵(지난 판) 뒤에 들어간 맵만 이번 판 (예전엔 0 부터 봐 지난 판 맵을 새 판으로 셌다)
+        from mabi.tasks import abyss
+        r = self.abyss_rep()
+        r.bot.packets.state.entered_at = 123.0
+        since = []
+        with (mock.patch.object(abyss, "to_reward", return_value="reward"),
+              mock.patch.object(abyss, "exit_reward"),
+              mock.patch.object(abyss, "inside", return_value=True),
+              mock.patch.object(abyss, "entered_since", side_effect=lambda bot, at: since.append(at) or True)):
+            r.loop("matching")
+        self.assertEqual(since[:1], [123.0])
 
 
 if __name__ == "__main__":

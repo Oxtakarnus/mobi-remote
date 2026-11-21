@@ -84,6 +84,14 @@ VERIFY = {
     "board": board.verify,
 }
 
+# 끊긴 숙제의 판 안에서 접속 단계가 시작했을 때 그 판을 마치는 함수 (login._finish_inside 가 부르고, 마치다 막히면 거기서
+# 나온다). (bot, 끊긴 진행 기록, 지금 맵 종류) -> 마쳤으면 True, 그 숙제의 판 안이 아니면 False. 새 숙제는 여기 한 줄
+FINISH_CUT = {
+    "weekend_abyss": weekend.finish_cut,
+    "weekend_raid": weekend.finish_cut,
+    "field_boss": field_boss.finish_cut,
+}
+
 
 def build(cfg: dict) -> dict:
     """task id -> (label, callable)"""

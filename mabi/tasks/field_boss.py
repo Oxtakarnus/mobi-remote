@@ -251,6 +251,21 @@ def leave(bot: Bot) -> None:
         bot.log.warning(f"보스 영역 나가기: {e}")
 
 
+def fight_cut(bot: Bot, last: dict | None) -> bool:
+    """보스와 싸우던 중에 끊긴 채(마지막 단계 기록 last 가 전투) 아직 보스 영역 안인가 — 숙제(run)와 접속의 시작
+    정리(finish_cut)가 이 한 기준으로 본다."""
+    return inside(bot) and (last or {}).get("step") == "fb_fight"
+
+
+def finish_cut(bot: Bot, cut: dict, kind: str | None) -> bool:
+    """접속의 시작 정리(tasks.FINISH_CUT): 보스와 싸우던 중에 끊겼으면 그 전투부터 마치고 나온다. 아니면 False."""
+    if not fight_cut(bot, bot.daily.last_step(cut["slot"], "field_boss")):
+        return False
+    bot.step("fb_inside_at_login", "보스와 싸우던 중에 끊김 → 그 전투부터 마침")
+    finish_inside(bot)
+    return True
+
+
 def finish_inside(bot: Bot) -> bool:
     """보스와 싸우던 중에 끊긴 채 보스 영역 안에서 다시 시작함: 나가지 않고 그 전투부터 마치고 나온다 — 예전엔 나가서
     새 보스로 다시 들어가 쌓은 기여를 버렸다 (점검 2026-11-22). 보상을 받았으면 True (못 받았으면 run 이 다시 들어간다)."""
@@ -264,7 +279,7 @@ def run(bot: Bot, cfg: dict) -> str:
     boss, difficulty = fb["boss"], fb["difficulty"]
     if done(bot):
         return "이번 주 이미 잡음"
-    if inside(bot) and (bot.resume or {}).get("step") == "fb_fight":
+    if fight_cut(bot, bot.resume):
         bot.log.info("보스와 싸우던 중에 끊김 → 그 전투부터")
         if finish_inside(bot):
             return f"{boss} {difficulty} 처치 (끊긴 전투를 이어서)"

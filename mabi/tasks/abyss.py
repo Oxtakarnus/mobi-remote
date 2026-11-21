@@ -648,6 +648,10 @@ class AbyssRepeat(Repeat):
         bot.background = self.behind
         self.party_since = time.monotonic()
         stage = {"play": "play", "reward": "reward", "matching": "match"}.get(at, "entry")
+        if stage == "match":
+            # 매칭 중에 시작함 — 지금 선 맵(마을, 또는 다시 하기 뒤 지난 판 맵) 뒤에 들어가는 어비스 맵이 이번 판. 기본값(0)으로
+            # 두면 지난 판 맵을 이미 들어간 새 판으로 봐, 끝난 판의 결과를 한 판으로 셌다 (점검 2026-11-22)
+            self.match_at = bot.packets.state.entered_at
         # 시작 전에 이미 끝난 판 — 보상만 받고 판 수에는 넣지 않는다 (레이드와 같다). 그 판은 결과가 온 순간 이미 셌다 —
         # 보상 화면에서 멈췄다가 ▶ 하면 두 번 세어 7판 카드가 4판 만에 끝났다 (11-19 16:23·16:37·16:43).
         # 끊긴 판만 마칠 때(finish)는 그 판이 마칠 판이다 — 넣지 않으면 판이 끝난 뒤 한 판을 더 돌았다

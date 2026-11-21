@@ -42,6 +42,16 @@ class AlterMissingTest(unittest.TestCase):
         # 가공품이어도 채집으로 구할 수 있으면 건너뛰지 않는다 (2026-10-30 멀리 다녀오실 분 — 깔끔 버섯 포자)
         self.assertEqual(arbeit.alter_missing(job, {"두유"}), [])
 
+    def test_round_with_unknown_gatherable(self):
+        # 채집 목록 조회가 안 되면(None) 빈 목록으로 본다 — 예전엔 TypeError 로 아르바이트가 오류로 끝났다 (점검 2026-11-22)
+        craft.configure(ROOT / "state", ROOT / "data", None)
+        job = {"title": "x", "objectives": [{"Description": f"두유 {arbeit.HAVE} 0/3", "IsCompleted": False}]}
+        r = arbeit._Round.__new__(arbeit._Round)
+        r.bot, r.skipped, r.save = mock.MagicMock(), {}, mock.MagicMock()
+        with (mock.patch.object(arbeit, "gatherable", return_value=None),
+              mock.patch.object(arbeit, "quick_alter", return_value=True)):
+            self.assertEqual(r.alter_or_skip(job), ["두유"])
+
 
 class QuickAlterTest(unittest.TestCase):
     """가공이 2분(alter_max_sec) 미만인 가공품만 아르바이트에서 가공한다 (사용자 규칙 2026-10-30)."""

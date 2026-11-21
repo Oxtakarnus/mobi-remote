@@ -184,7 +184,9 @@ class DailyState:
         if char is not None:
             rec["char"] = char
         if task == "login" and old:
-            before = old.get("before") if old.get("task") == "login" else old
+            # 접속이 또 끊겼으면 그 접속이 이어 하려던 숙제를 넘겨받는다 — 같은 캐릭터 자리의 접속일 때만. 다른 자리의 접속
+            # 기록에 딸린 옛 숙제를 끌고 오면 나중에 그 자리로 돌아왔을 때 오래전 숙제를 끊긴 것으로 봤다 (점검 2026-11-22)
+            before = (old.get("before") if old.get("slot") == slot else None) if old.get("task") == "login" else old
             if before:
                 rec["before"] = {k: before[k] for k in ("slot", "task", "at", "ts", "char", "stopped", "step", "stage")
                                   if k in before}

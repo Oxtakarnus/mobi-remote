@@ -33,7 +33,7 @@ KINDS = {
     "abyss": ("주간 어비스", "dungeon", "weekend_abyss_quest"),
     "raid": ("주간 레이드", "raid", "weekend_raid_quest"),
 }
-# 끊긴 주말 숙제 → 그 판의 맵 종류. 접속의 시작 정리(login._finish_inside)가 이 판 안이면 나가지 않고 finish_inside 로 마친다.
+# 끊긴 주말 숙제 → 그 판의 맵 종류. 접속의 시작 정리(tasks.FINISH_CUT → finish_cut)가 이 판 안이면 나가지 않고 마친다.
 # 레이드 출항선은 넣지 않는다 — 판이 시작 전이라 내려도 잃는 게 없고, 이어 하면 매칭이 안 잡힐 때 접속 단계가 다시 태우기를
 # 시간 상한까지 되풀이한다
 INSIDE = {"weekend_abyss": (ABYSS,), "weekend_raid": (RAID,)}
@@ -154,12 +154,13 @@ def quest_state(bot: Bot, kind: str) -> Quest:
 
 @contextmanager
 def _kept(bot: Bot):
-    """반복이 바꾼 봇 설정(뒤에서 돌기·연출 넘기기)을 숙제가 끝나면 되돌린다 — 다음 숙제·캐릭터 접속은 예전처럼."""
-    was = (bot.background, bot.scene_skip)
+    """반복이 바꾼 봇 설정(뒤에서 돌기·연출 넘기기·가방 무게 감시)을 숙제가 끝나면 되돌린다 — 다음 숙제·캐릭터 접속은
+    예전처럼. 접속 단계 안에서 끊긴 판을 마쳤으면(finish_inside) 무게 감시는 꺼진 채로 돌아간다 (runner — 접속 중엔 안 본다)."""
+    was = (bot.background, bot.scene_skip, bot.watch_weight)
     try:
         yield
     finally:
-        bot.background, bot.scene_skip = was
+        bot.background, bot.scene_skip, bot.watch_weight = was
 
 
 def picked(cfg: dict, kind: str) -> dict:
@@ -188,15 +189,35 @@ def _repeat(bot: Bot, cfg: dict, kind: str, runs: int, place: str, finish: bool 
         return rep.run()
 
 
+def finish_cut(bot: Bot, cut: dict, kind: str | None) -> bool:
+    """접속의 시작 정리(tasks.FINISH_CUT): 끊긴 주말 숙제의 판 안(INSIDE)에서 시작했으면 그 판을 마치고 나온다.
+    판 밖이면 False — 접속이 예전처럼 나간다."""
+    task = cut["task"]
+    if kind not in INSIDE.get(task, ()):
+        return False
+    bot.step("weekend_inside_at_login", f"끊긴 주말 숙제 판 안에서 시작 ({kind}) → 그 판을 마침")
+    finish_inside(bot, bot.cfg, task)
+    return True
+
+
 def finish_inside(bot: Bot, cfg: dict, task: str) -> None:
-    """끊긴 주말 숙제의 판 안에서 다시 시작함 (접속의 시작 정리가 부른다): 나가지 않고 그 판만 마치고 나온다 — 예전엔
-    접속 단계가 바로 나가 함께하기 파티 판을 버리고 다시 매칭했다 (점검 2026-11-22). 판 안이면 끝까지, 이미 끝나
-    보상 화면이면 보상만 받고, 쓰러지면 거기서 그만 (Repeat.finish). 남은 판은 숙제가 제 차례에 퀘스트 진행도로 다시 센다.
-    던전 이름은 판 안에서는 쓰지 않는다 (어디서 시작하나는 where 가 판의 단계로 본다)."""
+    """끊긴 주말 숙제의 판 안에서 다시 시작함: 나가지 않고 그 판만 마치고 나온다 — 예전엔 접속 단계가 바로 나가
+    함께하기 파티 판을 버리고 다시 매칭했다 (점검 2026-11-22). 판 안이면 끝까지, 이미 끝나 보상 화면이면 보상만 받고,
+    쓰러지면 거기서 그만 (Repeat.finish). 남은 판은 숙제가 제 차례에 퀘스트 진행도로 다시 센다.
+    어비스는 지금 선 맵의 던전으로 돈다 — 계획의 첫 던전과 다를 수 있고, 흩어진 물길은 게임을 앞에 두고 돌아야 한다
+    (AbyssRepeat.setup). 어디서 시작하나는 where 가 판의 단계로 본다."""
     from .exits import leave_instance
     kind = "abyss" if task == "weekend_abyss" else "raid"
-    _repeat(bot, cfg, kind, 1, plan(picked(cfg, kind), kind, 1)[0][0], finish=True)
+    here = _abyss_here(bot) if kind == "abyss" else ""
+    _repeat(bot, cfg, kind, 1, here or plan(picked(cfg, kind), kind, 1)[0][0], finish=True)
     leave_instance(bot)
+
+
+def _abyss_here(bot: Bot) -> str:
+    """지금 선 어비스 맵의 던전 이름 — 맵 이름 '흩어진 물길 (어비스 시즌2 3구역 …)' 의 앞. 어비스 맵이 아니거나 모르면 ''."""
+    from ..place import place
+    p = place(bot)
+    return p.name.split(" (")[0].strip() if p.kind == ABYSS and p.name else ""
 
 
 def run(bot: Bot, cfg: dict, kind: str) -> str:

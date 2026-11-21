@@ -34,9 +34,16 @@ class Events:
 
     def _remember(self, key: str, vals: dict, was_char: int | None = None) -> None:
         """우리 판단에 쓰는 이벤트(days.KEYS)만 하루 기록에 남긴다. 잠금 안에서 부른다 (_apply 뒤라 char_id 가 새 값).
-        접속한 캐릭터(char.personal_data)는 맵을 옮길 때마다 오므로 캐릭터가 바뀐 때만 남긴다."""
-        if key not in DAY_KEYS or key == "char.personal_data" and self.state.char_id == was_char:
+        접속한 캐릭터(char.personal_data)는 맵을 옮길 때마다 오므로 캐릭터가 바뀌었거나 로그아웃 뒤 처음 온 때만 남긴다 —
+        같은 캐릭터로 다시 접속한 것(게임을 다시 켬 등)도 '접속' 으로 남는다 (점검 2026-11-22)."""
+        if key == "session.logout_ok":
+            self._relogin = True
+        if key not in DAY_KEYS:
             return
+        if key == "char.personal_data":
+            if self.state.char_id == was_char and not self._relogin:
+                return
+            self._relogin = False
         self.days.record(key, vals, self.state.char_id, name=self.state.my_name)
 
     def _apply(self, key: str, vals: dict) -> None:

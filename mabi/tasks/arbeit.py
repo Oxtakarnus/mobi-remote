@@ -763,7 +763,7 @@ class _Round:
         """모자란 가공품 (CLI 조건과 레시피 표로 미리 가름). 짧은 가공이면 그 목록을 들고 진행,
         그 밖의 가공품이 모자라면 가지 않고 건너뛰고 None."""
         bot = self.bot
-        alter = alter_missing(job, gatherable(bot)) if "objectives" in job else []
+        alter = alter_missing(job, gatherable(bot) or frozenset()) if "objectives" in job else []
         if alter and quick_alter(bot, alter):
             bot.log.info(f"아르바이트 '{job['title']}': 짧은 가공 ({', '.join(alter)}) → 가공해서 진행")
         elif alter:

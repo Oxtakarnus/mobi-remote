@@ -213,8 +213,9 @@ def _run_round(bot: Bot, cfg: dict) -> tuple[str, int | None]:
                 bot.step(f"silver_{kind}", f"{label} {i + 1}/{runs}회 (은동전 {before})", n=i + 1, runs=runs)
                 if bot.daily and slot:
                     # 들어가는 때·캐릭터를 같이 남긴다 — 이어 할 때 관찰 기록에서 그 뒤 이 캐릭터가 클리어했는지 본다
+                    char = bot.packets.state.char_id if bot.packets.ok else None  # 감시가 멈췄으면 옛 캐릭터일 수 있다
                     bot.daily.set(slot, "silver_pending", {"kind": kind, "n": i + 1, "coins": before,
-                                                           "ts": time.time(), "char": bot.packets.state.char_id})
+                                                           "ts": time.time(), "char": char})
                 counted = []
                 last_run = i == runs - 1 and (once is dungeon_once or not dungeon_runs)
 
