@@ -121,7 +121,15 @@ class DailyState:
         return self.data.get(self.PROGRESS)
 
     def set_progress(self, slot: int, task: str) -> None:
-        self.data[self.PROGRESS] = {"slot": slot, "task": task, "at": datetime.now().strftime("%H:%M:%S")}
+        """접속(login)으로 덮을 때는 그 전에 하던 숙제를 'before' 로 남긴다 — 접속의 시작 정리(login._leave_dungeon)가
+        끊긴 숙제를 보고 마무리한다 (요일 던전 추가 루팅·은동전 사냥터)."""
+        old = self.data.get(self.PROGRESS)
+        rec = {"slot": slot, "task": task, "at": datetime.now().strftime("%H:%M:%S")}
+        if task == "login" and old:
+            before = old.get("before") if old.get("task") == "login" else old
+            if before:
+                rec["before"] = {k: before[k] for k in ("slot", "task", "at") if k in before}
+        self.data[self.PROGRESS] = rec
         self._save()
 
     # ---- 숙제 안의 단계: 'slot' 의 'task' 를 어디까지 했나. 다시 시작하면 그 숙제가 이걸 보고 이어 한다

@@ -286,7 +286,10 @@ def _leave_dungeon(bot: Bot) -> bool:
         drill.leave(bot)
         return True
     # 끊긴 숙제가 요일 던전이면 보상 화면에서 추가 루팅까지 (그냥 나가면 숙제 쪽은 일일 달성만 보고 끝내 추가 루팅이 빠진다)
+    # 접속 단계가 진행 기록을 'login' 으로 덮었으면 그 전 것(before)을 본다 — 예전엔 늘 'login' 이라 추가 루팅이 빠졌다
     prog = bot.daily.progress() if bot.daily else None
+    if prog and prog.get("task") == "login":
+        prog = prog.get("before") or prog
     cut = prog.get("task") if prog and bot.character and prog.get("slot") == bot.character.get("slot") else None
     extra_loot = int(bot.cfg["weekday_dungeon"]["extra_loot"] or 0) if cut == "weekday_dungeon" else 0
     # 검은 구멍·사냥터 안에서 끊겼으면 나가지 않고 끝날 때까지 본다 — 캐릭터를 다시 고르면 그 판(횟수·은동전)이 날아간다.
