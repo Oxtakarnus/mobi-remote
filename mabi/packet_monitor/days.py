@@ -7,6 +7,7 @@
 
 관찰 기록이기도 하다 — 일시정지 중에도 감시는 돌므로, 이어 할 때 '멈춘 그 단계가 그사이 끝났나' 를 since 로 본다
 (사용자 2026-11-22: 캐릭터 바뀜·접속·어느 캐릭터였나까지 남겨 재시작 때 지금 상황을 확실히 알게).
+숙제·이어 하기·출석이 묻는 곳은 mabi.observed 하나다 — 기록의 생김새(이벤트·상태 이름)는 거기서만 안다.
 """
 import json
 import threading
@@ -17,8 +18,8 @@ from ..profile import RESET_HOUR, game_date
 
 # 하루 기록에 남기는 이벤트 — '오늘 이 신호가 있었나' 를 쓰는 판단이 생기면 여기에 넣는다 (Events._remember 가 거른다)
 KEYS = frozenset({
-    "daily.attendance_start",  # 출석 — situation.attendance_seen_today (계정에 하루 한 번)
-    # 관찰 기록 — 이어 할 때 멈춘 단계가 그사이 끝났는지 (since)
+    "daily.attendance_start",  # 출석 — observed.attendance_today (계정에 하루 한 번)
+    # 관찰 기록 — 이어 할 때 멈춘 단계가 그사이 끝났는지 (observed 가 묻는다)
     "session.logout_ok",       # 로그아웃 → 캐릭터 선택 화면
     "char.personal_data",      # 접속한 캐릭터 (char 가 새 캐릭터 번호)
     "channel.entering",        # 맵 진입 (channel_name · channel_type)

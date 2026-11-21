@@ -121,6 +121,36 @@ class ProgressStopTest(unittest.TestCase):
             self.assertEqual(st.interrupted()["task"], "silver")
 
 
+class ObservedTest(unittest.TestCase):
+    """관찰 기록 질문은 mabi.observed 한곳에서 (사용자 2026-11-22)."""
+
+    def test_stopped_at_falls_back_to_login_stop(self):
+        from mabi import observed
+        from mabi.profile import DailyState
+        self.assertIsNone(observed.stopped_at(None))
+        with tempfile.TemporaryDirectory() as d:
+            st = DailyState(Path(d))
+            st.set_progress(2, "silver")  # 숙제 도중 리모콘이 꺼짐 — 멈춤 기록 없음
+            self.assertIsNone(observed.stopped_at(st))
+            st.set_progress(2, "login")
+            st.mark_stopped()  # 이어 하려던 접속 도중 멈춤
+            self.assertEqual(st.interrupted()["task"], "silver")
+            self.assertEqual(observed.stopped_at(st), st.progress()["stopped"])
+
+    def test_since_line_keeps_last(self):
+        from mabi import observed
+        m = PacketMonitor(None)
+        for i in range(14):
+            m.days.record("channel.entering", {"channel_name": f"맵{i}"}, 7)
+        b = mock.MagicMock()
+        b.packets = m
+        line = observed.since_line(b, time.time() - 10)
+        self.assertIn("맵13", line)
+        self.assertNotIn("맵0", line)
+        self.assertIn("(앞 2건 생략)", line)
+        self.assertEqual(observed.since_line(b, None), "")
+
+
 class CharacterRecordTest(unittest.TestCase):
     """관찰 기록에 캐릭터가 바뀐 것·이름을 남긴다 (사용자 2026-11-22)."""
 

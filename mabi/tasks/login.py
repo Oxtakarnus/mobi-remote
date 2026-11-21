@@ -19,7 +19,7 @@ import numpy as np
 
 from .. import gamedata as gd
 from ..ocr import nospace
-from .. import situation
+from .. import observed, situation
 from ..bot import Bot
 from ..exceptions import (AuthBlocked, CannotProceed, MissingTemplate, SelectFailed, SelectStuck, StepTimeout,
                           WrongCharacter)
@@ -270,9 +270,7 @@ def cut_task(bot: Bot) -> dict | None:
     멈춘 뒤 다른 캐릭터로 접속해 있거나(패킷 캐릭터 번호) 로그아웃·마을로 나간 것이 관찰됐으면 None — 그사이 사람이 다른
     일을 했으니 지금 자리는 끊긴 그 판이 아니다 (남의 보상 화면에서 추가 루팅을 누르거나 끝난 판을 기다리지 않게).
     관찰 기록으로 모르면(감시 꺼짐·리모콘을 다시 켬) 예전처럼 끊긴 숙제로 본다 (사용자 2026-11-22: 멈춘 뒤 관찰한 것으로
-    지금 상황을 알고 이어 한다)."""
-    from ..packet_monitor.days import describe, val
-    from ..place import OPEN_MAPS
+    지금 상황을 알고 이어 한다). 멈춘 때는 이어 하기 순서와 같게 (observed.stopped_at)."""
     prog = bot.daily.interrupted() if bot.daily else None
     if not prog or not bot.character or prog.get("slot") != bot.character.get("slot"):
         return None
@@ -281,17 +279,9 @@ def cut_task(bot: Bot) -> dict | None:
     if char is not None and now is not None and char != now:
         bot.log.info(f"끊긴 숙제 '{prog['task']}': 지금 다른 캐릭터로 접속해 있음 → 끊긴 판으로 보지 않음")
         return None
-
-    def moved(r: dict) -> bool:
-        if r["key"] == "channel.entering":
-            return val(r, "channel_type") in OPEN_MAPS
-        if r["key"] == "char.personal_data":
-            return char is not None and r.get("char") != char
-        return True  # 로그아웃
-    seen = bot.packets.seen_since(prog.get("stopped"), ("session.logout_ok", "char.personal_data", "channel.entering"),
-                                  check=moved)
+    seen = observed.left_since(bot, observed.stopped_at(bot.daily), char)
     if seen:
-        bot.log.info(f"끊긴 숙제 '{prog['task']}': 멈춘 뒤 {describe(seen)} → 끊긴 판은 끝남")
+        bot.log.info(f"끊긴 숙제 '{prog['task']}': 멈춘 뒤 {observed.describe(seen)} → 끊긴 판은 끝남")
         return None
     return prog
 

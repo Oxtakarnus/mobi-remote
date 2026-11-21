@@ -20,7 +20,7 @@ from datetime import datetime
 from typing import Callable
 
 from . import profile as prof
-from . import queue_report, tasks
+from . import observed, queue_report, tasks
 from .bot import Bot
 from .session import GameSession
 from .exceptions import CannotProceed, MissingTemplate, StepTimeout, StopRequested
@@ -360,13 +360,9 @@ class Runner:
             chars = [first, *[ch for ch in chars if ch is not first]]
         if first:
             log.info(f"이어 하기: [{first['name']}] 부터 ({why})")
-        stopped = (prog or {}).get("stopped") or (state.progress() or {}).get("stopped")
-        if stopped:  # 멈춘 뒤 관찰 기록 — 그사이 사람이 한 일·게임이 혼자 진행한 것
-            seen = self.bot.packets.days.since(stopped)
-            if seen:
-                from .packet_monitor.days import describe
-                log.info("멈춘 뒤 관찰: " + " · ".join(describe(r) for r in seen[-12:])
-                         + (f" (앞 {len(seen) - 12}건 생략)" if len(seen) > 12 else ""))
+        # 멈춘 뒤 관찰 기록 — 그사이 사람이 한 일·게임이 혼자 진행한 것 (끊긴 판 판단 login.cut_task 와 같은 때부터)
+        if (seen := observed.since_line(self.bot, observed.stopped_at(state))):
+            log.info("멈춘 뒤 관찰: " + seen)
         return chars
 
     @staticmethod

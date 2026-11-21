@@ -10,6 +10,7 @@
 """
 import time
 
+from . import observed
 from .profile import game_date
 from .exceptions import StepTimeout
 
@@ -49,21 +50,10 @@ def look(bot, frame=None) -> str:
 
 # ---------------------------------------------------------------- 출석
 
-ATTEND_KEY = "daily.attendance_start"
-
-
-def attendance_seen_today(bot) -> str | None:
-    """오늘(게임 날짜, 오전 6시부터) 출석 대화가 있었으면 그 시각 (패킷 하루 기록 — 숙제를 안 돌릴 때 사람이 넘긴 것도,
-    리모콘을 다시 켜기 전 것도). 없거나 감시가 안 돌면 None. 출석은 계정에 하루 한 번이다 — 11-17 은 06:47 첫 캐릭터에만
-    오고 그 뒤 접속한 캐릭터들엔 없었다 (11-12 도 06:11 한 번)."""
-    p = bot.packets
-    return p.today(ATTEND_KEY) if p.status == "running" else None
-
-
 def attendance_due(bot) -> bool:
     """오늘(게임 날짜) 출석을 아직 안 넘겼을 수 있나 — 오늘 출석 대화가 없었고(패킷 하루 기록), 리모콘이 오늘 출석을 넘긴
     적이 없고, 이 실행을 시작한 뒤에 게임 날짜가 바뀌었다 (접속 단계는 출석을 따로 넘기고 attendance_done 을 부른다)."""
-    if attendance_seen_today(bot):
+    if observed.attendance_today(bot):
         return False
     return getattr(bot, "attendance_date", None) not in (None, game_date())
 
@@ -72,7 +62,7 @@ def check_attendance(bot) -> None:
     """작업을 시작할 때 (Bot.check_in): 오늘 출석이 이미 있었으면 넘긴 것으로 하고, 남은 출석 신호(90초)는 화면에 출석이
     없으면 지운다 — 사람이 넘긴 것이다 (사용자 2026-11-17 '오늘 6시 이후 출석 패킷이 있었으니 패스'). 신호가 남아 있으면
     그동안 태스크가 건 NPC 대화를 출석으로 알아 가운데를 누를 수 있다."""
-    at = attendance_seen_today(bot)
+    at = observed.attendance_today(bot)
     if not at:
         return
     attendance_done(bot)

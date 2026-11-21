@@ -9,7 +9,7 @@
 """
 import time
 
-from .. import gamedata as gd
+from .. import gamedata as gd, observed
 from ..bot import Bot
 from ..exceptions import CannotProceed, NotSeen, StepTimeout
 from . import black_hole
@@ -157,9 +157,7 @@ def _cut_field_done(bot: Bot, pend: dict, coins: int, cost: int) -> bool:
     은동전 셈은 그사이 사람이 은동전을 다른 데 쓰면 헷갈린다. 관찰 기록으로 모르면(감시 꺼짐·옛 기록) 은동전이
     들어가기 전보다 줄었는지로 (그사이 저절로 차는 1~2개는 봐준다). 그 판의 캐릭터 번호를 모르면 관찰 기록을 쓰지 않는다
     — 다른 캐릭터의 클리어를 이 판으로 셀 수 있다."""
-    from ..packet_monitor.days import val
-    seen = None if pend.get("char") is None else bot.packets.seen_since(
-        pend.get("ts"), "field.context", pend["char"], lambda r: val(r, "state_name") == "WaitingForChannelTransfer")
+    seen = observed.field_cleared_since(bot, pend.get("ts"), pend.get("char"))
     if seen:
         bot.log.info(f"지난번 끊긴 사냥터 {pend.get('n')}회차: 관찰 기록에 {seen['t']} 클리어 → 한 것으로 셈")
         return True

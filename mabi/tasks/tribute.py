@@ -9,7 +9,7 @@ import time
 
 import numpy as np
 
-from .. import gamedata as gd, situation
+from .. import gamedata as gd, observed, situation
 from ..bot import Bot
 from ..exceptions import CannotProceed, NotSeen, StepTimeout
 from .arrival import travel
@@ -42,30 +42,13 @@ def not_yet(bot: Bot, cfg: dict, last: dict | None = None) -> str:
     return "고난도 퀘스트가 아직 없음" if quest_visible(bot) is False else ""
 
 
-def cleared_since(bot: Bot, after: float | None) -> str:
-    """관찰 기록에서 after(초) 뒤 이 캐릭터가 심층 던전을 깬 때 ('시각 맵 이름', 없으면 ""). 심층 던전 맵 이름엔 '심층' 이
-    들고 난이도는 없다 (예 '페카 2-1 심층 던전'). 들어간 맵 이름은 after 앞의 줄에서도 찾는다 — 던전 단계 기록보다 맵 진입이
-    먼저 온다."""
-    from ..packet_monitor.days import day_start, val
-    char = bot.packets.state.char_id if bot.packets.ok else None
-    if char is None or not after:
-        return ""
-    deep, where = gd.text("dungeon_deep"), ""
-    for r in bot.packets.days.since(day_start(), ("channel.entering", "dungeon.state"), char):
-        if r["key"] == "channel.entering":
-            where = val(r, "channel_name") or ""
-        elif val(r, "state_name") == "Cleared" and deep in where and r.get("ts", 0) >= after:
-            return f"{r['t']} {where}"
-    return ""
-
-
 def cut_cleared(bot: Bot) -> str:
     """끊긴 판을 그사이 깼나 (깬 때 '시각 맵 이름', 아니면 ""). 이 숙제가 퀘스트를 연 뒤(이동·던전 안)에 끊겼고, 그 단계 뒤에
     이 캐릭터의 심층 던전 클리어가 관찰됐으면 — 접속 단계가 끊긴 판을 마쳤거나 멈춘 사이 사람이 깼다. 퀘스트가 목록에 없을
     때 본다. 예전엔 이 경우 오지 않을 퀘스트를 3~10분 기다리다 실패로 끝냈다 (점검 2026-11-22).
     끊긴 단계만으로는 깼다고 보지 않는다 — 게임을 다시 켜면 접속 뒤 몇 분은 남은 퀘스트도 목록에 없다."""
     last = bot.resume or {}
-    return cleared_since(bot, last.get("ts")) if last.get("step") in OPENED else ""
+    return observed.deep_cleared_since(bot, last.get("ts")) if last.get("step") in OPENED else ""
 
 
 def _wait_until(bot: Bot, c: dict) -> float:
@@ -145,8 +128,7 @@ def run(bot: Bot, cfg: dict) -> str:
             break
         if time.monotonic() > end:
             # 기다릴 만큼 기다렸는데 없고 오늘 이 캐릭터가 심층 던전을 깼으면 사람이 먼저 한 것 — 실패로 남기지 않는다
-            from ..packet_monitor.days import day_start
-            if (when := cleared_since(bot, day_start())):
+            if (when := observed.deep_cleared_today(bot)):
                 return f"공물 {start}개 — 고난도 퀘스트가 안 뜸, 오늘 {when} 클리어 → 이미 깬 것으로 봄"
             raise CannotProceed(f"공물 {start}개인데 {time.monotonic() - t0:.0f}초 동안 고난도 퀘스트가 나타나지 않음 → 건너뜀")
         bot.log.info("고난도 퀘스트 대기 중")

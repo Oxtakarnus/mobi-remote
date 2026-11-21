@@ -136,7 +136,8 @@ class PacketMonitor(LinkWatch, CliSync, Events):
     def seen_since(self, ts: float | None, keys, char: int | None = None, check=None) -> dict | None | bool:
         """관찰 기록에서 ts(초) 이후 char 캐릭터(None 이면 누구든)의 keys 이벤트(이름 하나 또는 여럿) 중 check(줄) 가 참인
         첫 줄. 없으면 False, 모르면 None (감시가 안 돎 · ts 가 없음 · ts 뒤에 감시를 켰거나 흐름이 끊겨 빠졌을 수 있음).
-        찾은 줄은 그대로 믿는다 — 받은 것은 사실이다. '없음' 만 빠짐없이 본 때에 한해 False."""
+        찾은 줄은 그대로 믿는다 — 받은 것은 사실이다. '없음' 만 빠짐없이 본 때에 한해 False.
+        숙제·이어 하기는 이것을 직접 부르지 않고 mabi.observed 를 거친다."""
         if not ts:
             return None
         for r in self.days.since(ts, keys, char):

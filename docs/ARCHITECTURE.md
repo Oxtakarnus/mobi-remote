@@ -32,6 +32,7 @@ mabi/
     ├ body.py                 몸 다양성(BDC, ResourcesPackage) → 나이·체형·키별 뼈 크기·위치
     └ service.py              DressRoom — 목록·고른 모델만 그때 꺼내기, 게임 패치·형식이 바뀌면 캐시 비우기
   place.py                    '지금 어디인가' 공통 사실 (맵 종류·던전 안 등) — 새 판단은 여기에 더한다
+  observed.py                 관찰 기록(패킷 하루 기록)에 묻는 곳 — 오늘 출석, 멈춘 때, 멈춘 뒤 끊긴 판을 떠났나·깼나
   runner.py                   일일 숙제 실행기: 캐릭터마다 접속 → 숙제들 → 실패 분류·복구
   workqueue.py                작업 큐: 카드를 위에서부터 Kind.run 으로 돌린다
   queue_report.py             큐 결과(한 일·얻은 것). 얻은 것은 LootMeter 하나로 잰다
@@ -127,6 +128,7 @@ web/                          화면 (빌드 없이 <script> 여러 개가 같�
 | 판 사이 수리할지 / 수리했는데 그대로인지 | `tasks/repair.due` · `repair.run` | Repeat |
 | 얻은 것 재기 (캐릭터 접속 뒤 open, 그 캐릭터 끝에 close) | `queue_report.LootMeter` → `'loot'` 이벤트 | runner, Repeat(부르는 쪽 `daily_api._repeat_launch`), 큐 Kind 들이 같은 이벤트로 받음 |
 | 지금 어디인가 | `place.place(bot)` | 복구·나가기·시작 점검 |
+| 오늘·멈춘 뒤 그 캐릭터에게 있었던 일 (관찰 기록) — 하루 기록(`days`)·`seen_since` 를 직접 읽지 않는다 | `observed` — `attendance_today` · 멈춘 때 `stopped_at` · 끊긴 판을 떠났나 `left_since` · 사냥터 클리어 `field_cleared_since` · 심층 던전 클리어 `deep_cleared_since`·`deep_cleared_today` · 로그 한 줄 `since_line` | 출석(situation), 이어 하기 순서(runner), 끊긴 판(login.cut_task), 은동전, 공물 |
 | 맵 종류 이름 (패킷 channel_type) — 글자로 적지 않는다 | `place` 상수 `ABYSS`·`RAID`·`RAID_LOBBY`·`DUNGEON`·`DRILL`·`FIELD`(사냥터)·`OPEN_FIELD`(마을)·`FIELD_BOSS`·`OPEN_MAPS` · 콘텐츠 맵인가 `place.is_instance` | 패킷 감시, 끊는 자리, 어비스·레이드·드릴·필드 보스 |
 | CLI get_activity 읽기 (던전 상태·사냥터 안·쓰러짐·바쁨 …) — 키를 직접 읽지 않는다 | `game_state.Activity.of(act)` (`in_dungeon`·`in_field`·`busy` …) · Bot 안에서는 `_act_state` | 패킷 감시 맞추기, place, 점검자 idle, 태스크 |
 | 예외 (StepTimeout·CannotProceed·StopRequested·Stuck …) | `mabi/exceptions.py` (예전 자리 bot·content·monitor 에서 import 해도 같은 클래스) | 곳곳 |

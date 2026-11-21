@@ -57,6 +57,14 @@ class CutTaskTest(unittest.TestCase):
         self.assertIsNone(self.cut([("session.logout_ok", {}, 7)]))
         self.assertIsNone(self.cut([("char.personal_data", {"char_id": 8}, 8)]))
 
+    def test_login_stop_used_when_task_has_no_stop(self):
+        # 숙제 도중 리모콘이 꺼져 멈춤 기록이 없고, 이어 하려던 접속 도중 멈췄으면 그 멈춤부터 본다 (이어 하기 순서와 같은 때)
+        from mabi.tasks import login
+        prog = {"slot": 2, "task": "login", "stopped": time.time() - 50,
+                "before": {"slot": 2, "task": "weekday_dungeon", "char": 7}}
+        b = watched(bot(prog), 7, [("channel.entering", {"channel_type": "Field", "channel_name": "이멘 마하"}, 7)])
+        self.assertIsNone(login.cut_task(b))
+
     def test_unknown_keeps_old_rule(self):
         from mabi.tasks import login
         b = unwatched(bot(STOPPED))
@@ -197,12 +205,11 @@ class TributeClearedTest(unittest.TestCase):
         self.assertEqual(tribute.cut_cleared(self.tbot({"step": "in_dungeon"}, self.rows())), "")  # 옛 기록(ts 없음)
         self.assertEqual(tribute.cut_cleared(self.tbot({"step": "tr_wait", "ts": before}, self.rows())), "")
 
-    def test_cleared_since_only_deep_and_this_character(self):
-        from mabi.packet_monitor.days import day_start
-        from mabi.tasks import tribute
-        self.assertIn(self.DEEP, tribute.cleared_since(self.tbot(rows=self.rows()), day_start()))
-        self.assertEqual(tribute.cleared_since(self.tbot(rows=self.rows(name="룬다 1-3 던전 어려움")), day_start()), "")
-        self.assertEqual(tribute.cleared_since(self.tbot(rows=self.rows(char=8)), day_start()), "")
+    def test_deep_cleared_only_deep_and_this_character(self):
+        from mabi import observed
+        self.assertIn(self.DEEP, observed.deep_cleared_today(self.tbot(rows=self.rows())))
+        self.assertEqual(observed.deep_cleared_today(self.tbot(rows=self.rows(name="룬다 1-3 던전 어려움"))), "")
+        self.assertEqual(observed.deep_cleared_today(self.tbot(rows=self.rows(char=8))), "")
 
     def run_tr(self, resume, rows=(), visible=(False,), wait=0):
         from mabi.tasks import tribute
