@@ -39,15 +39,31 @@ def _wait_pid() -> None:
         k.CloseHandle(h)
 
 
+def _rename(src: Path, dst: Path, tries: int = 10) -> None:
+    """폴더 이름 바꾸기 — 막 꺼진 프로그램·백신 검사가 파일을 잠깐 잡고 있으면 실패하므로 1초씩 몇 번 다시 한다."""
+    import time
+    for i in range(tries):
+        try:
+            src.rename(dst)
+            return
+        except OSError:
+            if i == tries - 1:
+                raise
+            time.sleep(1)
+
+
 def _apply_patch(home: Path) -> None:
-    """update\\patch.zip 이 있으면 app\\ 을 그것으로 바꾼다. 실패하면 지금 app\\ 그대로 켠다 (이유는 update\\patch-error.txt)."""
+    """update\\patch.zip 이 있으면 app\\ 을 그것으로 바꾼다. 실패하면 지금 app\\ 그대로 켠다 (이유는 update\\patch-error.txt —
+    다음 새 판 확인이 이것을 보고 설치 파일로 받게 한다, gui_app.api.update_check)."""
     import json
     import shutil
+    import time
     import zipfile
     zf, app = home / "update" / "patch.zip", home / "app"
     if not zf.is_file():
         return
-    new, old = home / "app.new", home / "app.old"
+    # 옛 app 은 늘 새 이름으로 비켜 둔다 — 'app.old' 하나만 쓰면 지난번에 지우다 남은 것이 있을 때 이름 바꾸기가 계속 실패했다
+    new, old = home / "app.new", home / f"app.old-{int(time.time())}"
     try:
         shutil.rmtree(new, ignore_errors=True)
         with zipfile.ZipFile(zf) as z:
@@ -56,17 +72,21 @@ def _apply_patch(home: Path) -> None:
         runtime = (home / "runtime.txt").read_text(encoding="utf-8").strip()
         if meta.get("runtime") != runtime:
             raise RuntimeError(f"구성이 다른 패치 ({meta.get('runtime')} ≠ {runtime}) — 설치 파일로 받아야 함")
-        shutil.rmtree(old, ignore_errors=True)
         if app.exists():
-            app.rename(old)
-        new.rename(app)
-        shutil.rmtree(old, ignore_errors=True)
+            _rename(app, old)
+        _rename(new, app)
         (home / "update" / "patch-error.txt").unlink(missing_ok=True)
+        for leftover in home.glob("app.old*"):  # 이번 것과 지난번에 못 지운 것
+            shutil.rmtree(leftover, ignore_errors=True)
     except Exception as e:
         if not app.exists() and old.exists():
             old.rename(app)
         shutil.rmtree(new, ignore_errors=True)
-        (home / "update" / "patch-error.txt").write_text(f"{type(e).__name__}: {e}\n", encoding="utf-8")
+        try:  # 첫 줄은 그때 켜진 판 — 그 뒤 판이 바뀌었으면(설치 파일로 새로 깜) 지난 일로 본다 (api._patch_error)
+            cur = json.loads((app / "version.json").read_text(encoding="utf-8")).get("version", "")
+        except Exception:
+            cur = ""
+        (home / "update" / "patch-error.txt").write_text(f"{cur}\n{type(e).__name__}: {e}\n", encoding="utf-8")
     finally:
         zf.unlink(missing_ok=True)
 

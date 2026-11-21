@@ -120,7 +120,7 @@ function paintDyeState() {
  * 아무것도 받지 않고 아무것도 끄지 않는다 — 게임을 켜 둔 채로 쓰는 프로그램이라
  * 작업 도중에 저 혼자 꺼지면 곤란하다.
  */
-const updUI = { info: null, file: null, busy: false };
+const updUI = { info: null, file: null, busy: false, later: null };  // later: '나중에' 를 누른 버전
 
 function showUpdate(text, canGo) {
   $('#update-text').textContent = text;
@@ -129,7 +129,10 @@ function showUpdate(text, canGo) {
 }
 
 async function wireUpdate() {
-  $('#update-later').addEventListener('click', () => $('#update-banner').classList.add('hidden'));
+  $('#update-later').addEventListener('click', () => {
+    updUI.later = updUI.info && updUI.info.version;
+    $('#update-banner').classList.add('hidden');
+  });
 
   mm.update.onProgress((p) => {
     if (!updUI.busy) return;
@@ -165,8 +168,16 @@ async function wireUpdate() {
       : '내려받았습니다 — 누르면 프로그램이 꺼지고 설치가 시작됩니다.', true);
   });
 
-  // 켜자마자 묻지 않는다. 첫 화면이 다 그려진 뒤에 조용히 확인한다.
-  setTimeout(checkUpdate, 4000);
+  // 켜자마자 묻지 않는다. 첫 화면이 다 그려진 뒤에 조용히 확인한다. 윈도 시작 프로그램으로 켜지면 인터넷이 아직
+  // 안 붙어 있을 수 있어, 못 물었으면 1분 뒤 다시(5번까지). 며칠씩 켜 두고 쓰므로 그 뒤로도 30분마다 묻는다
+  // ('나중에' 를 누른 버전은 다시 띄우지 않는다 — 더 새 버전이 나오면 띄운다)
+  let tries = 0;
+  const first = async () => {
+    const r = await checkUpdate({ quiet: true }).catch(() => null);
+    if ((!r || !r.ok) && ++tries < 5) setTimeout(first, 60000);
+  };
+  setTimeout(first, 4000);
+  setInterval(() => checkUpdate({ quiet: true }).catch(() => {}), 30 * 60000);
   setTimeout(showNotesAfterUpdate, 2500);
 
   $('#update-notes').addEventListener('click', () => showNotes('newer'));
@@ -189,11 +200,15 @@ async function wireUpdate() {
 }
 
 /** 새 판을 묻고, 있으면 위에 띠를 띄운다. 물어본 결과를 돌려준다 (받는 중이면 묻지 않는다) */
-async function checkUpdate() {
+async function checkUpdate(opt) {
   if (updUI.busy) return { ok: true, newer: true, version: updUI.info && updUI.info.version };
   const r = await mm.update.check().catch(() => null);
   if (!r || !r.ok || !r.newer) return r;      // 켤 때는 못 물어봤거나 최신이면 아무 말도 안 한다
+  if (opt && opt.quiet && updUI.later === r.version) return r;  // '나중에' 를 누른 버전 — 저절로는 다시 안 띄운다
   if (!updUI.info || updUI.info.version !== r.version) { updUI.info = r; updUI.file = null; }
+  if (r.patchError && !updUI.file) {          // 지난번 패치를 못 바꿈 → 이번엔 설치 파일로 (띠 풍선에 이유)
+    $('#update-banner').title = '지난번 패치를 적용하지 못해 설치 파일로 받습니다 — ' + r.patchError;
+  }
   // 패치(코드만, 수 MB)인지 설치 파일 전체인지 크기로 알려 준다
   const a = r.asset;
   const size = a && a.size ? ' (' + (a.kind === 'patch' ? '패치 ' : '') + (a.size / 1048576).toFixed(1) + 'MB)' : '';

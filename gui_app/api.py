@@ -852,6 +852,22 @@ class Api(DailyApi, CharsApi, QueueApi):
         home = self._install_home()
         return (home / "runtime.txt").read_text(encoding="utf-8").strip() if home else ""
 
+    def _patch_error(self) -> str:
+        """지난번 패치 적용 실패 이유 (gui._apply_patch 가 남김 — 첫 줄은 그때 판), 없으면 ''. 그 뒤 판이 바뀌었으면
+        (설치 파일로 새로 깔았음) 지난 일이라 지운다."""
+        home = self._install_home()
+        f = home / "update" / "patch-error.txt" if home else None
+        try:
+            if not (f and f.is_file()):
+                return ""
+            at, _, why = f.read_text(encoding="utf-8").partition("\n")
+            if at.strip() != APP_VERSION:
+                f.unlink(missing_ok=True)
+                return ""
+            return why.strip() or "알 수 없음"
+        except OSError:
+            return ""
+
     def update_check(self):
         try:
             with self._http(self.UPDATE_API) as r:
@@ -862,10 +878,12 @@ class Api(DailyApi, CharsApi, QueueApi):
             assets = rel.get("assets") or []
             setup = next((a for a in assets if re.search(r"setup\.exe$", a.get("name", ""), re.I)), None)
             rt = self._runtime()
-            patch = rt and next((a for a in assets if a.get("name", "").endswith(f"-patch-{rt}.zip")), None)
+            failed = self._patch_error()
+            # 지난번 패치를 적용하지 못했으면(파일이 잠겨 폴더를 못 바꿈 등) 같은 실패를 되풀이하지 않게 설치 파일로
+            patch = rt and not failed and next((a for a in assets if a.get("name", "").endswith(f"-patch-{rt}.zip")), None)
             pick = patch or setup
             return {"ok": True, "newer": _ver(ver) > _ver(APP_VERSION), "version": ver, "notes": rel.get("body") or "",
-                    "url": rel.get("html_url") or self.UPDATE_PAGE, "page": self.UPDATE_PAGE,
+                    "url": rel.get("html_url") or self.UPDATE_PAGE, "page": self.UPDATE_PAGE, "patchError": failed,
                     "asset": {"name": pick["name"], "url": pick["browser_download_url"], "size": pick.get("size", 0),
                               "kind": "patch" if patch else "setup"} if pick else None}
         except Exception as e:  # 오프라인 등 — 조용히 넘긴다
