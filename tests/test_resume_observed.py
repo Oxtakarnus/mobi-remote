@@ -151,37 +151,139 @@ class FieldBossResumeTest(unittest.TestCase):
 
 
 class TributeClearedTest(unittest.TestCase):
-    def cleared(self, resume=None, rows=()):
-        from mabi.tasks import tribute
+    """공물: 퀘스트가 목록에 없을 때 이미 깼나 — 끊긴 단계 뒤의 심층 던전 클리어 관찰로만 바로 판단한다.
+    게임을 다시 켜면 접속 뒤 몇 분은 남은 퀘스트도 목록에 없어, 끊긴 단계만으로 깼다고 보면 안 한 숙제를 넘긴다."""
+    DEEP = "페카 2-1 심층 던전"  # 실제 맵 이름 모양 — 심층은 난이도가 안 붙는다
+
+    def rows(self, char=7, name=None):
+        return [("channel.entering", {"channel_type": DUNGEON, "channel_name": name or self.DEEP}, char),
+                ("dungeon.state", {"state_name": "Cleared"}, char)]
+
+    def tbot(self, resume=None, rows=()):
         b = watched(mock.MagicMock(), 7, rows)
         b.resume = resume
-        return tribute.cleared_today(b)
+        return b
 
-    def test_cut_after_opening_quest(self):
-        self.assertIn("in_dungeon", self.cleared({"step": "in_dungeon"}))
-        self.assertEqual(self.cleared({"step": "tr_wait"}), "")
-
-    def test_observed_deep_dungeon_clear(self):
-        deep = [("channel.entering", {"channel_type": DUNGEON, "channel_name": "페카 2-1 심층 던전 매우 어려움"}, 7),
-                ("dungeon.state", {"state_name": "Cleared"}, 7)]
-        self.assertIn("심층", self.cleared(rows=deep))
-        other = [("channel.entering", {"channel_type": DUNGEON, "channel_name": "라비 던전"}, 7),
-                 ("dungeon.state", {"state_name": "Cleared"}, 7)]
-        self.assertEqual(self.cleared(rows=other), "")
-        self.assertEqual(self.cleared(rows=[(k, v, 8) for k, v, _ in deep]), "")  # 다른 캐릭터
-
-    def test_run_does_not_wait_for_cleared_quest(self):
+    def test_cut_cleared_needs_clear_after_cut(self):
         from mabi.tasks import tribute
-        b = mock.MagicMock()
+        before = time.time() - 1
+        self.assertIn(self.DEEP, tribute.cut_cleared(self.tbot({"step": "in_dungeon", "ts": before}, self.rows())))
+        # 끊긴 단계 뒤에 깬 기록이 없으면 — 게임을 다시 켠 뒤라 퀘스트가 아직 안 뜬 것일 수 있다
+        self.assertEqual(tribute.cut_cleared(self.tbot({"step": "travel", "ts": time.time() + 5}, self.rows())), "")
+        self.assertEqual(tribute.cut_cleared(self.tbot({"step": "in_dungeon", "ts": before})), "")
+        self.assertEqual(tribute.cut_cleared(self.tbot({"step": "in_dungeon"}, self.rows())), "")  # 옛 기록(ts 없음)
+        self.assertEqual(tribute.cut_cleared(self.tbot({"step": "tr_wait", "ts": before}, self.rows())), "")
+
+    def test_cleared_since_only_deep_and_this_character(self):
+        from mabi.packet_monitor.days import day_start
+        from mabi.tasks import tribute
+        self.assertIn(self.DEEP, tribute.cleared_since(self.tbot(rows=self.rows()), day_start()))
+        self.assertEqual(tribute.cleared_since(self.tbot(rows=self.rows(name="룬다 1-3 던전 어려움")), day_start()), "")
+        self.assertEqual(tribute.cleared_since(self.tbot(rows=self.rows(char=8)), day_start()), "")
+
+    def run_tr(self, resume, rows=(), visible=(False,), wait=0):
+        from mabi.tasks import tribute
+        b = self.tbot(resume, rows)
         b.read_counter.return_value = 4
-        b.resume = {"step": "dungeon_reward"}
         b.session.login_at = 0.0
-        c = {"cost": 2, "quest_wait": 180, "quest_login_wait": 600, "max_runs": 1, "very_hard": "x"}
+        c = {"cost": 2, "quest_wait": wait, "quest_login_wait": 600, "max_runs": 0, "very_hard": "x"}
+        seen = iter(visible)
         with (mock.patch.object(tribute.situation, "dungeon_tab", return_value=None),
-              mock.patch.object(tribute, "quest_visible", return_value=False)):
-            out = tribute.run(b, {"tribute": c})
-        self.assertIn("이미 깸", out)
+              mock.patch.object(tribute, "quest_visible", side_effect=lambda bot: next(seen, visible[-1]))):
+            try:
+                return tribute.run(b, {"tribute": c}), b
+            except Exception as e:  # noqa: BLE001
+                return e, b
+
+    def test_run_skips_wait_when_cut_run_cleared(self):
+        out, b = self.run_tr({"step": "in_dungeon", "ts": time.time() - 1}, self.rows(), wait=600)
+        self.assertIn("끊긴 판을", out)
         b.step.assert_not_called()
+
+    def test_run_waits_after_relogin_without_clear(self):
+        # 이동 중에 끊기고 게임을 다시 켬 — 퀘스트가 접속 뒤에 다시 뜨면 그대로 한다 (예전 판단은 여기서 넘겼다)
+        out, b = self.run_tr({"step": "travel", "ts": time.time() - 1}, visible=(False, False, True), wait=600)
+        self.assertIsInstance(out, str)
+        self.assertNotIn("깸", out)
+        self.assertEqual(b.step.call_args_list[0].args[0], "tr_wait")
+
+    def test_run_end_of_wait(self):
+        from mabi.exceptions import CannotProceed
+        out, _ = self.run_tr(None, self.rows())
+        self.assertIn("이미 깬 것으로 봄", out)  # 기다린 끝 — 오늘 심층을 깼으면 실패로 남기지 않는다
+        out, _ = self.run_tr(None)
+        self.assertIsInstance(out, CannotProceed)
+
+
+class FinishCutRoundTest(unittest.TestCase):
+    """끊긴 주말 판만 마친다 (Repeat.finish) — 이미 끝난 판(보상 화면)이면 보상만, 쓰러지면 거기서 그만."""
+
+    def abyss_rep(self, result="clear"):
+        from mabi.tasks import abyss
+        r = abyss.AbyssRepeat.__new__(abyss.AbyssRepeat)
+        r.bot = mock.MagicMock()
+        r.a = {"dungeon": "흩어진 물길", "match_timeout": 60, "run_timeout": 600}
+        r.runs, r.minutes, r.t0, r.on_event, r.behind, r.finish = 1, 0, time.monotonic(), lambda e: None, False, True
+        r.stat = {"clears": 0, "deaths": 0, "retries": 0, "revives": 0}
+        r.rounds = []
+        r.play_round = lambda play, step: r.rounds.append(step) or result
+        r.recheck = lambda at: False
+        r.yield_between = r.repair_between = lambda go_out: False
+        r._again = mock.MagicMock()
+        return r
+
+    def loop(self, r, at):
+        from mabi.tasks import abyss
+        with (mock.patch.object(abyss, "to_reward", return_value="reward"),
+              mock.patch.object(abyss, "exit_reward") as ex,
+              mock.patch.object(abyss, "leave", return_value=True),
+              mock.patch.object(abyss, "enter") as en,
+              mock.patch.object(abyss, "inside", return_value=True),
+              mock.patch.object(abyss, "entered_since", return_value=True)):
+            r.loop(at)
+        return ex.called, en.called
+
+    def test_reward_screen_takes_reward_only(self):
+        r = self.abyss_rep()
+        exited, entered = self.loop(r, "reward")
+        self.assertEqual((r.stat["clears"], len(r.rounds)), (1, 0))  # 한 판 더 돌지 않는다
+        self.assertTrue(exited)
+        self.assertFalse(r._again.called or entered)
+
+    def test_play_then_out(self):
+        r = self.abyss_rep()
+        exited, _ = self.loop(r, "play")
+        self.assertEqual((r.stat["clears"], len(r.rounds)), (1, 1))
+        self.assertTrue(exited)
+
+    def test_dead_stops_without_reentry(self):
+        r = self.abyss_rep("dead")
+        _, entered = self.loop(r, "play")
+        self.assertEqual((r.stat["deaths"], len(r.rounds)), (1, 1))
+        self.assertFalse(entered)  # 다시 들어가는 건 숙제 차례에
+
+    def test_weekend_passes_finish_and_ship_is_left(self):
+        from mabi.place import RAID, RAID_LOBBY
+        from mabi.tasks import weekend
+        self.assertNotIn(RAID_LOBBY, weekend.INSIDE["weekend_raid"])
+        self.assertIn(RAID, weekend.INSIDE["weekend_raid"])
+        made = []
+
+        class Fake:
+            finish = False
+
+            def __init__(self, bot, cfg, runs=0):
+                made.append(self)
+
+            def run(self):
+                return {}
+        cfg = {"abyss": {"dungeon": "흩어진 물길"}, "weekend": {"abyss": {}}}
+        with (mock.patch.object(weekend.abyss, "AbyssRepeat", Fake),
+              mock.patch.object(weekend, "_kept", return_value=mock.MagicMock()),
+              mock.patch("mabi.tasks.exits.leave_instance") as li):
+            weekend.finish_inside(mock.MagicMock(), cfg, "weekend_abyss")
+        self.assertTrue(made[0].finish)
+        self.assertTrue(li.called)
 
 
 if __name__ == "__main__":

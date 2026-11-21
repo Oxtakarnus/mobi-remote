@@ -453,7 +453,8 @@ class RaidRepeat(Repeat):
         bot, a = self.bot, self.a
         raid, difficulty = a["raid"], a.get("difficulty", "")
         stage = {"play": "play", "cleared": "cleared", "ship": "ship"}.get(at, "entry")
-        leftover = at == "cleared"  # 시작 전에 이미 잡아 둔 판 — 결과·나가기만 하고 판 수에는 넣지 않는다
+        leftover = at == "cleared" and not self.finish  # 시작 전에 이미 잡아 둔 판 — 결과·나가기만 하고 판 수에는 넣지 않는다
+        # (끊긴 판만 마칠 때는 그 판이 마칠 판 — Repeat.finish)
         bot.log.info({"play": "이미 레이드 안 → 이 판부터", "cleared": "보스를 잡은 뒤 → 결과부터", "ship": "출항선 → 출항부터",
                       "entry": "레이드 입장 창 → 그 자리부터", "list": "레이드 목록 → 그 자리부터",
                       "menu": "메뉴가 열려 있음 → 그 자리부터"}.get(at, f"{at} → 메뉴에서 입장"))

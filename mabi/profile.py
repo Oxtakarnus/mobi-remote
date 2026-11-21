@@ -6,6 +6,7 @@ state/<게임 날짜>.json : {"5": {"weekday_dungeon": "done", "silver": "fail: 
                 게임 하루는 오전 6시에 초기화되므로 6시 이전은 전날로 친다.
 """
 import json
+import time
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -194,8 +195,10 @@ class DailyState:
     STEPS = "_steps"
 
     def set_step(self, slot: int, task: str, step: str, text: str = "", **data) -> None:
-        """step: 단계 키 (각 숙제가 정한 고정 이름, 예 'bh_inside' — 이어 하기는 이걸로 판단), text: 사람이 읽는 설명."""
-        rec = {"step": step, "text": text or step, "at": datetime.now().strftime("%H:%M:%S"), **data}
+        """step: 단계 키 (각 숙제가 정한 고정 이름, 예 'bh_inside' — 이어 하기는 이걸로 판단), text: 사람이 읽는 설명.
+        ts: 그 단계에 들어선 시각(초) — 이어 할 때 그 뒤의 관찰 기록을 본다 (tribute.cut_cleared)."""
+        rec = {"step": step, "text": text or step, "at": datetime.now().strftime("%H:%M:%S"), "ts": round(time.time(), 3),
+               **data}
         self.data.setdefault(str(slot), {}).setdefault(self.STEPS, {})[task] = rec
         p = self.data.get(self.PROGRESS)
         if p and p.get("slot") == slot and p.get("task") == task:

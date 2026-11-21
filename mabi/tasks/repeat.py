@@ -19,6 +19,9 @@ class Repeat:
     KIND = ""    # 설정 칸·진행 이벤트 type ('abyss' · 'raid')
     TITLE = ""   # 로그에 쓰는 이름
     INSIDE = ()  # 콘텐츠 안이라 이름을 모를 수 있는 자리 (where 값) — 모르면 나가지 않고 이어 한 뒤 확인
+    # 끊긴 판 하나만 마친다 (weekend.finish_inside — 접속의 시작 정리가 판 안에서 시작했을 때). 시작 때 이미 끝나 있던 판
+    # (보상 화면)도 마칠 그 판으로 세고, 결과가 어떻든(클리어·쓰러짐·시간 초과) 한 판이 끝나면 그만 — 남은 판은 숙제가 제 차례에
+    finish = False
 
     def __init__(self, bot: Bot, cfg: dict, runs: int = 0, minutes: float = 0, on_event=lambda e: None,
                  character: dict | None = None, loot=None, iface=None):
@@ -59,6 +62,8 @@ class Repeat:
 
     # ---- 공통
     def done(self) -> bool:
+        if self.finish and self.stat["clears"] + self.stat["deaths"] + self.stat["retries"]:
+            return True
         return bool((self.runs and self.stat["clears"] >= self.runs)
                     or (self.minutes and time.monotonic() - self.t0 >= self.minutes * 60))
 
