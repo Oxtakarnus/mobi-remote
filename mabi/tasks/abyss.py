@@ -15,6 +15,7 @@
 끝났는지는 get_activity 의 IsAbyssResultSequencePlaying 과 클리어 화면으로 본다.
 """
 import time
+from functools import partial
 
 from .. import gamedata as gd, judge
 from ..bot import Bot
@@ -471,37 +472,50 @@ def revive_here(bot: Bot) -> bool:
     return False
 
 
-def play(bot: Bot, run_timeout: float, revive: bool = True, on_revive=lambda: None, tick=lambda act: False) -> str:
-    """어비스 안에서 끝날 때까지 지켜본다. 'clear' | 'dead' | 'timeout'.
+def play(bot: Bot, run_timeout: float, revive: bool = True, on_revive=lambda: None, tick=lambda act: False,
+         member_leave: bool = False) -> str:
+    """어비스 안에서 끝날 때까지 지켜본다. 'clear' | 'dead' | 'timeout' | 'left'.
     쓰러지면 revive 일 때 '여기서 부활' 하고 이어 한다 (못 하면 'dead' → 나가서 처음부터).
     배고프면 그때마다 음식을 먹는다 (어비스 반복은 일일 숙제의 하루 횟수 제한 없이).
     쓰러짐('여기서 부활')과 판 중에 끼어든 창(퀘스트 클리어 창·대화)은 점검자가 (fight.watch).
     tick(act): 확인마다 부른다 — 궁극기·팔라딘 변신 (Repeat.skills).
     흩어진 물길은 예외로 투창병 속성 패턴과 비틀린 송곳니 격류를 맡는다 — 내가 대상이 되거나 격류가 나오면
     패킷이 기다림을 깨우고 바로 움직인다 (tasks/spear).
+    member_leave 면 판 도중 같이 하던 사람이 나갈 때 'left' (AbyssPlay.member_left — 나가서 처음부터는 부르는 쪽).
     뼈대는 fight.Fight, 어비스만 다른 것은 AbyssPlay."""
-    return AbyssPlay(bot, run_timeout, revive, on_revive, tick).run()
+    return AbyssPlay(bot, run_timeout, revive, on_revive, tick, member_leave=member_leave).run()
 
 
 class AbyssPlay(Fight):
     KIND, WHAT = "abyss", "판 진행"
 
-    def __init__(self, bot: Bot, *a):
+    def __init__(self, bot: Bot, *a, member_leave: bool = False):
         self.mark = bot.packets.mark()
         super().__init__(bot, *a)
         self.spear = SpearDodge(bot)
         self.here = True
+        self.member_leave = member_leave
+        # 같이 하던 사람이 나갔나는 이 맵에 들어온 때부터 본다 — 판을 지켜보기 전(입장 연출 중)에 나간 사람도
+        # (11-03 21:45 들어오고 8.6초 만에 나감)
+        self.entered = bot.packets.state.entered_at
 
     def cleared(self) -> bool:  # 패킷: 이 판의 결과가 옴 (클리어 순간, CLI 결과 연출 표시와 같은 때)
         return self.bot.packets.find("abyss.result", self.mark, lambda v: bool(v.get("abyss"))) is not None
 
-    def wake(self, s):  # 3초 쉬되 결과가 오거나 투창 대상이 되면 바로 깬다
-        return self.cleared() or self.spear.wanted()
+    def member_left(self, s) -> bool:
+        """같이 하던 사람이 이 판 도중에 나갔나 (member_leave 일 때만, 패킷 상태 s) — 이 어비스 맵에 나타난 다른 캐릭터가
+        결과 전에 사라짐 (PacketState.other_out_at). 우연한 만남은 파티가 아니라 파티 신호로는 모른다."""
+        return self.member_leave and s.other_out_at > self.entered
+
+    def wake(self, s):  # 3초 쉬되 결과가 오거나 투창 대상이 되거나 같이 하던 사람이 나가면 바로 깬다
+        return self.cleared() or self.spear.wanted() or self.member_left(s)
 
     def packet_end(self):
         if self.cleared():
             self.bot.log.info("패킷: 어비스 결과 옴 → 클리어")
             return "clear"
+        if self.member_left(self.bot.packets.state):
+            return "left"
         if self.spear.wanted():
             self.spear.run()
             return self.NEXT
@@ -612,6 +626,13 @@ class AbyssRepeat(Repeat):
         r = self.a.get("party_role") or ""
         return r if r in party_mod.ROLES else ""
 
+    @property
+    def member_leave(self) -> bool:
+        """'파티원 퇴장 시 나감' ([abyss] member_leave, 사용자 11-22) — 함께하기(우연한 만남)에서 판 도중 같이 하던 사람이
+        나가면 나도 나가서 입장·매칭부터 다시. 혼자하기는 같이 하는 사람이 없고, 고정 파티는 누가 빠지면 카드를 끝낸다
+        (party_broken)."""
+        return bool(self.a.get("member_leave")) and not self.solo and not self.party_role
+
     match_at = 0.0  # 입장·다시 하기를 누른 때 — 그 뒤에 새로 들어간 맵만 이번 판 (entered_since)
     party_since = 0.0  # 반복을 시작한 때 — 그 뒤에 파티에서 누가 빠지면 카드를 끝낸다 (party_broken)
 
@@ -704,15 +725,18 @@ class AbyssRepeat(Repeat):
             if stage != "reward" and self.recheck("play"):
                 stage, at = "entry", ""
                 continue
-            r = "clear" if stage == "reward" else self.play_round(play, "abyss_play")
+            r = "clear" if stage == "reward" else self.play_round(partial(play, member_leave=self.member_leave),
+                                                                   "abyss_play")
             if r == "dead":
                 bot.log.warning("쓰러짐 → 나가서 처음부터 다시 입장")
             elif r == "timeout":
                 bot.log.warning(f"{a['run_timeout'] / 60:.0f}분 안에 끝나지 않음 → 나가서 다시 입장 → {bot.snapshot('abyss_timeout').name}")
-            if r in ("dead", "timeout") and not leave(bot):
+            elif r == "left":
+                bot.log.warning("같이 하던 사람이 판 도중에 나감 → 나도 나가서 처음부터 다시 입장 (파티원 퇴장 시 나감)")
+            if r in self.AGAIN and not leave(bot):
                 r = "clear"  # 나가기 전에 판이 끝남 — 보상부터 잇는다
-            if r in ("dead", "timeout"):
-                self.stat["deaths" if r == "dead" else "retries"] += 1
+            if r in self.AGAIN:
+                self.stat[self.AGAIN[r]] += 1
                 stage = "entry"
             else:
                 if leftover:

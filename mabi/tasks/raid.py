@@ -493,7 +493,7 @@ class RaidRepeat(Repeat):
                 self.to_back()
                 r = self.play_round(play, "raid_play")
                 if r in ("dead", "timeout"):
-                    self.stat["deaths" if r == "dead" else "retries"] += 1
+                    self.stat[self.AGAIN[r]] += 1
                     bot.log.warning("쓰러짐(부활 횟수를 다 씀) → 나가서 다시 출항" if r == "dead" else
                                     f"{a['run_timeout'] / 60:.0f}분 안에 끝나지 않음 → 나가서 다시 출항 "
                                     f"→ {bot.snapshot('raid_timeout').name}")

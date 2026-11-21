@@ -139,6 +139,13 @@ class CommandsTest(unittest.TestCase):
         self.assertEqual(it["label"], "어비스 · 나")
         self.assertIn(("tick",), self.api.queue.calls)
 
+    def test_abyss_member_leave(self):
+        # 파티원 퇴장 시 나감 (사용자 11-22) — 어비스 카드에만, 켤 때만
+        self.assertTrue(self.c.run("abyss", {"slot": 2, "dungeon": "던전A", "member_leave": True})["ok"])
+        self.assertIs(self.api.queue.items[-1].get("memberLeave"), True)
+        self.assertTrue(self.c.run("abyss", {"slot": 2, "dungeon": "던전A"})["ok"])
+        self.assertNotIn("memberLeave", self.api.queue.items[-1])
+
     def test_abyss_rejects_unknown_values(self):
         r = self.c.run("abyss", {"slot": 1, "dungeon": "없는던전"})
         self.assertEqual(r["error"], "bad_args")

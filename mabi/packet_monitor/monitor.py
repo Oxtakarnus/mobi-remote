@@ -15,7 +15,7 @@ from .look import MyLook
 from .capture import SERVER_PORT, _Capture
 from .cli_sync import CliSync
 from .days import DayLog
-from .events import Events
+from .events import OBJECT_GONE, Events
 from .link_watch import LinkWatch
 from .state import PacketState, Seen
 from .stream import Stream, decompress, parse_tcp
@@ -288,8 +288,9 @@ class PacketMonitor(LinkWatch, CliSync, Events):
             return
         if ev.key.startswith("system."):
             self._server_notice(ev.key, flag, body)
-        if ev.key.startswith("spear.") and not self.spear.active:
-            return  # 흩어진 물길 밖 — 이동 메시지 등은 풀지도 않는다
+        # 흩어진 물길 밖 — 이동 메시지 등은 풀지도 않는다. 사라짐은 어비스에서 같은 판 사람을 보고 있으면 푼다 (나감)
+        if ev.key.startswith("spear.") and not self.spear.active and not (ev.key == OBJECT_GONE and self.state.others):
+            return
         if flag and ev.fields:  # 읽을 필드가 없으면 풀 필요도 없다
             try:
                 body = decompress(body)
@@ -298,8 +299,10 @@ class PacketMonitor(LinkWatch, CliSync, Events):
                 return
         _, vals = self.table.decode(proto, body)
         if ev.key.startswith("spear."):
-            self._spear(ev.key, vals)
-            return
+            if self.spear.active:
+                self._spear(ev.key, vals)
+            if ev.key != OBJECT_GONE or vals.get("actor") not in self.state.others:
+                return  # 상태(Events)로는 같은 판 사람의 사라짐만 — 몬스터 사라짐은 수없이 온다
         if ev.key == "char.appearing":  # 내 고유 번호 + 자기 기록 표시가 있으면 내 캐릭터 (위치는 3094~3150 으로 들쭉날쭉)
             vals["mine"] = appearing_is_mine(body, self.state.char_id)
             if vals["mine"]:

@@ -254,7 +254,7 @@ web/                          화면 (빌드 없이 <script> 여러 개가 같�
 - `monitor.offline.screen_bot` 은 Mock 에 Bot 의 `_frame`·`_require_template` 을 심어 진짜 Bot·GameSession 메서드를 빌려 쓴다 (화면 판정 시험 도구).
 - 리모콘 화면(`gui_app/api.py` 의 `self.cli`)과 게임 연결(`GameSession.cli`)이 CLI Connector 를 따로 든다 — 화면 쪽은 호출 기록(calllog)을
   붙이고 CLI 경로를 settings 에서 읽는다. 합치려면 기록·경로 출처를 하나로 정해야 한다.
-- `Repeat`(어비스·레이드)의 `self.a.get("background", True)`·`repair_below`·`revive`, `raid` 의 `match_timeout` 은 설정에 있는 키를
+- `Repeat`(어비스·레이드)의 `self.a.get("background", True)`·`repair_below`·`revive`·`member_leave`(어비스), `raid` 의 `match_timeout` 은 설정에 있는 키를
   `.get` 으로 또 든다 — 시험(`test_value_homes`)은 `cfg[self.KIND]` 처럼 구역 이름이 변수인 곳은 못 본다. 시험의 가짜 cfg 가 일부 키만
   들고 있어 함께 고쳐야 한다. `restart.enabled` 의 `(cfg.get("restart") or {})` 도 같다.
 - 화면의 '지금 하는 행동'(gui_app/legacy_shapes `q_activity`)은 get_activity 를 따로 읽는다 — 연주·선택지 기다림까지 '바쁨' 으로 보는

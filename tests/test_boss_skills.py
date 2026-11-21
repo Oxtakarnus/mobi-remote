@@ -284,6 +284,7 @@ class BossSkillsTest(unittest.TestCase):
     def test_repeat_round_passes_tick(self):
         rep = mock.Mock()
         rep.stat = {"clears": 0, "deaths": 0, "retries": 0, "revives": 0}
+        rep.tried.return_value = 0  # 끝난 판 수 (Repeat.tried)
         rep.a = {"run_timeout": 60}
         from mabi.tasks.repeat import Repeat
         play = mock.Mock(return_value="clear")

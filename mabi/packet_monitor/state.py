@@ -102,6 +102,11 @@ class PacketState:
     party_end: int = 0               # 마지막 입장 진행 끝 코드 3 입장함 · 4 취소
     party_end_at: float = 0.0
     party_out_at: float = 0.0        # 파티에서 누가 빠진 때 — 파티원이 나감·내가 나감·파티가 없어짐 (monotonic)
+    # 어비스에서 같이 하는 사람 {오브젝트 번호: 처음 본 때} — 이 맵에 나타난 다른 캐릭터. 결과가 오거나 맵을 옮기면 비운다.
+    # 우연한 만남은 파티가 아니라 파티 신호(party_*)가 오지 않는다 (11-21 우연한 만남 판들: 파티 기록 0줄). 결과 전에
+    # 사라지면 나간 것 — 11-03 흩어진 물길 26판: 판 도중 사라진 캐릭터가 다시 나타난 적 없고, 클리어 판의 사라짐은 모두 결과 뒤
+    others: dict = field(default_factory=dict)
+    other_out_at: float = 0.0        # 그중 하나가 결과 전에 사라진 때 (monotonic) — '파티원 퇴장 시 나감' (abyss.AbyssPlay)
     changed_at: dict = field(default_factory=dict)  # CLI_FACTS 필드 → 패킷이 마지막으로 바꾼 때 (monotonic)
     extra: dict = field(default_factory=dict)
 
@@ -143,4 +148,5 @@ def _snapshot(s: "PacketState") -> "PacketState":
     """history 에 쌓을 상태 사본. copy.copy 만 하면 changed_at·extra 가 모든 사본과 같은 dict 라 지난 순간 값이 바뀐다."""
     snap = copy.copy(s)
     snap.changed_at, snap.extra, snap.party_marks = dict(s.changed_at), dict(s.extra), dict(s.party_marks)
+    snap.others = dict(s.others)
     return snap

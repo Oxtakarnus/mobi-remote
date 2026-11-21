@@ -94,7 +94,7 @@ def _card(x: dict) -> dict:
             out[k] = v[k]
     if isinstance(v.get("bar"), (int, float)):
         out["bar"] = v["bar"]
-    for k in ("slot", "chars", "dungeon", "raid", "difficulty", "runs", "mode", "only"):
+    for k in ("slot", "chars", "dungeon", "raid", "difficulty", "runs", "mode", "memberLeave", "only"):
         if x.get(k) not in (None, "", []):
             out[k] = x[k]
     return out
@@ -164,7 +164,9 @@ class Commands:
                      "force": "(선택) true 면 오늘 끝낸 기록이 있어도 다시"}, act=True),
             Command("abyss", "어비스 반복 카드를 큐 뒤에 넣는다 (쉬고 있으면 바로 시작)", self.abyss,
                     {"slot": slot, "dungeon": "던전 이름 (options 의 abyss)", "runs": runs,
-                     "difficulty": "(선택) 난이도 — 비우면 리모콘 설정대로", "mode": mode}, act=True),
+                     "difficulty": "(선택) 난이도 — 비우면 리모콘 설정대로", "mode": mode,
+                     "member_leave": "(선택) true 면 함께하기에서 판 도중 같이 하던 사람이 나갈 때 나도 나가서 입장부터 다시"},
+                    act=True),
             Command("raid", "레이드 반복 카드를 큐 뒤에 넣는다 (쉬고 있으면 바로 시작)", self.raid,
                     {"slot": slot, "raid": "레이드 이름 (options 의 raid)", "runs": runs,
                      "difficulty": "(선택) 난이도 — 비우면 리모콘 설정대로", "mode": mode}, act=True),
@@ -360,7 +362,8 @@ class Commands:
             name = next((c["name"] for c in prof.chars(self.api.paths) if c["slot"] == slot), "")
         return self._start({"kind": kind, "label": f"{title} · {name or '지금 캐릭터'}", "slot": slot, place: where,
                             "difficulty": difficulty, "runs": _int(a, "runs", 0), "minutes": 0, "revive": True,
-                            **({"mode": mode} if mode else {})})
+                            **({"mode": mode} if mode else {}),
+                            **({"memberLeave": True} if kind == "abyss" and a.get("member_leave") is True else {})})
 
     def abyss(self, a: dict) -> dict:
         return self._repeat("abyss", a)

@@ -22,6 +22,8 @@ class Repeat:
     # 끊긴 판 하나만 마친다 (weekend.finish_inside — 접속의 시작 정리가 판 안에서 시작했을 때). 시작 때 이미 끝나 있던 판
     # (보상 화면)도 마칠 그 판으로 세고, 결과가 어떻든(클리어·쓰러짐·시간 초과) 한 판이 끝나면 그만 — 남은 판은 숙제가 제 차례에
     finish = False
+    # 판을 그만두고 나가 처음부터 다시 들어간 결과 → 세는 칸: 쓰러짐 · 시간 초과 · 같이 하던 사람이 나감 (어비스 '파티원 퇴장 시 나감')
+    AGAIN = {"dead": "deaths", "timeout": "retries", "left": "lefts"}
 
     def __init__(self, bot: Bot, cfg: dict, runs: int = 0, minutes: float = 0, on_event=lambda e: None,
                  character: dict | None = None, loot=None, iface=None):
@@ -33,7 +35,7 @@ class Repeat:
         self.user_window = ctypes.windll.user32.GetForegroundWindow()  # 입장 뒤 되돌려 줄 창 (리모콘 등)
         self.below = float(self.a.get("repair_below", 0.05) or 0)  # 이 내구도 이하면 판 사이에 수리 (0 = 안 함)
         self.repaired_from = None  # 바로 앞 수리 직전 내구도 (repair.due)
-        self.stat = {"clears": 0, "deaths": 0, "retries": 0, "revives": 0}
+        self.stat = {"clears": 0, "deaths": 0, "retries": 0, "revives": 0, "lefts": 0}
         self.skills = BossSkills(bot, False, False, self.boss_fight)  # 캐릭터를 확인한 뒤 그 캐릭터 설정으로 (run)
         self.t0 = time.monotonic()
 
@@ -62,10 +64,14 @@ class Repeat:
 
     # ---- 공통
     def done(self) -> bool:
-        if self.finish and self.stat["clears"] + self.stat["deaths"] + self.stat["retries"]:
+        if self.finish and self.tried():
             return True
         return bool((self.runs and self.stat["clears"] >= self.runs)
                     or (self.minutes and time.monotonic() - self.t0 >= self.minutes * 60))
+
+    def tried(self) -> int:
+        """끝난 판 수 — 클리어와 나가서 다시 들어간 판 (AGAIN)."""
+        return sum(self.stat.get(k, 0) for k in ("clears", *self.AGAIN.values()))
 
     def emit(self, **kw) -> None:
         self.on_event({"type": self.KIND, **self.stat, "seconds": round(time.monotonic() - self.t0), **kw})
@@ -77,7 +83,7 @@ class Repeat:
 
     def play_round(self, play, step: str) -> str:
         """판 하나 (종류별 play). 부활하면 같은 판으로 센다."""
-        n = self.stat["clears"] + self.stat["deaths"] + self.stat["retries"] + 1
+        n = self.tried() + 1
         self.bot.step(step, f"{n}번째 판 진행 중")
         self.emit(stage="play")
         return play(self.bot, self.a["run_timeout"], bool(self.a.get("revive", True)),
@@ -87,7 +93,8 @@ class Repeat:
     def cleared(self) -> None:
         self.stat["clears"] += 1
         secs = round(time.monotonic() - self.t0)
-        self.bot.log.info(f"클리어 {self.stat['clears']}판 (부활 {self.stat['revives']} · 쓰러져 나감 {self.stat['deaths']} "
+        left = f" · 파티원 퇴장 {self.stat['lefts']}" if self.stat.get("lefts") else ""
+        self.bot.log.info(f"클리어 {self.stat['clears']}판 (부활 {self.stat['revives']} · 쓰러져 나감 {self.stat['deaths']}{left} "
                           f"· 경과 {secs // 60}분 {secs % 60}초)")
         self.emit(stage="clear")
 
@@ -173,5 +180,7 @@ class Repeat:
             self.loot.open(self.bot, name)
         self.loop(at)
         secs = round(time.monotonic() - self.t0)
-        self.bot.log.info(f"{self.TITLE} 반복 끝: 클리어 {self.stat['clears']}판, 쓰러져 나감 {self.stat['deaths']}번 ({secs // 60}분)")
+        left = f", 파티원 퇴장으로 나감 {self.stat['lefts']}번" if self.stat.get("lefts") else ""
+        self.bot.log.info(f"{self.TITLE} 반복 끝: 클리어 {self.stat['clears']}판, 쓰러져 나감 {self.stat['deaths']}번{left} "
+                          f"({secs // 60}분)")
         return {**self.stat, "seconds": secs}

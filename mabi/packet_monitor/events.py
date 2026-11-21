@@ -13,6 +13,8 @@ from .state import CLI_FACTS, Seen, _snapshot
 log = logging.getLogger("mabi")
 
 NO_TARGET = 0xFFFFFFFFFFFFFFFF
+# 맵의 오브젝트(몬스터·캐릭터)가 사라짐. 이름은 흩어진 물길 투창 패턴에서 처음 써서 붙었다 — 어비스 같은 판 사람의 나감에도 쓴다
+OBJECT_GONE = "spear.gone"
 # 빠른 이동(T)이 되는 FastTravelAvailableState — Restricted* 는 갈 곳이 제한될 뿐 T 는 된다
 # (2026-11-16 필드 보스 이동: 내내 RestrictedByBattleZone 이었고 화면에선 T 가 됐다). Disabled* · None 은 안 된다
 FAST_TRAVEL_USABLE = ("Enabled", "RestrictedByBattlefieldEntrance", "RestrictedByBattlefieldExit", "RestrictedByBattleZone")
@@ -83,6 +85,7 @@ class Events:
             # 대화는 맵을 옮기면 끝난다 — 끝 패킷 없이 끊긴 대화가 '대화 중' 으로 남아 끼어들기·정리가 헛돌지 않게
             s.dialogue_npc, s.dialogue_action, s.dialogue_menu = None, "", False
             s.party_marks = {}  # 입장 진행은 맵을 옮기면 끝났다 (끝 알림을 놓쳤어도)
+            s.others = {}  # 같은 판 사람은 맵마다 새로
             self.spear.reset(s.channel_type == ABYSS and MAP_NAME in (s.channel_name or ""))
             log.info("패킷: 맵 진입 %s (%s)", s.channel_name or s.channel, s.channel_type or "?")
         elif key == "session.logout_ok":  # 캐릭터 선택 화면으로 (me1 03:29:30 — 맵 떠남·세션 정리와 같은 때)
@@ -105,6 +108,8 @@ class Events:
             log.info("패킷: 던전 상태 %s", s.dungeon_state)
         elif key == "abyss.result":
             s.abyss_result = vals.get("abyss") or 0
+            if s.abyss_result:
+                s.others = {}  # 판이 끝남 — 그 뒤에 나가는 것(보상 받고 나가기)은 판 도중 나감이 아니다
         elif key == "raid.state":
             s.raid_state = vals.get("state_name")
             log.info("패킷: 레이드 상태 %s", s.raid_state)
@@ -217,6 +222,13 @@ class Events:
                 s.me, s.me_map = vals.get("actor"), s.entered_at
                 s.my_name = vals.get("name") or s.my_name
                 log.info("패킷: 내 캐릭터 %s (번호 %s)", s.my_name or "?", s.me)
+            elif s.channel_type == ABYSS and not s.abyss_result and vals.get("actor") not in (None, s.me):
+                s.others[vals["actor"]] = time.monotonic()  # 같이 하는 사람 — 결과 전에 사라지면 나간 것
+        elif key == OBJECT_GONE:
+            # 감시(PacketMonitor._handle)는 같은 판 사람의 사라짐만 넘긴다 — 몬스터 사라짐은 투창 패턴만 쓴다
+            if s.others.pop(vals.get("actor"), None) is not None:
+                s.other_out_at = time.monotonic()
+                log.info("패킷: 같은 판의 다른 캐릭터가 결과 전에 사라짐 → 나감으로 봄 (남은 %d명)", len(s.others))
         elif key == "actor.dead":
             if self.spear.active:
                 self._spear(key, vals)  # 흩어진 물길 주술사가 모두 쓰러지면 투창 패턴 끝

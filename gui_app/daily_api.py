@@ -310,6 +310,7 @@ class DailyApi:
                 "slot": int(a["slot"]), "chars": [{"slot": c["slot"], "name": c["name"]} for c in prof.chars(self.paths)],
                 "minutes": float(a["minutes"]), "dungeons": abyss.dungeons(), "frontOnly": list(abyss.FRONT_ONLY),
                 "revive": bool(a["revive"]), "mode": a.get("mode") or self._rep_default("abyss", "mode"),
+                "memberLeave": bool(a.get("member_leave")),
                 "partyRole": a.get("party_role") or "",
                 "difficulties": abyss.difficulties(),
                 "running": self._alive_now(self._rep("abyss").thread)}
@@ -401,6 +402,8 @@ class DailyApi:
             a["runs"] = max(0, int(v.get("runs") or 0))
             a["minutes"] = max(0, int(v.get("minutes") or 0))
             a["revive"] = v.get("revive") is not False
+            if kind == "abyss":  # 파티원 퇴장 시 나감 — 어비스 함께하기만 (없으면 끔)
+                a["member_leave"] = v.get("member_leave") is True
             a["party_role"] = v.get("party_role") if v.get("party_role") in ("leader", "member") else ""  # 고정 파티
             userconfig.save(self.paths, doc)
         event({"type": "start"})

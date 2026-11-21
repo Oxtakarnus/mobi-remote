@@ -242,7 +242,8 @@ class AbyssKind(Kind):
         mode = {"solo": " 혼자하기", "party": " 함께하기"}.get(x.get("mode"), "")
         role = cls.PARTY_ROLES.get(x.get("partyRole"))
         return (f"{x.get(cls.place())} {x.get('difficulty')}{mode}" + (f" · 고정 파티 {role}" if role else "")
-                + f" · {lim or '멈출 때까지'}" + (" · 쓰러지면 나감" if x.get("revive") is False else ""))
+                + f" · {lim or '멈출 때까지'}" + (" · 쓰러지면 나감" if x.get("revive") is False else "")
+                + (" · 파티원 퇴장 시 나감" if x.get("memberLeave") else ""))
 
     # 고정 파티 역할 (카드 partyRole). 함께하기(mode 'party', 무작위 매칭)와는 다른 것이다.
     # 파티장은 입장·반복, 파티원은 기다리다 입장 준비 창이 뜨면 준비 (mabi.tasks.party)
@@ -268,7 +269,8 @@ class AbyssKind(Kind):
             f"{clears}/{runs}판" if runs else f"클리어 {clears}",
             f"{int(secs) // 60}분" + (f"/{minutes:g}분" if minutes else "")] if s)
         v["stat"] = " · ".join(s for s in [f"부활 {p['revives']}" if p.get("revives") else "",
-                                           f"쓰러져 나감 {p['deaths']}" if p.get("deaths") else ""] if s)
+                                           f"쓰러져 나감 {p['deaths']}" if p.get("deaths") else "",
+                                           f"파티원 퇴장 {p['lefts']}" if p.get("lefts") else ""] if s)
         v["bar"] = [clears, runs] if runs else [int(secs), int(minutes * 60)] if minutes else None
         return v
 
@@ -301,13 +303,14 @@ class AbyssKind(Kind):
                 p["stage"] = e.get("stage") or p.get("stage")
                 if e.get("clears") is not None:
                     p.update(clears=e["clears"], revives=e.get("revives") or 0, deaths=e.get("deaths") or 0,
+                             lefts=e.get("lefts") or 0,
                              secs=e.get("seconds") or 0)
                 q.patch(it["id"], {"prog": p})
         place = self.place()
         t = api._repeat_launch(self.KIND, {
             "slot": it.get("slot"), place: it.get(place), "difficulty": it.get("difficulty"), "mode": it.get("mode"),
             "runs": runs, "minutes": minutes, "revive": it.get("revive") is not False,
-            "party_role": it.get("partyRole") or "",
+            "party_role": it.get("partyRole") or "", "member_leave": it.get("memberLeave") is True,
             "interface": fit and not q.session.get("iface")}, on_event)
         t.join()
         q.patch(it["id"], {"doneRuns": int(it.get("doneRuns") or 0) + last["clears"],
