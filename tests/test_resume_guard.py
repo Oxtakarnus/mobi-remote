@@ -65,15 +65,50 @@ if __name__ == "__main__":
 
 
 class EatTest(unittest.TestCase):
-    def _bot(self, came):
+    def _bot(self, came, ratio=None, shown=True, food=True):
         from mabi.bot import Bot
-        keys = []
+        keys, looked = [], []
         pk = SimpleNamespace(ok=True, mark=lambda: 0,
                              wait=lambda key, t, after=0: SimpleNamespace(vals={"satiety": 80}) if came else None)
+
+        def exists(n):
+            looked.append(n)
+            return shown
+
         b = SimpleNamespace(ui={"food_b": "food_b"}, vision=SimpleNamespace(has=lambda n: True), character=None,
-                            daily=None, cfg={"run": {}}, no_food=lambda look=True: False, exists=lambda n: True,
+                            daily=None, cfg={"run": {}, "game": {"eat_at": 25}}, no_food=lambda look=True: look and not food,
+                            exists=exists, satiety=lambda **kw: ratio, looked=looked,
                             packets=pk, key=keys.append, log=logging.getLogger("test"), sleep=lambda *a: None)
         return b, keys, Bot.eat_if_hungry
+
+    def test_cli_satiety_decides_without_screen(self):
+        """포만감은 CLI 로 — 기준(게임 기본 25%) 아래면 그림 없이 먹고, 위면 화면을 보지도 않는다 (사용자 2026-11-22)."""
+        b, keys, eat = self._bot(came=True, ratio=0.2, shown=False)
+        self.assertTrue(eat(b))
+        self.assertEqual((keys, b.looked), (["b"], []))
+        b, keys, eat = self._bot(came=True, ratio=0.5)
+        self.assertFalse(eat(b))
+        self.assertEqual((keys, b.looked), ([], []))
+        b, keys, eat = self._bot(came=True, ratio=0.5)
+        b.cfg["game"]["eat_at"] = 50  # 게임 설정을 50% 로 바꿨으면
+        self.assertTrue(eat(b))
+
+    def test_hungry_without_food_does_not_press(self):
+        b, keys, eat = self._bot(came=True, ratio=0.1, food=False)  # 음식 없음 표시 → B 는 제작 창을 연다
+        self.assertFalse(eat(b))
+        self.assertEqual(keys, [])
+
+    def test_screen_when_cli_silent(self):
+        b, keys, eat = self._bot(came=True, ratio=None, shown=False)
+        self.assertFalse(eat(b))
+        self.assertEqual((keys, b.looked), ([], ["food_b"]))
+
+    def test_session_satiety_from_vitals(self):
+        from mabi.session import GameSession
+        s = SimpleNamespace(my_info=lambda max_age: {"Vitals": {"SatietyValue": 20, "SatietyMax": 80}})
+        self.assertEqual(GameSession.satiety(s), 0.25)
+        s = SimpleNamespace(my_info=lambda max_age: None)
+        self.assertIsNone(GameSession.satiety(s))
 
     def test_failed_eat_waits_before_pressing_again(self):
         b, keys, eat = self._bot(came=False)

@@ -20,6 +20,7 @@ import time
 from .. import gamedata as gd, monitor
 from ..bot import Bot
 from ..exceptions import CannotProceed, NotSeen, StepTimeout
+from ..game_state import Activity
 from ..place import FIELD_BOSS, on_map
 from . import press, ui_text
 from .boss_skills import BossSkills
@@ -34,6 +35,9 @@ GROWTH = "필드 보스"       # CLI 성장 가이드의 Target
 SKIP_WAIT = 1.0            # '장면 넘기기' 가 뜬 뒤 누르기까지 (사용자 — 0.5초는 안 먹었다)
 SKIP_LOOK = 8              # 들어간 뒤 '장면 넘기기' 를 찾는 시간 (초) — 이 출현 시간에 이미 본 캐릭터는 컷신이 없다
 SKIP_MAX = 25              # 패킷이 연출 중이라 하면 버튼을 이만큼까지 기다린다 (초)
+# 끊긴 전투를 이어 받을 때: 그 전투를 시작한 지 전투 시간 상한([field_boss] fight_timeout)에 이만큼 더 지났으면 영역에서
+# 이미 나가졌다고 본다 (초) — 보스가 쓰러지고 퇴장 시간(4분)이 지나면 저절로 나가진다
+CUT_LATE = 5 * 60
 # 보스·난이도·출현 시각은 게임 데이터(data/content.json, gamedata.field_bosses·field_boss_hours).
 # 보스는 창 왼쪽 목록에 그 순서로 있다 — 누를 때는 순서로 (OCR 이 '드로흐에넴' 을 '…넬' 로 읽는다)
 
@@ -82,8 +86,14 @@ def done(bot: Bot) -> bool | None:
 
 
 def inside(bot: Bot) -> bool | None:
-    """보스 영역 안인가 — 모름(감시 꺼짐·로딩·맵을 모름)은 None. '모름' 을 '밖' 으로 읽지 않는다 (place.on_map)."""
-    return on_map(bot, FIELD_BOSS)
+    """보스 영역 안인가 — 패킷 맵으로 (place.on_map). 패킷이 맵을 모르면(리모콘을 영역 안에서 다시 켬·감시 꺼짐) CLI 가
+    사냥터 밖이라 할 때만 밖(False) — 영역은 사냥터를 거쳐 들어가 그 안에서도 CLI 는 사냥터 안이라 답한다 (place.CLI_FLAGS).
+    로딩 중이거나 사냥터 안이면 모름(None). '모름' 을 '밖' 으로 읽지 않는다."""
+    known = on_map(bot, FIELD_BOSS)
+    if known is not None or bot.map_loading():
+        return known
+    act = bot.activity()
+    return False if act is not None and not Activity.of(act).in_field else None
 
 
 def _texts(bot: Bot, key: str) -> str:
@@ -171,8 +181,9 @@ def enter(bot: Bot) -> None:
     bot.key("space")  # 자동 전투
 
 
-def fight(bot: Bot) -> bool:
+def fight(bot: Bot, until: float | None = None) -> bool:
     """결과 창까지 기다려 확인(Space). 보상을 받았으면 True, '참여하지 않아 보상 없음' 이면 False.
+    until: 이 시각(time.time)까지만 기다린다 — 맵을 모르는 채 끊긴 전투를 이어 받을 때 (finish_inside).
     결과 창 없이 보스 영역 밖으로 나왔어도 False — 컷신 중에 다른 사람이 잡아 결과 창을 놓쳤거나(자동 전투 Space 가 그
     창을 닫음) 퇴장 시간이 지난 것. 실패로 끝내면 다시 들어가 보지 못했다 (2026-11-16 12:07). run 이 성장 가이드로 잡았나를
     보고 다시 들어간다."""
@@ -181,6 +192,8 @@ def fight(bot: Bot) -> bool:
     skills = BossSkills.for_current(bot, bot.character, here, inside=here)
     ctx = monitor.Ctx("field_boss", "필드 보스 전투", revive=True)
     end = time.monotonic() + bot.cfg["field_boss"]["fight_timeout"]
+    if until:
+        end = min(end, time.monotonic() + until - time.time())
     asked = time.monotonic()
     while time.monotonic() < end:
         result = confirm_text(bot.frame())  # 결과 창 '처치 완료' (아래 가운데 '확인') — 한 바퀴에 한 번 읽는다
@@ -205,7 +218,7 @@ def fight(bot: Bot) -> bool:
             bot.key("space")  # 확인
             bot.sleep(1.2, 1.6)
             return got
-        if on_map(bot, FIELD_BOSS) is False:   # 다른 맵이라고 알 때만 — 모름(None)은 나간 것이 아니다
+        if inside(bot) is False:   # 다른 맵이라고 알거나 CLI 가 사냥터 밖이라 할 때만 — 모름(None)은 나간 것이 아니다
             bot.log.warning(f"결과 창 없이 보스 영역 밖으로 나옴 → 보상을 못 받은 것으로 봄 ({bot.snapshot('fb_fight').name})")
             return False
         act = bot.activity() or {}
@@ -253,24 +266,41 @@ def leave(bot: Bot) -> None:
 
 
 def fight_cut(bot: Bot, last: dict | None) -> bool:
-    """보스와 싸우던 중에 끊긴 채(마지막 단계 기록 last 가 전투) 아직 보스 영역 안인가 — 숙제(run)와 접속의 시작
-    정리(finish_cut)가 이 한 기준으로 본다. 영역 안인지 모르면(리모콘을 그 안에서 다시 켜 맵을 모름) 끊긴 것으로 보지 않는다."""
-    return inside(bot) is True and (last or {}).get("step") == "fb_fight"
+    """보스와 싸우던 중에 끊겼고(마지막 단계 기록 last 가 전투) 영역 밖이라고 알지 않는가 — 숙제(run)와 접속의 시작
+    정리(finish_cut)가 이 한 기준으로 본다. 리모콘을 영역 안에서 다시 켜 맵을 모르면(None) 끊긴 전투로 보고 결과를
+    기다린다 — 영역 안에선 리모콘이 할 일이 없으니 결과(처치·전멸)에만 대응하고 나가면 거기서 다시 본다 (사용자
+    2026-11-22. 예전엔 모르면 끊긴 것으로 보지 않아 영역 안에서 메뉴부터 열었다). 다만 맵을 모르고 그 전투를 시작한 지
+    전투 시간 상한 + CUT_LATE 가 지났으면 이미 나가졌다."""
+    last = last or {}
+    if last.get("step") != "fb_fight":
+        return False
+    where = inside(bot)
+    if where is None and (until := _cut_until(bot, last)) is not None and time.time() > until:
+        return False
+    return where is not False
+
+
+def _cut_until(bot: Bot, last: dict) -> float | None:
+    """끊긴 전투에서 영역에 남아 있을 수 있는 마지막 시각 (time.time) — 그 전투를 시작한 때부터 센다. 모르면 None."""
+    ts = last.get("ts")
+    return ts + bot.cfg["field_boss"]["fight_timeout"] + CUT_LATE if ts else None
 
 
 def finish_cut(bot: Bot, cut: dict, kind: str | None) -> bool:
     """접속의 시작 정리(tasks.FINISH_CUT): 보스와 싸우던 중에 끊겼으면 그 전투부터 마치고 나온다. 아니면 False."""
-    if not fight_cut(bot, bot.daily.last_step(cut["slot"], "field_boss")):
+    last = bot.daily.last_step(cut["slot"], "field_boss")
+    if not fight_cut(bot, last):
         return False
     bot.step("fb_inside_at_login", "보스와 싸우던 중에 끊김 → 그 전투부터 마침")
-    finish_inside(bot)
+    finish_inside(bot, last)
     return True
 
 
-def finish_inside(bot: Bot) -> bool:
+def finish_inside(bot: Bot, last: dict | None = None) -> bool:
     """보스와 싸우던 중에 끊긴 채 보스 영역 안에서 다시 시작함: 나가지 않고 그 전투부터 마치고 나온다 — 예전엔 나가서
-    새 보스로 다시 들어가 쌓은 기여를 버렸다 (점검 2026-11-22). 보상을 받았으면 True (못 받았으면 run 이 다시 들어간다)."""
-    got = fight(bot)
+    새 보스로 다시 들어가 쌓은 기여를 버렸다 (점검 2026-11-22). 보상을 받았으면 True (못 받았으면 run 이 다시 들어간다).
+    맵을 모르면(리모콘을 영역 안에서 다시 켬) 끊긴 전투(last)를 시작한 때부터 센 시간까지만 기다린다 (_cut_until)."""
+    got = fight(bot, until=_cut_until(bot, last or {}) if inside(bot) is None else None)
     leave(bot)
     return got
 
@@ -281,9 +311,12 @@ def run(bot: Bot, cfg: dict) -> str:
     if done(bot):
         return "이번 주 이미 잡음"
     if fight_cut(bot, bot.resume):
-        bot.log.info("보스와 싸우던 중에 끊김 → 그 전투부터")
-        if finish_inside(bot):
-            return f"{boss} {difficulty} 처치 (끊긴 전투를 이어서)"
+        bot.log.info("보스와 싸우던 중에 끊김 → 그 전투부터" + ("" if inside(bot) else " (맵을 모름 — 결과를 기다림)"))
+        try:
+            if finish_inside(bot, bot.resume):
+                return f"{boss} {difficulty} 처치 (끊긴 전투를 이어서)"
+        except CannotProceed as e:  # 결과가 안 나옴 — 맵을 모르는 채 영역 밖이었을 수 있다. 지금 자리에서 다시 본다
+            bot.log.warning(f"끊긴 전투: {e} → 지금 자리에서 다시")
     if inside(bot):
         bot.log.info("이미 보스 영역 안 → 나가서 다시")
         leave(bot)

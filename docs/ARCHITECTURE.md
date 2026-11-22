@@ -137,6 +137,8 @@ web/                          화면 (빌드 없이 <script> 여러 개가 같�
 | 점검자 처리 결과로 갈래 나누기 (기다림인가·수락했나) — 글자로 비교하지 않는다 | `monitor.Did` (StrEnum, 로그엔 글자 그대로) · 기다림 모음 `monitor.WAITS` | Bot.to_main, 접속, 어비스 정산, 아르바이트, 수리 |
 | NPC 대화가 지금 어떤가 (대화 중·창·넘길 대사·메뉴·버튼 글자) — 패킷 대화 칸·CLI 대화 키·대화 창 그림을 직접 보지 않는다 | `dialogue.now(bot, frame)` → `View` (`open`·`drawn`·`lines_left`·`menu_up`·`has` · 출처끼리 어긋남 `audit`) · 넘기기 `dialogue.tap`·`next_line` | 점검자, 끼어들기, 출석, 접속, 대장간, 요일 던전 |
 | 클리어 화면('화면을 터치해 주세요') · 보상 화면(나가기·다시 하기) — 템플릿을 직접 보지 않는다 | `clear.touch_prompt(bot, frame, ocr)` (그림 → 글자) · `detect.reward_button(bot, frame)` | 점검자, 클리어 뒤, 접속 정리, 던전·사냥터 기다림 |
+| 배고픔 — 화면 'B' 표시를 바퀴마다 찾지 않는다 | `Bot.satiety()` (CLI get_my_info Vitals, 30초마다) · 기준 `[game] eat_at` (기본 25%) | `Bot.eat_if_hungry` (메인 화면·싸우는 동안) |
+| 보스 영역 안인가 — 패킷 맵, 모르면 CLI 가 사냥터 밖일 때만 밖 | `field_boss.inside` · 끊긴 전투 `field_boss.fight_cut` | 필드 보스, 접속 정리 |
 | 매칭 중 · 전투 중 · 쓰러짐 — 패킷 칸·CLI 키를 직접 보지 않는다 | `PacketState.matching` · `Bot.in_combat(act, cli_first)` · `Bot.is_dead(act)` | 어비스·뱅가드·끊는 자리, 궁극기, 점검자 |
 | 다른 모듈이 Bot 하나에 걸쳐 기억할 값 — bot 에 밑줄 속성을 붙이지 않는다 | `Bot.marks` (`bot.Marks` 에 칸을 더한다) · 점검자 `Bot.monitor` | 점검자, 출석, 아르바이트 |
 | 끼어들기 막는 구간 · F12 와 같은 일시정지 — stopper·_interrupting 을 직접 만지지 않는다 | `bot.no_interrupt()` · `bot.pause_as_key()` (`pause` 는 조작 사이 기본 대기) | 점검자 check, 네트워크 불안정 |

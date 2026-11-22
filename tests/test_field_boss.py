@@ -297,3 +297,46 @@ class EnterTest(unittest.TestCase):
         clicked, t = self.run_enter(cutscene=False, button_at=None)  # 이 출현 시간에 이미 본 캐릭터
         self.assertEqual(clicked, [])
         self.assertLess(t, fb.SKIP_LOOK + 2)
+
+class CutInsideTest(unittest.TestCase):
+    """리모콘을 보스 영역 안에서 다시 켜 맵을 모를 때 — 리모콘이 할 일이 없으니 결과(처치·전멸)만 받고, 나가면 다시 본다
+    (사용자 2026-11-22). 영역 안도 CLI 는 사냥터 안이라 답하므로, CLI 가 사냥터 밖이라 할 때만 밖으로 본다."""
+
+    def bot(self, loading=None, field=True, cli=True):
+        bot = mock.Mock()
+        bot.cfg = {"field_boss": {"fight_timeout": 900}}
+        bot.map_loading.return_value = loading
+        bot.activity.return_value = {"Battlefield": {"IsInBattleField": field}} if cli else None
+        return bot
+
+    def test_inside_when_map_unknown(self):
+        with mock.patch.object(fb, "on_map", return_value=None):
+            self.assertIsNone(fb.inside(self.bot(field=True)))      # 사냥터 안 — 영역 안인지 모름
+            self.assertIs(fb.inside(self.bot(field=False)), False)  # 마을·던전 — 영역 밖
+            self.assertIsNone(fb.inside(self.bot(cli=False)))
+            self.assertIsNone(fb.inside(self.bot(loading=True, field=False)))  # 로딩 중엔 CLI 를 묻지 않는다
+        with mock.patch.object(fb, "on_map", return_value=True):
+            self.assertIs(fb.inside(self.bot(field=False)), True)   # 패킷이 알면 그것
+
+    def test_fight_cut_waits_when_map_unknown(self):
+        now = time.time()
+        with mock.patch.object(fb, "on_map", return_value=None):
+            b = self.bot(field=True)
+            self.assertTrue(fb.fight_cut(b, {"step": "fb_fight", "ts": now - 60}))
+            self.assertTrue(fb.fight_cut(b, {"step": "fb_fight"}))                     # 옛 기록(시각 없음)
+            self.assertFalse(fb.fight_cut(b, {"step": "fb_fight", "ts": now - 3600}))  # 이미 나가졌다
+            self.assertFalse(fb.fight_cut(b, {"step": "fb_travel", "ts": now}))
+            self.assertFalse(fb.fight_cut(self.bot(field=False), {"step": "fb_fight", "ts": now}))
+        with mock.patch.object(fb, "on_map", return_value=True):
+            self.assertTrue(fb.fight_cut(self.bot(), {"step": "fb_fight", "ts": now - 3600}))  # 안이라고 알면 그대로
+
+    def test_cut_wait_timeout_measures_again(self):
+        """맵을 모르는 채 기다리다 결과가 안 나오면 실패로 끝내지 않고 지금 자리에서 다시 본다 (들어가기부터)."""
+        from mabi.exceptions import CannotProceed
+        b = self.bot()
+        b.resume = {"step": "fb_fight", "ts": time.time()}
+        with mock.patch.object(fb, "done", return_value=False), mock.patch.object(fb, "inside", return_value=None),                 mock.patch.object(fb, "fight", side_effect=[CannotProceed("결과가 안 나옴"), True]) as fight,                 mock.patch.object(fb, "not_ready", return_value=""), mock.patch.object(fb, "open_window"),                 mock.patch.object(fb, "travel"), mock.patch.object(fb, "enter"), mock.patch.object(fb, "leave"):
+            out = fb.run(b, {"field_boss": {"boss": "보스", "difficulty": "어려움"}})
+        self.assertEqual(fight.call_count, 2)
+        self.assertNotIn("끊긴 전투", out)
+        self.assertIsNotNone(fight.call_args_list[0].kwargs.get("until"))  # 끊긴 전투는 그 시작부터 센 시간까지만

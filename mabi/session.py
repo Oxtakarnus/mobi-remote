@@ -58,6 +58,10 @@ def _thumb(img: np.ndarray) -> np.ndarray:
     return cv2.resize(gray, (32, 18), interpolation=cv2.INTER_AREA).astype(np.int16)
 
 
+# 포만감을 CLI 로 다시 묻는 간격 (초) — 싸우는 동안엔 바퀴마다 배고픔을 보므로 묻는 횟수를 줄인다
+SATIETY_EVERY = 30.0
+
+
 class GameSession:
     # 뒤에서 키를 보낸 적이 있다 (앞으로 가져올 때 포커스를 한 번 거쳐 준다). 게임 쪽 상태라 작업마다가 아니라 함께 쓴다 —
     # 큐는 카드마다 Bot 을 새로 만들어, 앞 카드(어비스)가 뒤에서 키를 보낸 뒤 다음 카드가 이걸 모르고 앞으로 가져와
@@ -91,6 +95,7 @@ class GameSession:
             prune_shots(self.shot_dir, self.log)
         self._act_cache: tuple[float, dict | None] | None = None  # (받은 때, CLI get_activity 답) — activity()
         self._env_cache: tuple[float, dict | None] | None = None  # (받은 때, get_current_environment 답) — environment()
+        self._info_cache: tuple[float, dict | None] | None = None  # (받은 때, get_my_info 답) — my_info()
         self.cli_checked = 0.0  # CLI 연결 여부를 마지막으로 다시 물은 때
         # 이 연결로 캐릭터를 골라 게임에 들어간 때 (monotonic, 0 = 모름 — 리모콘을 켜기 전에 접속했거나 사람이 접속).
         # 게임 다시 켜기 카드와 숙제가 같은 연결을 쓰므로, 다시 켠 직후 숙제도 접속한 지 얼마 안 됐음을 안다 (공물 퀘스트)
@@ -215,6 +220,25 @@ class GameSession:
         env = self.state.query("get_current_environment") if self.state.available() else None
         self._env_cache = (now, env if isinstance(env, dict) else None)
         return self._env_cache[1]
+
+    def my_info(self, max_age: float = 30.0) -> dict | None:
+        """CLI get_my_info (능력치·Vitals — 체력·포만감·가방 무게). max_age 초 안의 답은 같이 쓴다."""
+        now = time.monotonic()
+        c = self._info_cache
+        if c and now - c[0] <= max_age:
+            return c[1]
+        info = self.state.query("get_my_info", timeout=10) if self.state.available() else None
+        self._info_cache = (now, info if isinstance(info, dict) else None)
+        return self._info_cache[1]
+
+    def satiety(self, max_age: float = SATIETY_EVERY) -> float | None:
+        """포만감 비율 0~1 (CLI get_my_info Vitals 의 SatietyValue / SatietyMax), 모르면 None (CLI 없음·로딩·게임 밖).
+        패킷 포만감(char.satiety)은 먹을 때만 와 지금 값으로 못 쓴다 — 배가 꺼지는 동안엔 오지 않는다 (11월 캡처들)."""
+        v = (self.my_info(max_age) or {}).get("Vitals") or {}
+        cur, top = v.get("SatietyValue"), v.get("SatietyMax")
+        if isinstance(cur, (int, float)) and isinstance(top, (int, float)) and top > 0:
+            return cur / top
+        return None
 
     def _act_state(self, act: dict | None) -> Activity:
         """CLI get_activity 를 읽은 것 (game_state.Activity). act 는 이미 받아 둔 답 — 없으면 묻는다 (activity)."""

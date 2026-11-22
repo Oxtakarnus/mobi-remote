@@ -218,6 +218,9 @@ class Bot:
     def environment(self, max_age: float = 3.0) -> dict | None:
         return self.session.environment(max_age)
 
+    def satiety(self, **kw) -> float | None:
+        return self.session.satiety(**kw)
+
     def _act_state(self, act: dict | None) -> Activity:
         return self.session._act_state(act)
 
@@ -757,30 +760,41 @@ class Bot:
         return True
 
     def eat_if_hungry(self) -> bool:
-        """메인 화면으로 돌아올 때마다 본다: 좌상단 음식 아이콘의 'B' 표시가 보이면 (배고픔) B 를 눌러 음식을 먹는다.
+        """메인 화면으로 돌아올 때·싸우는 동안 본다: 포만감이 [game] eat_at % 이하이면 B 를 눌러 음식을 먹는다.
+        포만감은 CLI 로 (Bot.satiety — SATIETY_EVERY 초마다 묻는다). 예전엔 부를 때마다 좌상단 음식 아이콘의 'B' 표시 그림을
+        찾았다 — 그 표시는 게임 설정 '음식 바로 먹기 버튼 표시' 기준(기본 포만감 25%)에 뜬다 (사용자 2026-11-22). CLI 가 답하지
+        않을 때만 예전처럼 'B' 표시로 본다.
         하루 횟수 제한은 없다 (예전 run.food_max=2 — 드릴에서 2번을 채운 뒤 배고파도 못 먹어 사용자가 없앰, 2026-11-08).
-        음식이 없으면 (no_food) 보지도 누르지도 않는다. 먹은 횟수는 기록만 한다. 일일 미션 쪽에서는 음식을 먹지 않는다."""
-        name = self.ui.get("food_b")
-        if not name or not self.vision.has(name):
-            return False
+        음식이 없으면 (no_food) 누르지 않는다. 먹은 횟수는 기록만 한다. 일일 미션 쪽에서는 음식을 먹지 않는다."""
         slot = self.character["slot"] if self.character else None
         tracked = self.daily is not None and slot is not None
         if time.monotonic() < getattr(self, "_eat_after", 0.0):
             return False  # 방금 먹었거나 못 먹었다 — 한동안 다시 누르지 않는다
-        if self.no_food(look=False) or not self.exists(name) or self.no_food():
+        if self.no_food(look=False):
             return False
+        ratio = self.satiety()
+        if ratio is None:  # CLI 가 답하지 않음 → 화면의 'B' 표시
+            name = self.ui.get("food_b")
+            if not name or not self.vision.has(name) or not self.exists(name):
+                return False
+        elif ratio * 100 > self.cfg["game"]["eat_at"]:
+            return False
+        # 배고픈데 음식이 없으면 B 가 제작 창을 연다 — 화면의 '음식 없음' 표시로 본다 (배고플 때만 보므로 드물다)
+        if self.no_food():
+            return False
+        why = "배고픔 표시" if ratio is None else f"포만감 {ratio:.0%}"
         mark = self.packets.mark()
         self.key(keys.of(self, "food"))
         # 패킷: 먹으면 포만감이 온다. 안 오면 못 먹은 것 (어비스 판 안에서 6초마다 3분 넘게 B 만 누른 일 — 2026-10-27).
-        # 먹었어도 'B' 표시가 바로 안 사라질 수 있어 먹은 뒤에도 EAT_GAP 동안은 다시 누르지 않는다
+        # 먹었어도 'B' 표시가 바로 안 사라지고 CLI 포만감도 SATIETY_EVERY 동안 지난 값이라 먹은 뒤에도 EAT_GAP 동안은 다시 누르지 않는다
         got = self.packets.wait("char.satiety", 4, after=mark) if self.packets.ok else None
         self._eat_after = time.monotonic() + EAT_GAP
         if self.packets.ok and got is None:
-            self.log.warning(f"배고픔 표시 → B 를 눌렀지만 먹지 못함 (포만감 패킷 없음) → {EAT_GAP:.0f}초 뒤 다시")
+            self.log.warning(f"{why} → B 를 눌렀지만 먹지 못함 (포만감 패킷 없음) → {EAT_GAP:.0f}초 뒤 다시")
             return False
         n = self.daily.bump(slot, "food") if tracked else 0
         full = f" · 포만감 {got.vals.get('satiety')}" if got is not None else ""
-        self.log.info(f"배고픔 표시 → 음식 먹기 (B){f' — 오늘 {n}번째' if tracked else ''}{full}")
+        self.log.info(f"{why} → 음식 먹기 (B){f' — 오늘 {n}번째' if tracked else ''}{full}")
         self.sleep(1.5, 2)
         return True
 
