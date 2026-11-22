@@ -90,10 +90,12 @@ class EatTest(unittest.TestCase):
 
     def test_cli_satiety_decides_without_screen(self):
         """포만감은 CLI 로 — 기준 아래면 그림 없이 먹고, 위면 화면을 보지도 않는다 (사용자 2026-11-22).
-        기본 기준은 0% — 바로 먹기 버튼이 뜨는 25% 부터 누르면 6% 까지 안 먹혀 1분마다 B·경고만 남았다 (실측 2026-11-22)."""
-        b, keys, eat = self._bot(came=True, ratio=0.0, shown=False)
-        self.assertTrue(eat(b))
-        self.assertEqual((keys, b.looked), (["b"], []))
+        기본 기준은 4% — 바로 먹기 버튼이 뜨는 25% 부터 누르면 6% 까지 안 먹혀 1분마다 B·경고만 남았고 4% 에서는 먹혔다
+        (실측 2026-11-22)."""
+        for ratio in (0.04, 0.0):
+            b, keys, eat = self._bot(came=True, ratio=ratio, shown=False)
+            self.assertTrue(eat(b))
+            self.assertEqual((keys, b.looked), (["b"], []))
         for ratio in (0.06, 0.25):  # 버튼은 떠 있지만 게임이 안 받는 곳
             b, keys, eat = self._bot(came=True, ratio=ratio)
             self.assertFalse(eat(b))
@@ -101,6 +103,16 @@ class EatTest(unittest.TestCase):
         b, keys, eat = self._bot(came=True, ratio=0.5)
         b.cfg["game"]["eat_at"] = 50  # 설정에서 기준을 올렸으면
         self.assertTrue(eat(b))
+
+    def test_eats_at_exactly_the_setting(self):
+        """설정값과 같은 포만감이면 먹는다 — ratio * 100 으로 비기면 7/100 이 7.000000000000001 이 돼 안 먹었다."""
+        for at in (4, 7, 29, 57):
+            b, keys, eat = self._bot(came=True, ratio=at / 100)
+            b.cfg["game"]["eat_at"] = at
+            self.assertTrue(eat(b), at)
+            b, keys, eat = self._bot(came=True, ratio=(at + 1) / 100)
+            b.cfg["game"]["eat_at"] = at
+            self.assertFalse(eat(b), at)
 
     def test_hungry_without_food_does_not_press(self):
         b, keys, eat = self._bot(came=True, ratio=0.0, food=False)  # 음식 없음 표시 → B 는 제작 창을 연다

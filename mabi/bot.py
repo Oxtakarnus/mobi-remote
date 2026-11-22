@@ -781,7 +781,8 @@ class Bot:
         찾았다 — 그 표시는 게임 설정 '음식 바로 먹기 버튼 표시' 기준(기본 포만감 25%)에 뜬다 (사용자 2026-11-22). CLI 가 답하지
         않을 때만 예전처럼 'B' 표시로 본다.
         표시가 떠도 게임은 포만감이 바닥 가까이여야 먹게 해 준다 — 2026-11-22 실측: 25~6% 에서는 아이템 사용 답이 없었고
-        4·3·2·0% 에서는 먹혔다 (먹은 뒤 포만감 100 + 남은 값). 그래서 eat_at 기본은 0 (사용자 2026-11-22).
+        4·3·2·0% 에서는 먹혔다 (먹은 뒤 포만감 100 + 남은 값). 그래서 eat_at 기본은 먹힌 가장 높은 값 4
+        (사용자 2026-11-22 — 0 도 먹히지만 바닥을 찍는다). CLI 포만감은 지난 값이라 실제는 그보다 낮거나 같다.
         하루 횟수 제한은 없다 (예전 run.food_max=2 — 드릴에서 2번을 채운 뒤 배고파도 못 먹어 사용자가 없앰, 2026-11-08).
         음식이 없으면 (no_food) 누르지 않는다. 먹은 횟수는 기록만 한다. 일일 미션 쪽에서는 음식을 먹지 않는다."""
         slot = self.character["slot"] if self.character else None
@@ -795,7 +796,7 @@ class Bot:
             name = self.ui.get("food_b")
             if not name or not self.vision.has(name) or not self.exists(name):
                 return False
-        elif ratio * 100 > self.cfg["game"]["eat_at"]:
+        elif ratio > self.cfg["game"]["eat_at"] / 100:  # ratio * 100 으로 비기면 7% 가 7.000000000000001 이 돼 같은 값에서 안 먹는다
             return False
         # 배고픈데 음식이 없으면 B 가 제작 창을 연다 — 화면의 '음식 없음' 표시로 본다 (배고플 때만 보므로 드물다)
         if self.no_food():
