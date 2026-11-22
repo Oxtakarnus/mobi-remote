@@ -7,6 +7,7 @@
 클리어 화면 아래는 '나가기' 와 '파티장 선택 대기' — 파티장이 다시 하기를 누르면 또 준비 UI 가 뜬다.
 파티가 FULL 명이 안 되면 (사용자 11-22): 파티장은 우연한 만남을 켜고 입장해 빈자리를 채운다 (준비 UI 없음). 판이 끝나면
 다시 하기 대신 '다른 던전 가기' → 어비스 목록에서 같은 어비스 → 우연한 만남 확인 → 입장하기 (abyss.AbyssRepeat.party_chance).
+누가 빠지면 (사용자 11-22): 파티원이면 남은 인원으로 계속, 파티장이 바뀌거나 내가 파티에서 빠지면 카드를 끝낸다 (broken).
 패킷: 입장 진행이 시작되면 파티원 목록과 상태가 온다 (PacketState.party_marks), 끝은 party_end 3 입장 · 4 취소.
 """
 import time
@@ -49,10 +50,19 @@ def confirm(bot: Bot) -> bool:
     return False
 
 
-def broken(s, since: float) -> bool:
-    """패킷: since 뒤에 파티에서 누가 빠졌나 (파티원이 나감·내가 나감), 또는 지금 파티가 없나.
-    파티 정보가 아직 안 왔으면(party_id None) 모른다 → False."""
-    return s.party_out_at > since or s.party_id == 0
+def broken(s, since: float, role: str = "member") -> str:
+    """패킷: since 뒤에 고정 파티를 더 이어 갈 수 없게 됐나 — 까닭, 괜찮으면 "" (사용자 11-22: 파티원이 빠지면 계속,
+    파티장이 빠지면 끝). 내가 파티에서 빠짐(나가기, 어비스에서 혼자 먼저 나옴), 지금 파티가 없음, 파티장이 바뀜(넘김,
+    파티장이 나감 — 파티장 카드는 내가 파티장이 아니게 됐을 때만). 파티원이 빠진 것은 세지 않는다 — 남은 인원으로 계속
+    돌고, 파티장은 FULL 명이 안 되면 우연한 만남으로 채운다. 파티 정보가 아직 안 왔으면(party_id None) 모른다 → "".
+    role: 카드의 역할 'leader' · 'member'."""
+    if s.party_gone_at > since:
+        return "내가 파티에서 빠짐"
+    if s.party_id == 0:
+        return "파티가 없음"
+    if s.party_leader_at > since and (role != "leader" or s.party_leader != s.char_id):
+        return "파티장이 바뀜 (파티장이 나감·넘김)"
+    return ""
 
 
 def started(s) -> bool:

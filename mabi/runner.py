@@ -130,8 +130,9 @@ class RunOptions:
 
 def _done_view(stored) -> dict:
     """오늘 끝난 숙제를 화면에 보일 상태. '넘김(조건)' 은 그대로 보여 준다 (다시 하지는 않는다)."""
-    if isinstance(stored, str) and stored.startswith("MANUAL"):
-        return {"status": "MANUAL", "summary": stored.split(":", 1)[-1].strip()}
+    note = prof.manual_note(stored)
+    if note is not None:
+        return {"status": "MANUAL", "summary": note}
     return {"status": "DONE", "summary": "오늘 완료"}
 
 

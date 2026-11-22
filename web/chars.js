@@ -31,12 +31,16 @@ function tagsOf(c) {
   return t.join('');
 }
 
-/** 오늘 숙제 진행: 다 끝났으면 '오늘 클리어', 하다 만 것이면 'n/m' */
+/** 오늘 숙제 진행: 다 끝났으면 '오늘 클리어', 하다 만 것이면 'n/m'. 조건이 안 돼 넘긴 일이 남은 숙제는 끝난 것으로
+ *  세되 '넘김 n' 으로 따로, 풍선에 까닭 (숙제 탭의 '넘김(조건)' 과 같은 기록 — 2026-11-22 사용자) */
 function todayOf(c) {
   const t = c.today;
   if (!t || !t.total || !t.done) return '';
-  return t.done >= t.total ? ' · <span class="ch-today ok">오늘 클리어</span>'
-    : ' · <span class="ch-today part">숙제 ' + t.done + '/' + t.total + '</span>';
+  const left = t.manual || [];
+  const skip = left.length ? ' · <span class="ch-today skip" title="' +
+    esc(left.map((m) => m.task + ': ' + m.note).join('\n')) + '">넘김 ' + left.length + '</span>' : '';
+  return (t.done >= t.total ? ' · <span class="ch-today ok">오늘 클리어</span>'
+    : ' · <span class="ch-today part">숙제 ' + t.done + '/' + t.total + '</span>') + skip;
 }
 
 /** 지금 게임에 접속 중인 캐릭터인가 (상단바가 읽어 둔 이름 — 띄어쓰기 무시) */

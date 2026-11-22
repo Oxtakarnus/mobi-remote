@@ -997,6 +997,7 @@ tr.sec .muted { font-weight: 400; letter-spacing: 0; margin-left: 4px; }
 .ch-today { font-weight: 600; }
 .ch-today.ok { color: var(--ok); }
 .ch-today.part { color: var(--warn); }
+.ch-today.skip { color: var(--fg-mute); cursor: help; }
 .ch-tags { display: flex; flex-wrap: wrap; gap: 4px; justify-content: center; }
 .ch-tags span { font-size: 11px; background: rgba(255, 255, 255, .12); border-radius: 999px; padding: 2px 8px; }
 .ch-tags span.off { color: rgba(255, 255, 255, .45); text-decoration: line-through; background: rgba(255, 255, 255, .05); }

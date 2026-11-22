@@ -21,7 +21,7 @@ import tomlkit
 
 from mabi import gamedata as gd, profile as prof, userconfig
 from mabi.runner import load_config, task_order, tasks_by_slot
-from mabi.tasks import boss_skills
+from mabi.tasks import TASKS, boss_skills
 from mabi.tasks.weekday import SUNDAY_CHOICES
 from mabi.whoami import Characters
 
@@ -29,6 +29,15 @@ log = logging.getLogger("mabi")
 
 MANAGED = ("field", "field_runs", "dungeon", "floor", "black_hole_in_field")  # 이 탭이 다루는 by_slot 키 (나머지는 손대지 않는다)
 FLOORS = {int(k): v for k, v in gd.labels()["floors"].items()}
+
+
+def today_of(day: prof.DailyState, slot: int, order: list[str]) -> dict:
+    """캐릭터 탭 카드의 오늘 숙제 진행 {done, total, manual}. 끈 숙제는 order 에 없어 세지 않는다. 조건이 안 돼 넘긴 일이
+    남은 숙제('넘김(조건)')도 끝난 것으로 세되 manual 에 [{task: 숙제 이름, note: 까닭}] 으로 따로 — 카드엔 '넘김 n',
+    풍선에 까닭 (사용자 11-22 — 숙제 탭은 같은 기록을 '넘김(조건)' 으로 보인다)."""
+    manual = [{"task": TASKS[t][0] if t in TASKS else t, "note": n}
+              for t in order if (n := prof.manual_note(day.get(slot, t))) is not None]
+    return {"done": sum(day.is_done(slot, t) for t in order), "total": len(order), "manual": manual}
 
 
 class CharsApi:
@@ -144,11 +153,8 @@ class CharsApi:
             o = dict(by.get(k, {}))
             e = known.get(k) or {}
             fp, card = e.get("fp") or {}, e.get("card") or {}
-            # 오늘 숙제 진행 (캐릭터 탭 카드의 '오늘 클리어' 표시). 끈 숙제는 세지 않는다
-            order = task_order(doc, c, by_slot=by_tasks)
-            done = sum(today.is_done(c["slot"], t) for t in order)
             out.append({
-                "today": {"done": done, "total": len(order)},
+                "today": today_of(today, c["slot"], task_order(doc, c, by_slot=by_tasks)),  # '오늘 클리어'
                 "slot": c["slot"], "name": c["name"],
                 "field": str(o.get("field", defaults["field"])), "field_runs": int(o.get("field_runs", defaults["field_runs"])),
                 "dungeon": str(o.get("dungeon", defaults["dungeon"])), "floor": int(o.get("floor", defaults["floor"])),

@@ -130,6 +130,14 @@ class WeeklyState:
                 f.unlink(missing_ok=True)
 
 
+def manual_note(stored) -> str | None:
+    """'넘김(조건)' 기록이면 그 요약, 아니면 None. 기록은 'MANUAL: 요약' — 할 수 있는 건 다 했고 조건이 안 돼 넘긴 일만
+    사람이 처리한다 (다시 하지 않는다, runner). 숙제 탭(결과 보기)·캐릭터 카드('넘김 n')가 같이 쓴다."""
+    if isinstance(stored, str) and stored.startswith("MANUAL"):
+        return stored.split(":", 1)[-1].strip()
+    return None
+
+
 class DailyState:
     """오늘(게임 날짜) 캐릭터별 숙제 결과. 'done' 이면 다음 실행 때 건너뛴다."""
 
@@ -155,7 +163,7 @@ class DailyState:
     def is_done(self, slot: int, task: str) -> bool:
         """끝남 — 'MANUAL'(할 수 있는 건 다 하고 남은 건 사람이 처리)도 다시 하지 않는다."""
         s = self.get(slot, task)
-        return s == "done" or (isinstance(s, str) and s.startswith("MANUAL"))
+        return s == "done" or manual_note(s) is not None
 
     def set(self, slot: int, task: str, status: str) -> None:
         self.data.setdefault(str(slot), {})[task] = status

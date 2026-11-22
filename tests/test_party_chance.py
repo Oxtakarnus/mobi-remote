@@ -8,7 +8,7 @@ from unittest import mock
 from mabi.packet_monitor import PacketMonitor
 from mabi.tasks import abyss
 
-ME, PARTY = 0x174ADF700000, 0x1A1F0A712DA
+ME, FRIEND, PARTY = 0x174ADF700000, 0x178AF7E00001, 0x1A1F0A712DA
 
 
 def packets(size):
@@ -96,6 +96,27 @@ class LoopTest(unittest.TestCase):
         en, other, ex = self.run_loop(r)
         self.assertEqual([c.kwargs["party"] for c in en.call_args_list], [False, True])
         other.assert_called_once()   # 이번 판은 우연한 만남이었다 — 다시 하기가 아니라 목록에서
+
+    def test_member_leaves_keeps_going(self):
+        """4명으로 돌다 파티원이 빠져도 카드를 끝내지 않고, 그 판이 끝난 뒤부터 우연한 만남으로 (사용자 11-22)."""
+        r = rep(4, results=())
+        r.runs = 2
+        r.play_round = lambda play, step: (r.mon.apply("party.member_out", {}), "clear")[1]
+        en, other, ex = self.run_loop(r)
+        self.assertEqual([c.kwargs["party"] for c in en.call_args_list], [True, False])
+        other.assert_called_once()
+        r._again.assert_not_called()
+        self.assertEqual(r.stat["clears"], 2)
+
+    def test_leader_hand_over_ends_card(self):
+        """파티장을 넘기면 (패킷 파티장 바뀜) 그 판을 마치고 보상 화면에서 나가 카드를 끝낸다."""
+        r = rep(3, results=())
+        r.runs = 3
+        r.play_round = lambda play, step: (r.mon.apply("party.leader", {"leader": FRIEND}), "clear")[1]
+        en, other, ex = self.run_loop(r)
+        self.assertEqual(len(en.call_args_list), 1)
+        other.assert_not_called()
+        ex.assert_called_once()
 
     def test_resume_at_reward(self):
         """보상 화면에서 다시 켜도 지금 인원으로 — 3명이면 다른 던전 가기 (시작 전에 끝난 판은 판 수에 안 넣는다)."""

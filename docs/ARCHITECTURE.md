@@ -140,6 +140,7 @@ web/                          화면 (빌드 없이 <script> 여러 개가 같�
 | 빠른 이동(T)이 먹었나 · 음식을 먹었나 — 누른 것으로 끝내지 않는다 | `Bot.fast_travel` (예약 답 `fast_travel.reserve_ok`·예약 상태) · `Bot.eat_if_hungry` (아이템 사용 답 `item.use_ok`) | 모든 이동, 메인 화면·싸우는 동안 |
 | 배고픔 — 화면 'B' 표시를 바퀴마다 찾지 않는다 | `Bot.satiety()` (CLI get_my_info Vitals, 30초마다) · 기준 `[game] eat_at` (기본 25%) | `Bot.eat_if_hungry` (메인 화면·싸우는 동안) |
 | 고정 파티가 가득 찼나 — 모자라면 파티장이 우연한 만남으로 채우고 다른 던전 가기로 다시 | `party.size` (패킷 파티 정보 인원 + 들어옴·빠짐) · `AbyssRepeat.party_chance` · `abyss.other_dungeon` | 어비스 고정 파티장 |
+| 고정 파티를 이어 가나 — 파티원이 빠지면 계속, 파티장이 바뀜·내가 빠짐·파티 없음이면 끝 | `party.broken` (`PacketState.party_leader_at`·`party_gone_at`) · `AbyssRepeat.party_broken` | 어비스 고정 파티장·파티원 |
 | 보스 영역 안인가 — 패킷 맵, 모르면 CLI 가 사냥터 밖일 때만 밖 | `field_boss.inside` · 끊긴 전투 `field_boss.fight_cut` | 필드 보스, 접속 정리 |
 | 매칭 중 · 전투 중 · 쓰러짐 — 패킷 칸·CLI 키를 직접 보지 않는다 | `PacketState.matching` · `Bot.in_combat(act, cli_first)` · `Bot.is_dead(act)` | 어비스·뱅가드·끊는 자리, 궁극기, 점검자 |
 | 다른 모듈이 Bot 하나에 걸쳐 기억할 값 — bot 에 밑줄 속성을 붙이지 않는다 | `Bot.marks` (`bot.Marks` 에 칸을 더한다) · 점검자 `Bot.monitor` | 점검자, 출석, 아르바이트 |
@@ -161,6 +162,7 @@ web/                          화면 (빌드 없이 <script> 여러 개가 같�
 | 큐 카드의 게임 명령 (막힘 → 확인 창이 닫히길 기다림 → 한 번 더) | `QueueApi._q_exec` | 목표 카드, 전체 수령 |
 | 목표 걸음 → CLI 명령·본문, 거절 → 할 일 (게임 규칙) | `craft.execute.step_command` · `step_failure` (`STEP_*`) | `GoalKind._execute` |
 | 보유량 (이름 → 가방+보관함 총 개수, 태그 벗긴 이름도 세려면 `bare=True`) | `craft.knowledge.item_totals` | 목표·계획·화면(bare), 학습·얻은 것(원문만) |
+| '넘김(조건)' 기록인가 · 그 까닭 — 'MANUAL' 글자를 직접 보지 않는다 | `profile.manual_note` | `DailyState.is_done`, 결과 보기, 캐릭터 카드 (`chars_api.today_of`) |
 | 캐릭터 목록 · 캐릭터별 오늘 할 숙제 순서 | `profile.chars(paths)` · `runner.task_order` (`tasks_by_slot`) | 실행기, 일일·캐릭터 탭, 큐 카드, 접속·보스전 |
 | 설정 읽기 (두 파일이 그대로면 캐시, 늘 사본) · 배포 기본값 하나 · 작은 도우미 | `runner.load_config` · `userconfig.default` · `silver_defaults` · `places` · `is_fkey` | 곳곳 (기본값 글자를 코드에 다시 적지 않는다) |
 | 화면: 카드 종류의 표시 · 큐 그림이 바뀔 때 부를 것 | `qRegisterKind(name, def)` · `qOnPaint(fn)` (web/queue.js) | daily.js |

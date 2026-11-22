@@ -670,12 +670,12 @@ class AbyssRepeat(Repeat):
     @property
     def member_leave(self) -> bool:
         """'파티원 퇴장 시 나감' ([abyss] member_leave, 사용자 11-22) — 함께하기(우연한 만남)에서 판 도중 같이 하던 사람이
-        나가면 나도 나가서 입장·매칭부터 다시. 혼자하기는 같이 하는 사람이 없고, 고정 파티는 누가 빠지면 카드를 끝낸다
-        (party_broken)."""
+        나가면 나도 나가서 입장·매칭부터 다시. 혼자하기는 같이 하는 사람이 없고, 고정 파티는 파티원이 빠지면 남은 인원으로
+        계속, 파티장이 빠지면 카드를 끝낸다 (party_broken)."""
         return bool(self.a.get("member_leave")) and not self.solo and not self.party_role
 
     match_at = 0.0  # 입장·다시 하기를 누른 때 — 그 뒤에 새로 들어간 맵만 이번 판 (entered_since)
-    party_since = 0.0  # 반복을 시작한 때 — 그 뒤에 파티에서 누가 빠지면 카드를 끝낸다 (party_broken)
+    party_since = 0.0  # 반복을 시작한 때 — 그 뒤에 파티장이 바뀌거나 내가 파티에서 빠지면 카드를 끝낸다 (party_broken)
     chance_round = False  # 이번 판을 고정 파티 우연한 만남으로 들어갔나 — 판이 끝나면 다시 하기 대신 다른 던전 가기
 
     def party_chance(self, say: bool = False) -> bool:
@@ -692,17 +692,21 @@ class AbyssRepeat(Repeat):
                               if n is not None else "고정 파티 인원을 아직 모름 (파티 정보가 안 옴) → 파티끼리 (준비 UI)")
         return chance
 
-    def party_broken(self) -> bool:
-        """고정 파티에서 누가 빠졌나 (파티원이 나감·내가 나감·파티 없음, 패킷). 그러면 카드를 끝낸다 — 판 도중이면
-        그 판은 마저 하고 보상 화면에서 나간다 (사용자 11-21)."""
-        return bool(self.party_role and self.bot.packets.ok and party_mod.broken(self.bot.packets.state, self.party_since))
+    def party_broken(self) -> str:
+        """고정 파티를 더 이어 갈 수 없게 됐나 (패킷, party.broken) — 까닭, 괜찮으면 "". 파티장이 바뀜(나감·넘김)·내가
+        파티에서 빠짐·파티 없음이면 카드를 끝낸다 — 판 도중이면 그 판은 마저 하고 보상 화면에서 나간다 (사용자 11-21).
+        파티원이 빠진 건 남은 인원으로 계속 — 파티장은 4명이 안 되면 다음 입장부터 우연한 만남으로 채운다 (사용자 11-22)."""
+        if not (self.party_role and self.bot.packets.ok):
+            return ""
+        return party_mod.broken(self.bot.packets.state, self.party_since, self.party_role)
 
     def done(self) -> bool:
-        if self.party_broken():
+        why = self.party_broken()
+        if why:
             if not self.party_told:
                 self.party_told = True
-                self.bot.log.warning("고정 파티에서 누가 나감 → 이 카드는 여기서 끝냄")
-                self.emit(stage="party_out")
+                self.bot.log.warning(f"고정 파티: {why} → 이 카드는 여기서 끝냄")
+                self.emit(stage="party_out", why=why)
             return True
         return super().done()
 
