@@ -56,7 +56,7 @@ def _repair_window(bot: Bot) -> bool:
 
 def _close_repair_window(bot: Bot) -> bool:
     """대화 처리기: 수리하기 창이 떠 있으면 ESC 로 닫는다."""
-    if not dialogue.menu_open(bot) and _repair_window(bot):
+    if not dialogue.now(bot).menu and _repair_window(bot):
         bot.key("esc")
         bot.sleep(1.2, 1.6)
         return True
@@ -92,7 +92,7 @@ def _open_repair(bot: Bot) -> bool:
     while time.monotonic() < end:
         if _repair_window(bot):
             return True
-        before = dialogue.step(bot)
+        before = dialogue.now(bot).step
         seen = mon.check(ctx, guard=False)
         last = seen.done or last
         if ctx.take("chosen"):

@@ -14,7 +14,7 @@ import time
 from .. import situation
 from ..bot import Bot
 from ..exceptions import NotSeen, StepTimeout
-from .dialogue import in_dialog
+from . import dialogue
 from .arrival import travel
 from .dungeon import enter_from_dungeon_window
 from .guide import daily_achieved, GROWTH, growth_done
@@ -93,7 +93,7 @@ def choose_on_board(bot: Bot, c: dict, want: str) -> None:
     end = time.monotonic() + c["board_timeout"]
     while time.monotonic() < end:
         seen = mon.check(ctx)
-        if not seen.done and seen.what == d.MAIN and not in_dialog(bot):
+        if not seen.done and seen.what == d.MAIN and not dialogue.now(bot).open:
             if "chosen" in ctx.events:
                 bot.log.info(f"임무 게시판: {want} 던전 고름")
                 return

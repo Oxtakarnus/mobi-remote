@@ -41,7 +41,7 @@ class CliSync:
         s.dungeon_state = s.field_state = s.dead = s.traveling = s.fast_travel_ok = s.combat = None
         s.abyss_matching, s.boss_battle, s.cutscene = 0, False, False
         s.others = {}  # 같은 판 사람도 — 놓친 사이 맵을 옮겼을 수 있다
-        s.dialogue_npc, s.dialogue_action, s.dialogue_menu = None, "", False
+        self._end_dialogue()
         log.info("패킷: %s → 맵·던전·이동 등 상태를 모름으로 (다음 패킷이나 CLI 로 다시 앎)", why)
         self._cond.notify_all()
 
@@ -131,7 +131,7 @@ class CliSync:
             if not s.traveling:
                 s.fast_travel_ok = None  # 다음 자동 이동 때 다시 온다
             if not a.dialogue:
-                s.dialogue_npc, s.dialogue_action, s.dialogue_menu = None, "", False
+                self._end_dialogue()
             if not a.minigame:
                 s.dye_open_at = None  # 염색 미니게임 닫힘을 놓쳤어도
         else:

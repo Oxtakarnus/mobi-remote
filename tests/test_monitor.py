@@ -1,7 +1,9 @@
 """점검자(mabi.monitor) — 헛돌기 방지, 모르는 상황, 동작 확인, 메뉴를 다루는 일과 기다리는 중의 정리의 차이."""
 import contextlib
 import threading
+import time
 import unittest
+from types import SimpleNamespace
 from unittest import mock
 
 import numpy as np
@@ -10,6 +12,8 @@ from mabi import monitor
 from mabi.bot import Marks
 from mabi.monitor import core, detect as d, handlers
 from mabi.monitor.detect import Seen
+from mabi.packet_monitor import PacketState
+from mabi.tasks import dialogue
 import tomllib
 from pathlib import Path as _P
 MONITOR = tomllib.loads((_P(__file__).resolve().parent.parent / "config.default.toml").read_text(encoding="utf-8"))["monitor"]
@@ -30,6 +34,22 @@ def fake_bot():
 
 def frame(v=0):
     return np.full((100, 100, 3), v, np.uint8)
+
+
+def talk_bot(menu=True, pages=1, choices=None, step=3):
+    """패킷이 대화 덩어리 하나를 막 받은 봇 (진짜 PacketState — 판단은 tasks.dialogue.View 가 한다). 화면·CLI 는 비어 있다."""
+    b = fake_bot()
+    s = PacketState()
+    s.channel = 1  # 감시를 켠 뒤 맵에 들어옴
+    s.dialogue_npc, s.dialogue_step, s.dialogue_menu = 7, step, menu
+    s.dialogue_pages, s.dialogue_choices = pages, choices
+    s.changed_at["dialogue"] = time.monotonic()
+    b.packets.ok, b.packets.state = True, s
+    b.skip_button.return_value = None
+    b.vision.find.return_value = None
+    b.activity.return_value = None
+    b.dialogue_playing.return_value = True
+    return b
 
 
 class GuardTest(unittest.TestCase):
@@ -223,26 +243,26 @@ class ActTest(unittest.TestCase):
 class DialogTest(unittest.TestCase):
     def test_job_presses_accept_when_menu_comes_late(self):
         """메뉴가 늦게 떠도 '수락' 이 보이면 Space — 넘기기를 눌러 수락을 놓치지 않는다 (2026-10-26 10:34)."""
-        b = fake_bot()
-        b.packets.ok = False
+        b = talk_bot()
         b.exists.side_effect = lambda n: n == "accept"
         ctx = monitor.Ctx("arbeit", "x", menus=True)
-        with mock.patch.object(handlers.sit, "clear_attendance", return_value=None), \
-                mock.patch("mabi.tasks.dialogue.menu_open", return_value=True):
+        with mock.patch.object(handlers.sit, "clear_attendance", return_value=None):
             self.assertEqual(handlers.dialog(b, ctx, Seen(d.DIALOG, frame=frame())), "수락")
         b.key.assert_called_once_with("space")
 
-    def menu_by_text(self, texts, task="arbeit", ctx=None):
-        b = fake_bot()
-        b.exists.return_value = False  # 그림으로는 못 찾음
+    def menu_by_text(self, texts, task="arbeit", ctx=None, b=None):
+        """메뉴 덩어리(패킷, 1쪽 — 넘길 대사 없음) + 그림으로는 버튼을 못 찾음 → 버튼 줄 글자 texts."""
+        b = b or talk_bot()
+        b.exists.return_value = False
         ctx = ctx or monitor.Ctx(task, "x", menus=True)
         clock = iter(range(0, 1000, 5))
         with (mock.patch.object(handlers.sit, "clear_attendance", return_value=None),
-              mock.patch("mabi.tasks.dialogue.menu_open", return_value=True),
-              mock.patch("mabi.tasks.dialogue.lines_left", return_value=False),
               mock.patch.object(handlers.time, "monotonic", side_effect=lambda: next(clock)),
-              mock.patch.object(handlers.ocr, "find_texts", return_value=[(t, 0, 0) for t in texts])):
-            return b, handlers.dialog(b, ctx, Seen(d.DIALOG, frame=frame()))
+              mock.patch.object(handlers.ocr, "find_texts", return_value=[(t, 0, 0) for t in texts]) as ft,
+              mock.patch("mabi.tasks.dialogue.next_line") as nl):
+            did = handlers.dialog(b, ctx, Seen(d.DIALOG, frame=frame()))
+        b.read, b.line = ft.called, nl.called
+        return b, did
 
     def test_menu_without_template_uses_button_text(self):
         """메뉴(패킷) + 넘길 대사 없음 + 그림이 안 맞음 → 버튼 글자 '수락' 이 보이면 Space (2026-10-28 09:07)."""
@@ -265,6 +285,32 @@ class DialogTest(unittest.TestCase):
         ctx = monitor.Ctx("arbeit", "x", menus=True)
         dids = [self.menu_by_text(["Space", "상점", "대화 종료"], ctx=ctx)[1] for _ in range(4)]
         self.assertEqual(dids, ["메뉴 버튼 기다림"] * 3 + ["대화 종료"])
+
+    def test_other_menu_by_choice_labels_ends_at_once(self):
+        """선택지 글자(패킷)에 '수락'·'결과 보고' 가 없으면 아르바이트여도 기다리지 않고 대화 종료 — 글자도 안 읽는다."""
+        b, did = self.menu_by_text(["상점"], b=talk_bot(choices=("$npc,Pan$의 조언", "상점", "대화 종료")))
+        self.assertEqual(did, "대화 종료")
+        b.key.assert_called_once_with("esc")
+        self.assertFalse(b.read)
+
+    def test_our_menu_by_choice_labels_reads_button(self):
+        b, did = self.menu_by_text(["Space", "결과 보고", "상점"], b=talk_bot(choices=("결과 보고", "상점", "아무말", "대화 종료")))
+        self.assertEqual(did, "결과 보고")
+        b.key.assert_called_once_with("space")
+
+    def test_many_page_menu_is_skipped_to_buttons(self):
+        """여러 쪽 메뉴 덩어리(로나 7쪽)는 아직 안 눌렀으면 넘긴다 — 버튼이 없을 때라 글자도 안 읽는다."""
+        b, did = self.menu_by_text(["수락"], b=talk_bot(pages=7, choices=("$npc,Pan$의 조언", "상점", "대화 종료")))
+        self.assertEqual(did, "대사 넘김")
+        self.assertTrue(b.line)
+        self.assertFalse(b.read)
+        b.key.assert_not_called()
+
+    def test_line_without_menu_is_tapped(self):
+        """메뉴가 없는 덩어리(결과 보고 뒤 한마디 — 종류 3, 선택지 0)는 기다리지 않고 넘긴다 (2026-11-22 07:53 13분 멈춤)."""
+        b, did = self.menu_by_text([], b=talk_bot(menu=False, pages=2, choices=()))
+        self.assertEqual(did, "대사 넘김")
+        b.key.assert_not_called()
 
     def test_arbeit_menu_wait_counts_only_in_a_row(self):
         """지난번 메뉴에서 기다린 횟수가 남아 다음 메뉴를 일찍 닫지 않는다 (판정 점검 11-16)."""
@@ -330,10 +376,19 @@ class ChooseTest(unittest.TestCase):
         ctx = monitor.Ctx("repair", choose="수리", choose_region="npc_buttons")
         with (mock.patch.object(handlers.ocr, "find_texts", return_value=[("수리", 600, 800)]) as ft,
               mock.patch.object(handlers.gd, "region", side_effect=lambda n: n)):
-            self.assertEqual(handlers._choose(b, ctx, True), "선택지 '수리'")
+            self.assertEqual(handlers._choose(b, ctx, SimpleNamespace(menu_up=True, has=lambda *w: None)), "선택지 '수리'")
         self.assertEqual(ft.call_args[0][1], "npc_buttons")
         b.click.assert_called_once_with((600, 800))
         self.assertTrue(ctx.take("chosen"))
+
+    def test_choice_missing_from_labels_is_not_read(self):
+        """선택지 글자(패킷)에 원하는 낱말이 없으면 글자를 읽지 않고 기다린다 — 아무거나 누르지 않는다."""
+        b = talk_bot(choices=("임무 목록", "대화 종료"))
+        ctx = monitor.Ctx("repair", choose="수리", choose_region="npc_buttons")
+        with mock.patch.object(handlers.ocr, "find_texts") as ft:
+            self.assertEqual(handlers._choose(b, ctx, dialogue.now(b, frame())), "선택지 기다림")
+        ft.assert_not_called()
+        b.click.assert_not_called()
 
 
 class DeadAfterResultTest(unittest.TestCase):
@@ -354,16 +409,15 @@ class DeadAfterResultTest(unittest.TestCase):
         b.vision.has.return_value = False
         b.skip_button.return_value = None
         b.at_main.return_value = False
-        with mock.patch("mabi.tasks.dialogue.in_dialog", return_value=False):
+        with mock.patch("mabi.tasks.dialogue.View.open", new=property(lambda self: False)):
             self.assertNotEqual(d.look(b).what, d.DEAD)
 
 
 class LeaveTest(unittest.TestCase):
     def leave(self, shown):
-        b = fake_bot()
+        b = talk_bot(menu=shown)
         ctx = monitor.Ctx("repair", leave=True)
         with (mock.patch.object(handlers.sit, "clear_attendance", return_value=None),
-              mock.patch("mabi.tasks.dialogue.menu_shown", return_value=shown),
               mock.patch("mabi.tasks.dialogue.wait_next", return_value=True),
               mock.patch("mabi.tasks.dialogue.next_line") as nl):
             return b, nl, handlers.dialog(b, ctx, Seen(d.DIALOG, frame=frame()))
@@ -417,13 +471,13 @@ class NpcVisitTest(unittest.TestCase):
     def test_lines_advanced_by_packet(self):
         b = self._bot()
         with mock.patch("mabi.tasks.dialogue.next_line") as nl:
-            self.assertEqual(handlers._dialog_blocker(b, Seen(d.DIALOG, frame=frame())), "대사 넘김")
+            self.assertEqual(handlers._dialog_blocker(b, Seen(d.DIALOG, frame=frame()), dialogue.now(b, frame())), "대사 넘김")
         nl.assert_called_once()
 
     def test_menu_or_hud_left_alone(self):
         for b in (self._bot(menu=True), self._bot(hud=(1, 1), log=None), self._bot(log=None)):
             with mock.patch("mabi.tasks.dialogue.next_line") as nl:
-                self.assertIsNone(handlers._dialog_blocker(b, Seen(d.DIALOG, frame=frame())))
+                self.assertIsNone(handlers._dialog_blocker(b, Seen(d.DIALOG, frame=frame()), dialogue.now(b, frame())))
             nl.assert_not_called()
 
 

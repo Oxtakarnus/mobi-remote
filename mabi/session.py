@@ -289,10 +289,11 @@ class GameSession:
         return self._act_state(act).combat
 
     def dialogue_playing(self, act: dict | None = None) -> bool:
-        """NPC 대화 중인가. 패킷(대화 대상)이 알면 그것, 모르면 CLI IsDialoguePlaying. 대화 판정의 기준 — 화면까지 더 보려면
-        tasks.dialogue.in_dialog (이것을 감싼다). 패킷을 믿는 조건은 dialogue.packet_state 와 같다."""
+        """NPC 대화 중인가 (신호). 패킷(대화 대상)이 알면 그것, 모르면 CLI IsDialoguePlaying. 바쁨 판정(idle 등)이 쓰는
+        바탕 신호 — 대화를 다루는 판단(창이 그려졌나·넘길 쪽·메뉴)은 tasks.dialogue.View 가 이것을 감싸 한다.
+        패킷을 믿는 조건은 PacketState.dialogue_known 하나."""
         p = self.packets
-        if p.ok and (p.state.fresh or p.state.in_dialogue):
+        if p.ok and p.state.dialogue_known:
             return p.state.in_dialogue
         return self._act_state(act).dialogue
 

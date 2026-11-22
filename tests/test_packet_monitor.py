@@ -522,13 +522,36 @@ class DeathTest(unittest.TestCase):
         self.assertEqual((s.dialogue_action, s.dialogue_menu, s.in_dialogue), ("", False, False))
 
     def test_menu_needs_choices(self):
-        # 아르바이트 (arbeit1 11-05): 수락 메뉴 종류 2·선택지 2 → 결과 보고 메뉴 종류 1·선택지 4 → 고른 뒤 대사 종류 3·선택지 0.
-        # 마지막은 눌러서 넘기는 대사다 — 종류만 보고 메뉴로 읽어 13분 멈췄다 (2026-11-22 문게이트 정찰)
+        # 아르바이트 (arbeit1 11-05): 선택지 알림은 늘 그 덩어리 대사 진행 바로 앞에 온다. 수락 메뉴 종류 2·선택지 2 →
+        # 작별 대사 → 결과 보고 메뉴 종류 1·선택지 4 → 보고 뒤 대사 종류 3·선택지 0. 마지막은 눌러서 넘기는 대사다 —
+        # 종류만 보고 메뉴로 읽어 13분 멈췄다 (2026-11-22 문게이트 정찰)
         m, s = self.m, self.m.state
-        m.apply("dialogue.update", {"active": True, "step": 1, "action": ""})
         for step, kind, n, menu in ((1, 2, 2, True), (2, 0, 0, False), (3, 1, 4, True), (4, 3, 0, False)):
             m.apply("dialogue.prompt", {"step": step, "type": kind, "choices": n})
+            m.apply("dialogue.update", {"active": True, "step": step, "action": ""})
             self.assertEqual(s.dialogue_menu, menu, (step, kind, n))
+
+    def test_dialogue_node(self):
+        """덩어리 하나: 쪽 수(쪽 경계 + 1)·조건·선택지 글자를 한꺼번에. 선택지 알림을 못 받은 덩어리는 메뉴를 모름 —
+        지난 덩어리 메뉴가 남지 않게. 끝나면 모두 처음 값으로."""
+        m, s = self.m, self.m.state
+        m.apply("dialogue.prompt", {"step": 3, "type": 1, "choices": 4, "labels": ("결과 보고", "상점", "아무말", "대화 종료")})
+        m.apply("dialogue.update", {"active": True, "step": 3, "action": "SelectKeyword", "breaks": 1, "why": ("RevisitedDialogue",)})
+        m.apply("dialogue.target", {"target": 7})
+        self.assertEqual((s.dialogue_menu, s.dialogue_pages, s.dialogue_why, s.dialogue_type), (True, 2, ("RevisitedDialogue",), 1))
+        self.assertEqual(s.dialogue_choices, ("결과 보고", "상점", "아무말", "대화 종료"))
+        first = s.changed_at["dialogue"]
+        m.apply("dialogue.update", {"active": True, "step": 4, "action": "AchieveQuestObjective", "breaks": 0, "why": ()})
+        self.assertEqual((s.dialogue_menu, s.dialogue_choices, s.dialogue_pages), (None, None, 1))  # 알림을 못 받음
+        self.assertGreaterEqual(s.changed_at["dialogue"], first)
+        m.apply("dialogue.prompt", {"step": 4, "type": 3, "choices": 0, "labels": ()})  # 늦게 온 알림은 바로
+        self.assertEqual((s.dialogue_menu, s.dialogue_choices), (False, ()))
+        m.apply("dialogue.prompt", {"step": 2, "type": 1, "choices": 2, "labels": ("수락",)})  # 글자 수가 안 맞으면 모름
+        m.apply("dialogue.update", {"active": True, "step": 2, "action": "", "breaks": None})
+        self.assertEqual((s.dialogue_menu, s.dialogue_choices, s.dialogue_pages), (True, None, None))
+        m.apply("dialogue.update", {"active": False, "step": 2})
+        self.assertEqual((s.dialogue_npc, s.dialogue_menu, s.dialogue_choices, s.dialogue_pages, s.dialogue_why),
+                         (None, False, None, None, ()))
 
 
 class LinkLogTest(unittest.TestCase):

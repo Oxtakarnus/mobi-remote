@@ -37,6 +37,9 @@ class Marks:
     skip_seen: float | None = None    # 뒤에서 도는 중 '대화 넘기기' 를 처음 본 때 (handlers.skip)
     confirm_keyed: float = 0.0        # 뒤에서 '확인' 을 Space 로 보낸 때 (handlers.confirm)
     attendance_clicked: float = 0.0   # 출석 대사를 누른 때 (situation)
+    # NPC 대화 (tasks.dialogue) — 덩어리(PacketState.changed_at['dialogue'])마다
+    talk_taps: tuple[float | None, int] = (None, 0)  # (덩어리, 그 덩어리에서 넘기기를 누른 수)
+    talk_audit: tuple[float | None, bool] = (None, False)  # (마지막으로 기록한 덩어리, 출처끼리 견줬나) — View.audit
     # 아르바이트 (tasks.arbeit)
     gatherable: tuple[int | None, set[str]] | None = None  # (캐릭터 슬롯, 채집으로 구할 수 있는 물품) — 캐릭터마다 한 번 묻고 기억
     arb_titles: set[str] | None = None  # 아르바이트 탭에서 본 카드 제목 (None = 아직 안 봄)

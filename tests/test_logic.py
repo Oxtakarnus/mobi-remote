@@ -137,6 +137,7 @@ class SceneSkipTest(unittest.TestCase):
         b = self.bot(background=False, shown={"dialog_skip": 0.9})
         b.scene_skip = False
         b.packets.ok, b.packets.state.cutscene, b.packets.state.fresh = True, True, True
+        b.packets.state.in_dialogue = False  # 연출 중 — 대화 패킷은 없다
         b.packets.state.attending.return_value = False
         self.assertIsNone(clear.clear_blockers(b))
         b.click.assert_not_called()

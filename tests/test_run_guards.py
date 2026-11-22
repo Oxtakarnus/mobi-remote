@@ -126,15 +126,16 @@ class LinesLeftTest(unittest.TestCase):
     """'대화 넘기기' 그림이 안 맞아도 CLI 가 넘길 대사가 있다고 하면 대사가 남은 것 (2026-10-30 던컨 앞 7분 멈춤)."""
 
     def test_cli_when_picture_misses(self):
-        from mabi.tasks.dialogue import lines_left
+        from mabi.tasks import dialogue
         b = mock.MagicMock()
+        b.packets.ok = False  # 패킷이 대본을 모름 → 넘기기 버튼 → CLI
         b.skip_button.return_value = None
         b.activity.return_value = {"IsDialogueNextAvailable": True, "IsWaitingForSelection": False}
-        self.assertTrue(lines_left(b))
+        self.assertTrue(dialogue.now(b).lines_left)
         b.activity.return_value = {"IsDialogueNextAvailable": True, "IsWaitingForSelection": True}
-        self.assertFalse(lines_left(b))
+        self.assertFalse(dialogue.now(b).lines_left)
         b.activity.return_value = None
-        self.assertFalse(lines_left(b))
+        self.assertFalse(dialogue.now(b).lines_left)
 
 
 class LeaveDungeonTest(unittest.TestCase):

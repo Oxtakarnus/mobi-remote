@@ -135,7 +135,8 @@ web/                          화면 (빌드 없이 <script> 여러 개가 같�
 | 작업 시작 점검 (지난 패킷 상태를 믿지 않고 CLI 로 맞춤) | `bot.check_in()` | 모든 작업 시작·이어 하기 |
 | NPC 대화·메뉴·확인 창 처리 | `monitor` + `Ctx` (대사 내용이 아니라 메뉴·단계·버튼 글자로 판단) | 아르바이트·숙제 |
 | 점검자 처리 결과로 갈래 나누기 (기다림인가·수락했나) — 글자로 비교하지 않는다 | `monitor.Did` (StrEnum, 로그엔 글자 그대로) · 기다림 모음 `monitor.WAITS` | Bot.to_main, 접속, 어비스 정산, 아르바이트, 수리 |
-| 대화 상태를 믿을 수 있는 패킷 상태 · '화면을 터치해 주세요' 글자 | `dialogue.packet_state` · `clear.touch_prompt_visible(bot, frame)` | 점검자, 대화, 클리어 뒤 |
+| NPC 대화가 지금 어떤가 (대화 중·창·넘길 대사·메뉴·버튼 글자) — 패킷 대화 칸·CLI 대화 키·대화 창 그림을 직접 보지 않는다 | `dialogue.now(bot, frame)` → `View` (`open`·`drawn`·`lines_left`·`menu_up`·`has` · 출처끼리 어긋남 `audit`) · 넘기기 `dialogue.tap`·`next_line` | 점검자, 끼어들기, 출석, 접속, 대장간, 요일 던전 |
+| '화면을 터치해 주세요' 글자 | `clear.touch_prompt_visible(bot, frame)` | 점검자, 클리어 뒤 |
 | 다른 모듈이 Bot 하나에 걸쳐 기억할 값 — bot 에 밑줄 속성을 붙이지 않는다 | `Bot.marks` (`bot.Marks` 에 칸을 더한다) · 점검자 `Bot.monitor` | 점검자, 출석, 아르바이트 |
 | 끼어들기 막는 구간 · F12 와 같은 일시정지 — stopper·_interrupting 을 직접 만지지 않는다 | `bot.no_interrupt()` · `bot.pause_as_key()` (`pause` 는 조작 사이 기본 대기) | 점검자 check, 네트워크 불안정 |
 | 화면 글자 찾기·누르기 (한 번 읽은 글자들에서 찾기는 `ui_text.match`) · 띄어쓰기 빼기 · 태그 지우기 | `tasks/ui_text` · `ocr.nospace` · `richtext.strip` | 곳곳 |
@@ -232,6 +233,7 @@ web/                          화면 (빌드 없이 <script> 여러 개가 같�
 - bot 에 붙이던 밑줄 속성(`_skip_seen`·`_network_*`·`_attendance_clicked`·`_arb_*`·`_gatherable`·`_monitor`) → `Bot.marks`·`Bot.monitor`,
   `bot._act`·`bot._interrupting`·`stopper.by_key/stopped` 직접 만지기 → `Activity.of(bot.activity())`·`no_interrupt`·`pause_as_key`
 - 점검자가 `dialogue._packet`·`content._touch_texts` 를 가져다 씀 → `packet_state`·`touch_prompt_visible(bot, frame)`
+- 대화 판정이 `packet_state`·`dialog_shown`·`in_dialog`·`menu_open`·`lines_left`·`menu_shown`·`line_ready` 로 나뉘어 부르는 곳마다 조합 → `dialogue.now` 한 곳 (2026-11-22)
 - 처리 결과 글자 비교 → `monitor.Did`
 - `Vision.find` 는 같은 frame 객체에 같은 질문이면 앞 답을 쓴다 (frame 이 바뀌면 버림) · `has` 는 이름마다 한 번
 - queue.json 은 파일에 남는 칸이 바뀔 때만 쓴다 (`craft.queue.encode` 로 비교 — 시간으로 미루지 않아 잃는 것 없음)

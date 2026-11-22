@@ -12,6 +12,7 @@ from .packet_monitor.days import day_start, describe, val
 from .place import OPEN_MAPS
 
 ATTEND = "daily.attendance_start"
+JUDGE = "judge."  # 리모콘 쪽 판단 기록 (PacketMonitor.observe — 대화 판정 출처끼리 어긋남 judge.dialogue)
 # 끊긴 판을 떠났다고 볼 이벤트 — 로그아웃 · 다른 캐릭터로 접속 · 던전이 아닌 맵(마을 등) 진입 (left_since)
 _LEFT = ("session.logout_ok", "char.personal_data", "channel.entering")
 _FIELD_CLEARED = "WaitingForChannelTransfer"  # 사냥터 상태 — 클리어하면 채널 옮김 대기로 바뀐다
@@ -79,8 +80,8 @@ def deep_cleared_since(bot, after: float | None) -> str:
 
 
 def since_line(bot, ts: float | None, limit: int = 12) -> str:
-    """ts 뒤 관찰한 일을 로그 한 줄로 — 누구 것이든 최근 limit 건. 없으면 ""."""
-    seen = bot.packets.days.since(ts) if ts else []
+    """ts 뒤 관찰한 일을 로그 한 줄로 — 누구 것이든 최근 limit 건 (리모콘 쪽 판단 기록 judge.* 는 빼고). 없으면 ""."""
+    seen = [r for r in bot.packets.days.since(ts) if not r["key"].startswith(JUDGE)] if ts else []
     if not seen:
         return ""
     more = f" (앞 {len(seen) - limit}건 생략)" if len(seen) > limit else ""

@@ -66,6 +66,7 @@ class PacketMonitor(LinkWatch, CliSync, Events):
         self.watch_from = 0.0        # 캡처를 시작한 시각 (time.time) — 관찰 기록이 어디부터 빠짐없나 (seen_since)
         self.gap_at = 0.0            # 흐름이 끊겨 상태를 모름으로 돌린 마지막 시각 (time.time) — 그 전부터의 관찰은 빠졌을 수 있다
         self._relogin = True         # 다음 접속 이벤트는 같은 캐릭터여도 관찰 기록에 남긴다 (감시를 켠 뒤·로그아웃 뒤 — _remember)
+        self._prompt: dict | None = None  # 아직 덩어리를 못 만난 선택지 알림 (덩어리 바로 앞에 온다 — Events._dialogue_node)
         self._cond = threading.Condition()  # 잠금은 RLock — 잠금 안에서 부르는 _apply 등이 다시 잡아도 된다
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
@@ -132,6 +133,14 @@ class PacketMonitor(LinkWatch, CliSync, Events):
         """오늘(게임 날짜, 오전 6시부터) key 이벤트를 처음 받은 시각 'HH:MM:SS' — 숙제를 돌리지 않을 때 받은 것과 리모콘을
         켜기 전 오늘 것(하루 기록 파일)까지. 감시가 안 돌면 None (모름)."""
         return self.days.today(key) if self.status == "running" else None
+
+    def observe(self, key: str, vals: dict) -> None:
+        """리모콘 쪽 판단을 관찰 기록에 남긴다 — 패킷 이벤트가 아닌 것 (대화 판정 출처끼리 어긋남 judge.dialogue 등).
+        줄 모양은 패킷 이벤트와 같다 (시각·캐릭터 번호·이름). 감시가 안 돌면 남기지 않는다."""
+        if self.status != "running":
+            return
+        s = self.state
+        self.days.record(key, vals, s.char_id, name=s.my_name)
 
     def seen_since(self, ts: float | None, keys, char: int | None = None, check=None) -> dict | None | bool:
         """관찰 기록에서 ts(초) 이후 char 캐릭터(None 이면 누구든)의 keys 이벤트(이름 하나 또는 여럿) 중 check(줄) 가 참인

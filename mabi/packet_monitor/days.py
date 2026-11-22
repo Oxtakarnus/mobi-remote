@@ -16,7 +16,8 @@ from pathlib import Path
 
 from ..profile import RESET_HOUR, game_date
 
-# 하루 기록에 남기는 이벤트 — '오늘 이 신호가 있었나' 를 쓰는 판단이 생기면 여기에 넣는다 (Events._remember 가 거른다)
+# 하루 기록에 남기는 이벤트 — '오늘 이 신호가 있었나' 를 쓰는 판단이 생기면 여기에 넣는다 (Events._remember 가 거른다).
+# 이 밖에 리모콘 쪽 판단(judge.*)은 PacketMonitor.observe 가 남긴다 — 대화 판정 출처끼리 어긋남 judge.dialogue (tasks.dialogue)
 KEYS = frozenset({
     "daily.attendance_start",  # 출석 — observed.attendance_today (계정에 하루 한 번)
     # 관찰 기록 — 이어 할 때 멈춘 단계가 그사이 끝났는지 (observed 가 묻는다)

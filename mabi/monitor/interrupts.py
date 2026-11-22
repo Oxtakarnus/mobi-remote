@@ -47,11 +47,11 @@ def pending(bot) -> str | None:
 
 
 def shown(bot, what: str, frame) -> bool:
-    """what 이 화면에 떠 있나 — 대화 창(tasks.dialogue.dialog_shown), 출석은 '출석부 건너뛰기' 도."""
-    from ..tasks.dialogue import dialog_shown
+    """what 이 화면에 떠 있나 — 대화 창(tasks.dialogue.View.drawn), 출석은 '출석부 건너뛰기' 도."""
+    from ..tasks import dialogue
     if what == "attendance" and sit.skip_attendance_button(bot, frame):
         return True
-    return dialog_shown(bot, frame)
+    return dialogue.now(bot, frame).drawn
 
 
 class Watch:
@@ -82,6 +82,7 @@ def handle(bot, what: str) -> bool:
     if not shown(bot, what, frame):
         return False
     from . import Ctx, of
+    from ..tasks import dialogue
     mon = of(bot)
     ctx = Ctx(bot.task_id or "interrupt", f"끼어들기 ({what})", revive=False)
     label = {"attendance": "출석", "dialog": "NPC 대화"}.get(what, what)
@@ -102,8 +103,8 @@ def handle(bot, what: str) -> bool:
             bot.sleep(0.4, 0.5)
         else:
             gone = None
-            p = bot.packets
-            ctx.leave = what == "dialog" and p.ok and bool(p.state.dialogue_menu)  # 메뉴면 ESC, 대사면 넘김 (handlers.dialog)
+            # 메뉴가 뜨는 덩어리면 마치기(메뉴는 ESC, 그 앞 대사는 넘김), 아니면 대사 넘김 (handlers.dialog)
+            ctx.leave = what == "dialog" and bool(dialogue.now(bot, frame).menu)
             if mon.check(ctx, frame, guard=False).done:
                 done = True
             bot.sleep(0.6, 0.9)

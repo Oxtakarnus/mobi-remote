@@ -140,7 +140,7 @@ def go_talk(bot: Bot, start: Callable[[], None], what: str, shot: str, timeout: 
     timeout: 도착 상한 (초, 부르는 쪽 설정).
     눌렀는데 패킷으로 움직임이 없으면 한 번 더 start(). 이동 중 빠른 이동이 되면 T.
     대장간 수리(퀵 내비게이터 '대장간') · 어비스 주간 전리품(관청 에반) 이 같이 쓴다."""
-    from .dialogue import in_dialog
+    from . import dialogue
     for _ in range(2):
         start()
         if npc_moving(bot) is not False:
@@ -150,7 +150,7 @@ def go_talk(bot: Bot, start: Callable[[], None], what: str, shot: str, timeout: 
         raise NotSeen(f"'{what}' 을 눌러도 움직이지 않음 → {bot.snapshot(shot).name}")
     bot.log.info(f"{what} 으로 이동")
     # 도착해 대화가 열리면 끝 — 메뉴는 인사말을 넘긴 뒤에 뜬다
-    wait_arrival(bot, lambda: in_dialog(bot), timeout, shot + "_npc",
+    wait_arrival(bot, lambda: dialogue.now(bot).open, timeout, shot + "_npc",
                  f"{what} NPC 대화가 열리지 않음", retry_fast=True, interval=(1.5, 2))
 
 

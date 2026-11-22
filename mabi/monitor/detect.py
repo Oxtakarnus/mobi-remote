@@ -63,7 +63,7 @@ def busy_why(bot) -> str | None:
     p, a = bot.packets, Activity.of(bot.activity())
     s = p.state if p.ok else None
     packet = {"자동 진행": None, "자동 이동": s and s.traveling,
-              "대화": s and (s.fresh or s.in_dialogue) and s.in_dialogue, "전투": s and s.in_combat}
+              "대화": s and s.in_dialogue, "전투": s and s.in_combat}
     for name, f in Activity.BUSY:
         pk, cli = packet[name], getattr(a, f)
         if pk:
@@ -132,16 +132,16 @@ def look(bot, frame=None, skip=(), ocr: bool = False) -> Seen:
     if bot.packets.ok and bot.packets.state.attending():
         # 패킷: 출석 대화 중 — 화면에 떠 있을 때만 출석으로. 건너뛰기가 뜨기 전 버튼 없는 대사(대화 창)도 출석이다
         # (hit 이 없으면 대사를 넘긴다). 신호만 있고 화면엔 없으면 다른 상황으로 본다 (끝 패킷이 없어 신호가 90초 남는다)
-        from ..tasks.dialogue import dialog_shown
-        if (m := f(bot.cfg["login"].get("attendance_skip"))) or dialog_shown(bot, frame):
+        from ..tasks import dialogue
+        if (m := f(bot.cfg["login"].get("attendance_skip"))) or dialogue.now(bot, frame).drawn:
             return Seen(ATTENDANCE, m, src="packet+screen", frame=frame)
     if f(ui.get("exit_dialog")) or f(ui.get("abyss_exit_dialog")):
         return Seen(EXIT_ASK, frame=frame)
     # 메인 HUD 가 보이면 창이 하나도 안 열린 것 — 창 템플릿(대부분 화면 전체를 뒤져 하나에 0.2초)을 건너뛴다.
     # HUD 가 보인 채로 뜨는 것(퀘스트 클리어 '확인'·화면 터치·연출)만 본다. 한 번 보는 데 2초 걸리던 것 (2026-10-26)
     if ui.get("main_hud") not in skip and bot.at_main(frame):
-        from ..tasks.dialogue import packet_state
-        if (p := packet_state(bot)) is not None and p.in_dialogue and bot.npc_owned():
+        from ..tasks import dialogue
+        if bot.npc_owned() and (p := dialogue.now(bot, frame).packet) is not None and p.in_dialogue:
             # 태스크가 건 대화가 막 열리는 중 (HUD 가 아직 남음). 태스크가 건 게 아닌 대화(끼어들기)는 창이 그려질 때까지
             # 없는 것으로 본다 — 신호만 남은 대화로 정리(settle)가 30초씩 헛기다리지 않게 (monitor.interrupts)
             return Seen(DIALOG, src="packet", frame=frame)
@@ -183,9 +183,9 @@ def look(bot, frame=None, skip=(), ocr: bool = False) -> Seen:
                        (CRAFT_GO, a["craft_go"]), (CRAFT_GO, a["craft_make"]), (CRAFT, a["craft_list"])):
         if (m := f(name)):
             return Seen(what, m, frame=frame)
-    from ..tasks.dialogue import packet_state, in_dialog
-    if in_dialog(bot, frame):
-        return Seen(DIALOG, src="packet" if packet_state(bot) is not None else "screen", frame=frame)
+    from ..tasks import dialogue
+    if (v := dialogue.now(bot, frame)).open:
+        return Seen(DIALOG, src=v.src, frame=frame)
     if bot.packets.ok and f(a["dialog_log"]):
         return Seen(FAREWELL, src="packet+screen", frame=frame)  # 패킷은 대화가 끝났다는데 '대화 기록' 이 남음
     if (hit := bot.skip_button(frame, skip)) and hit[0] == "scene":

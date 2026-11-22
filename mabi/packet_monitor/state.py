@@ -70,11 +70,17 @@ class PacketState:
     me_map: float = 0.0              # me 를 정한 맵 (그 맵의 entered_at) — 한 맵에서 한 번만 정한다
     my_name: str | None = None       # 접속한 캐릭터 이름 (내 등장 메시지에서). 캐릭터를 바꾸면 다음 맵 진입 때 새로 안다
     dialogue_npc: int | None = None  # 대화 중인 NPC 오브젝트 번호 (대화 중이 아니면 None)
-    # 지금 대사 뒤 할 일 (대사 내용의 dialogueAction): SelectKeyword 메뉴 버튼 · EndDialogue 작별 인사(눌러야 끝남) ·
-    # OpenNPCRepair 대장간 수리 창 · AfterRepair 수리 뒤 등. 대화가 아니면 ''
+    # 대화는 덩어리(step)로 온다 — 덩어리 하나에 대사 여러 쪽과 마지막 쪽 뒤 할 일. 쪽 넘김은 패킷이 없다. 아래는 지금 덩어리 것
+    # (판단은 tasks.dialogue.View 하나가 한다). 지금 덩어리 뒤 할 일 (dialogueAction): SelectKeyword 메뉴 버튼 ·
+    # AcceptQuest 알바 수락 · AchieveQuestObjective 보고 · EndDialogue 작별 인사(눌러야 끝남) · OpenNPCRepair 수리 창 등. 대화가 아니면 ''
     dialogue_action: str = ""
-    dialogue_step: int = 0           # 대사마다 1씩 오른다 — 눌러서 대사가 넘어갔는지 본다
-    dialogue_menu: bool = False      # NPC 메뉴(선택지 버튼)가 떠 있음 — 선택지가 하나 이상인 대사
+    dialogue_step: int = 0           # 덩어리마다 1씩 오른다 — 눌러서 넘어갔는지 본다
+    # 마지막 쪽에 메뉴(선택지 버튼)가 뜨는 덩어리 — 선택지가 하나 이상. None = 이 덩어리의 선택지 알림을 못 받음 (모름)
+    dialogue_menu: bool | None = False
+    dialogue_type: int | None = None  # 선택지 알림의 종류 (0 확인 · 1 선택지 · 2 퀘스트 수락 · 3 퀘스트 목표 달성) — 기록용
+    dialogue_choices: tuple[str, ...] | None = None  # 선택지 글자 차례대로 (None = 모름 — 알림을 못 받았거나 못 읽음)
+    dialogue_pages: int | None = None  # 지금 덩어리의 대사 쪽 수 (None = 모름)
+    dialogue_why: tuple[str, ...] = ()  # 지금 덩어리의 조건 (ArbeitReceiving · QuestObjectiveWaitingForAchieve …) — 기록용
     ai: str = ""                     # 내 캐릭터 자동 행동 (InteractAI = NPC 에게 다가가는 중)
     cutscene: bool = False           # 컷신(연출) 재생 중
     traveling: bool | None = None    # 내 자동 이동 중 (시작·끝은 나한테만 온다). 감시를 켠 뒤 한 번도 안 왔으면 None
@@ -107,7 +113,9 @@ class PacketState:
     # 사라지면 나간 것 — 11-03 흩어진 물길 26판: 판 도중 사라진 캐릭터가 다시 나타난 적 없고, 클리어 판의 사라짐은 모두 결과 뒤
     others: dict = field(default_factory=dict)
     other_out_at: float = 0.0        # 그중 하나가 결과 전에 사라진 때 (monotonic) — '파티원 퇴장 시 나감' (abyss.AbyssPlay)
-    changed_at: dict = field(default_factory=dict)  # CLI_FACTS 필드 → 패킷이 마지막으로 바꾼 때 (monotonic)
+    # 패킷이 마지막으로 바꾼 때 (monotonic) — CLI_FACTS 필드(막 바뀐 것은 CLI 로 맞추지 않는다), 매칭·컷신,
+    # 'dialogue' 는 지금 대화 덩어리가 온 때 (덩어리를 가르는 표 — tasks.dialogue 가 누른 수를 덩어리마다 센다)
+    changed_at: dict = field(default_factory=dict)
     extra: dict = field(default_factory=dict)
 
     PARTY_READY = 0x0B  # party_marks 의 준비 끝
@@ -142,6 +150,18 @@ class PacketState:
     @property
     def in_dialogue(self) -> bool:
         return self.dialogue_npc is not None
+
+    @property
+    def dialogue_known(self) -> bool:
+        """대화 칸을 믿어도 되나 — 감시를 켠 뒤 맵에 들어온 적이 있거나(그러면 '대화 없음' 도 믿는다) 대화 중이라고 받았다.
+        Bot.dialogue_playing 과 tasks.dialogue.View 가 같은 조건을 쓴다."""
+        return self.fresh or self.in_dialogue
+
+    def end_dialogue(self) -> None:
+        """대화 칸을 모두 처음 값으로 — 끝 패킷·맵 옮김·로그아웃·상태 잊기가 모두 이것 하나로."""
+        self.dialogue_npc, self.dialogue_action, self.dialogue_menu = None, "", False
+        self.dialogue_type = self.dialogue_choices = self.dialogue_pages = None
+        self.dialogue_why = ()
 
 
 def _snapshot(s: "PacketState") -> "PacketState":

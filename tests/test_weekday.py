@@ -49,15 +49,15 @@ def board_bot(acts):
     b.activity.side_effect = lambda max_age=1.0: now["act"]
     b.dialogue_playing.side_effect = lambda a=None: bool(now["act"])
     b.clicks = lambda: [c.args[0] for c in b.click.call_args_list]
-    b.skip_button.return_value = ("dialog", (1800, 45))  # 대화 창이 떠 있음 (dialogue.line_ready)
+    b.skip_button.return_value = ("dialog", (1800, 45))  # 대화 창이 떠 있음 (dialogue.View.ready)
     return b, look
 
 
 NEXT = (1800, 45)
 
 
-@mock.patch.object(weekday, "in_dialog", lambda bot: False)
-@mock.patch("mabi.tasks.dialogue.menu_shown", lambda bot: None)  # 패킷 없음 → CLI 선택 대기로
+# 대화가 끝났는지는 점검자의 메인 화면 + 대화 아님. 패킷이 없어 메뉴는 CLI 선택 대기로 본다 (tasks.dialogue.View)
+@mock.patch("mabi.tasks.dialogue.View.open", new=property(lambda self: False))
 @mock.patch("mabi.ocr.find_texts", lambda frame, region: CHOICES)
 @mock.patch("mabi.situation.clear_attendance", lambda bot, frame=None: None)
 class BoardTest(unittest.TestCase):

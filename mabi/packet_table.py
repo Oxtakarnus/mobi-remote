@@ -18,7 +18,7 @@ import re
 import struct
 import zlib
 from dataclasses import dataclass, field
-from functools import cache
+from functools import cache, lru_cache
 from pathlib import Path
 
 from . import paths, sjon
@@ -203,12 +203,93 @@ def sjon_strings(body: bytes, off: int = 0) -> list[str] | None:
     return None if s < 0 else sjon.strings(body, s)
 
 
+_NO_SJON = object()
+
+
+@lru_cache(maxsize=8)
+def _sjon_tree(body: bytes, off: int):
+    """대사 묶음(SJON)을 나무로 — 마디는 {'Name', 'Attributes', 'Text', 'Children'}. SJON 이 없으면 _NO_SJON, 못 풀면 None.
+    한 메시지의 여러 칸(쪽 경계 수·조건)이 같은 본문을 읽으므로 한 번만 푼다."""
+    s = body.find(b"SJON", off)
+    if s < 0:
+        return _NO_SJON
+    try:
+        return sjon.load_at(body, s)
+    except sjon.SjonError:
+        return None
+
+
+def _sjon_node(tree, name: str):
+    """나무에서 이름이 name 인 첫 마디 (깊이 먼저)."""
+    stack = [tree]
+    while stack:
+        n = stack.pop()
+        if not isinstance(n, dict):
+            continue
+        if n.get("Name") == name:
+            return n
+        stack.extend(reversed(n.get("Children") or []))
+    return None
+
+
+def _sjon_shape(body: bytes, off: int, typ: str, key: str):
+    """sjon_count: key 가 '부모/자식' 이면 첫 부모 마디의 바로 아래 자식 중 그 이름 수, 아니면 나무 전체의 그 이름 수.
+    sjon_kids: 이름이 key 인 첫 마디의 바로 아래 자식 이름들. SJON 이 없는 메시지는 0 · (), 못 풀면 None (표 문제로 남는다)."""
+    tree = _sjon_tree(body, off)
+    if tree is _NO_SJON:
+        return 0 if typ == "sjon_count" else ()
+    if tree is None:
+        return None
+    if typ == "sjon_kids":
+        node = _sjon_node(tree, key)
+        return tuple(c.get("Name", "") for c in (node or {}).get("Children") or [] if isinstance(c, dict))
+    parent, _, child = key.rpartition("/")
+    if parent:
+        node = _sjon_node(tree, parent)
+        return sum(1 for c in (node or {}).get("Children") or [] if isinstance(c, dict) and c.get("Name") == child)
+    count, stack = 0, [tree]
+    while stack:
+        n = stack.pop()
+        if isinstance(n, dict):
+            count += n.get("Name") == child
+            stack.extend(n.get("Children") or [])
+    return count
+
+
+def _str32list(body: bytes, off: int, at: int, size: int) -> tuple[str, ...] | None:
+    """off 의 u32 개수 + 항목마다 [at 바이트][u32 글자 바이트 수][UTF-16 글자][size 바이트]. 본문 끝과 꼭 맞고 글자가 깨끗할
+    때만 (칸이 밀리면 엉뚱한 글자가 나와 '우리 메뉴가 아님' 같은 판단을 그르친다) — 아니면 None."""
+    if off + 4 > len(body):
+        return None
+    n, i, out = struct.unpack_from("<I", body, off)[0], off + 4, []
+    if n > 64:
+        return None
+    for _ in range(n):
+        i += at
+        if i + 4 > len(body):
+            return None
+        m = struct.unpack_from("<I", body, i)[0]
+        i += 4
+        if m % 2 or i + m > len(body):
+            return None
+        s = body[i:i + m].decode("utf-16le", "replace")
+        if "�" in s or not s.isprintable():
+            return None
+        out.append(s)
+        i += m + size
+    return tuple(out) if i == len(body) else None
+
+
 def _read(body: bytes, off: int, typ: str, size: int = 0, at: int = 0, key: str = ""):
     if typ == "sjon":  # SJON 문자열 중 key 바로 다음 것. key 가 없으면 '' (그 대사엔 그 항목이 없음)
         strs = sjon_strings(body, off)
         if strs is None:
             return ""  # 대사 내용이 없는 메시지 (대화 끝 등)
         return next((strs[i + 1] for i in range(len(strs) - 1) if strs[i] == key), "")
+    if typ in ("sjon_count", "sjon_kids"):
+        return _sjon_shape(body, off, typ, key)
+    if typ == "str32list":
+        return _str32list(body, off, at, size)
     if typ in ("u64list", "u32list"):  # u32 개수 + size 바이트씩 — 각 항목 at 위치의 u64 (u32list 는 u32)
         fmt, w = ("<Q", 8) if typ == "u64list" else ("<I", 4)
         if off + 4 > len(body):

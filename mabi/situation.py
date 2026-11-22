@@ -69,9 +69,9 @@ def check_attendance(bot) -> None:
     s = bot.packets.state
     if not s.attending():
         return
-    from .tasks.dialogue import dialog_shown
+    from .tasks import dialogue
     frame = bot.frame()
-    if skip_attendance_button(bot, frame) or dialog_shown(bot, frame):
+    if skip_attendance_button(bot, frame) or dialogue.now(bot, frame).drawn:
         return  # 아직 화면에 있다 — 끼어들기가 넘긴다
     s.attendance_at = 0.0
     bot.log.info(f"오늘 출석은 {at} 에 이미 지나감 (패킷 하루 기록) → 남은 출석 신호 지움")
@@ -94,8 +94,9 @@ def clear_attendance(bot, frame=None) -> str | None:
     - 패킷이 없으면: 날짜가 바뀐 뒤(attendance_due)에 NPC 대화 중이고 대화 창에 넘기기 버튼이 없을 때만 가운데를 누른다
       (4초에 한 번 — 대사가 뜬 뒤 잠깐 입력을 안 받는다)"""
     from .monitor.handlers import Did  # 점검자가 이 모듈을 불러오므로 여기서
-    from .tasks.dialogue import dialog_shown
+    from .tasks import dialogue
     frame = bot.frame() if frame is None else frame
+    v = dialogue.now(bot, frame)
     c = bot.cfg["login"]
     p = bot.packets
     if (m := skip_attendance_button(bot, frame)):
@@ -108,7 +109,7 @@ def clear_attendance(bot, frame=None) -> str | None:
         # 대화 창이 떠 있을 때만 — 패킷은 대사 창이 그려지기 전에 오고(그때 가운데를 누르면 필드의 무언가가 눌린다) 끝 패킷이
         # 없어 90초 남는다. 신호만 보고 기다리던 때는 사용자가 직접 넘긴 출석에 막 시작한 숙제가 25초를 헛기다렸다
         # (2026-11-17 06:49). 창이 그려지면 그때 막힌 것으로 보고 넘긴다 (monitor.interrupts)
-        if not dialog_shown(bot, frame):
+        if not v.drawn:
             return None
         if time.monotonic() - bot.marks.attendance_clicked < 2:
             return Did.ATTEND_WAIT
@@ -117,7 +118,7 @@ def clear_attendance(bot, frame=None) -> str | None:
         return Did.ATTEND_LINE
     if not attendance_due(bot):
         return None
-    if not (p.ok and p.state.in_dialogue) or bot.skip_button(frame) or not dialog_shown(bot, frame):
+    if v.packet is None or not v.packet.in_dialogue or v.skip or not v.drawn:
         return None
     if time.monotonic() - bot.marks.attendance_clicked < 4:
         return None

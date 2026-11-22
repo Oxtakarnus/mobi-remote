@@ -48,6 +48,35 @@ class Events:
             self._relogin = False
         self.days.record(key, vals, self.state.char_id, name=self.state.my_name)
 
+    def _end_dialogue(self) -> None:
+        """대화가 끝남 (끝 패킷·맵 옮김·로그아웃) — 대화 칸을 처음 값으로, 아직 덩어리를 못 만난 선택지 알림도 버린다."""
+        self.state.end_dialogue()
+        self._prompt = None
+
+    def _dialogue_node(self, s, vals: dict) -> None:
+        """대화 덩어리 하나가 옴 — 덩어리 칸을 한꺼번에 바꾼다. 쪽 수는 대사 묶음의 쪽 경계(Next) + 1.
+        이 덩어리의 선택지 알림을 못 받았으면 메뉴는 모름(None) — 지난 덩어리 메뉴가 남지 않게."""
+        step = vals.get("step") or s.dialogue_step
+        breaks = vals.get("breaks")
+        s.dialogue_action, s.dialogue_step = vals.get("action") or "", step
+        s.dialogue_pages = breaks + 1 if isinstance(breaks, int) else None
+        s.dialogue_why = tuple(vals.get("why") or ())
+        s.changed_at["dialogue"] = time.monotonic()
+        prompt, self._prompt = self._prompt, None
+        if prompt is not None and prompt.get("step") == step:
+            self._apply_prompt(s, prompt)
+        else:
+            s.dialogue_menu, s.dialogue_type, s.dialogue_choices = None, None, None
+
+    @staticmethod
+    def _apply_prompt(s, vals: dict) -> None:
+        # 메뉴 버튼은 선택지가 있을 때만 뜬다. 대사 종류(type)만 보면 문게이트 정찰 결과 보고 뒤 대사(종류 3 '퀘스트 목표
+        # 달성', 선택지 0 — 눌러서 넘기는 대사)도 메뉴로 읽어, 버튼만 기다리며 ESC 를 13분 눌렀다 (2026-11-22 07:53~08:06)
+        s.dialogue_menu = bool(vals.get("choices"))
+        s.dialogue_type = vals.get("type")
+        labels = vals.get("labels")
+        s.dialogue_choices = tuple(labels) if labels is not None and len(labels) == vals.get("choices") else None
+
     def _apply(self, key: str, vals: dict) -> None:
         """이벤트 하나를 상태에 반영하고 기다리는 쪽을 깨운다. 잠금(self._cond) 안에서 부른다 (apply)."""
         s = self.state
@@ -83,7 +112,7 @@ class Events:
             if s.channel_type in OPEN_MAPS and s.dungeon_state not in (None, NOT_IN_DUNGEON):
                 s.dungeon_state = NOT_IN_DUNGEON
             # 대화는 맵을 옮기면 끝난다 — 끝 패킷 없이 끊긴 대화가 '대화 중' 으로 남아 끼어들기·정리가 헛돌지 않게
-            s.dialogue_npc, s.dialogue_action, s.dialogue_menu = None, "", False
+            self._end_dialogue()
             s.party_marks = {}  # 입장 진행은 맵을 옮기면 끝났다 (끝 알림을 놓쳤어도)
             s.others = {}  # 같은 판 사람은 맵마다 새로
             self.spear.reset(s.channel_type == ABYSS and MAP_NAME in (s.channel_name or ""))
@@ -94,7 +123,7 @@ class Events:
             s.drill_best = None  # 다음에 접속하는 캐릭터의 기록은 맵 진입 때 새로 온다
             s.dimensions_cleared = None  # 검은 구멍 깬 목록도 캐릭터마다 다르다 — 앞 캐릭터 것으로 '완료' 라 보지 않게
             s.attendance_at = 0.0
-            s.dialogue_npc, s.dialogue_action, s.dialogue_menu = None, "", False
+            self._end_dialogue()
             log.info("패킷: 로그아웃 → 캐릭터 선택 화면")
         elif key == "session.entered":  # 게임 서버 입장 (접속·서버 옮김). 맵 진입은 몇 초 뒤
             if s.in_game is False:
@@ -195,14 +224,16 @@ class Events:
             t = vals.get("target")
             s.dialogue_npc = None if t in (None, NO_TARGET) else t
         elif key in ("dialogue.cleared", "dialogue.force_end") or key == "dialogue.update" and vals.get("active") is False:
-            s.dialogue_npc = None
-            s.dialogue_action, s.dialogue_menu = "", False
+            self._end_dialogue()
         elif key == "dialogue.update":
-            s.dialogue_action, s.dialogue_step = vals.get("action") or "", vals.get("step") or s.dialogue_step
+            self._dialogue_node(s, vals)
         elif key == "dialogue.prompt":
-            # 메뉴 버튼은 선택지가 있을 때만 뜬다. 대사 종류(type)만 보면 문게이트 정찰 결과 보고 뒤 대사(종류 3 '퀘스트 목표
-            # 달성', 선택지 0 — 눌러서 넘기는 대사)도 메뉴로 읽어, 버튼만 기다리며 ESC 를 13분 눌렀다 (2026-11-22 07:53~08:06)
-            s.dialogue_menu = bool(vals.get("choices"))
+            # 선택지 알림은 늘 그 덩어리의 대사 진행 바로 앞에 온다 (11-05·11-15·11-20 캡처 모두) — 덩어리가 오면 같이 반영한다.
+            # 덩어리가 먼저 와 있으면(순서가 바뀐 때) 바로
+            if s.dialogue_menu is None and vals.get("step") == s.dialogue_step:
+                self._apply_prompt(s, vals)
+            else:
+                self._prompt = vals
         elif key == "char.personal_data":
             if vals.get("char_id") != s.char_id:  # 다른 캐릭터로 접속 — 맵에 들어가야 새 번호·이름을 안다
                 s.me = s.my_name = None

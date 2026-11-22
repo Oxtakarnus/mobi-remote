@@ -44,6 +44,27 @@ def load(b: bytes):
     return _Doc(b).root
 
 
+def sized(b: bytes, s: int = 0) -> int | None:
+    """s 에서 시작하는 SJON 의 바이트 수 (머리의 문자열 수·본문 낱말 수로 센다). 모양이 이상하면 None.
+    패킷의 대사 묶음은 뒤에 다른 바이트가 붙어 있어 길이를 알아야 load 로 풀린다."""
+    if b[s:s + 4] != b"SJON" or s + 16 > len(b):
+        return None
+    n, nw = struct.unpack_from("<II", b, s + 8)
+    if n > 100000 or s + 16 + 4 * n > len(b):
+        return None
+    end = struct.unpack_from("<I", b, s + 16 + 4 * (n - 1))[0] if n else 0
+    size = 16 + 4 * n + ((end + 3) & ~3) + 4 * nw
+    return size if s + size <= len(b) else None
+
+
+def load_at(b: bytes, s: int = 0):
+    """s 에서 시작하는 SJON 하나를 푼다 (뒤에 다른 바이트가 있어도). 못 풀면 SjonError."""
+    size = sized(b, s)
+    if size is None:
+        raise SjonError("SJON 길이를 알 수 없습니다")
+    return load(b[s:s + size])
+
+
 class _Doc:
     def __init__(self, b: bytes):
         if b[:4] != b"SJON" or len(b) < 16:

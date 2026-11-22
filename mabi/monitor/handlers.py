@@ -11,7 +11,6 @@ from dataclasses import dataclass
 from enum import StrEnum
 
 from .. import gamedata as gd, ocr, situation as sit
-from ..game_state import Activity
 from ..exceptions import StepTimeout, StopRequested
 from . import detect as d
 
@@ -83,74 +82,95 @@ def scene(bot, ctx, seen):
 
 
 def dialog(bot, ctx, seen):
-    """NPC 대화: 대사가 몇 마디든 '대화 넘기기' 자리를 누르면 넘어간다. 대사 내용으로 판단하지 않는다.
+    """NPC 대화: 판단은 tasks.dialogue.View 하나 — 여기서는 일마다 할 일만 고른다. 대사 내용으로 판단하지 않는다.
     날짜가 바뀐 뒤의 버튼 없는 첫 대사는 출석이다 (situation.clear_attendance)."""
     if not ctx.talk:
         return None
     if (done := sit.clear_attendance(bot, seen.frame)):
         return done
+    from ..tasks import dialogue
+    v = dialogue.now(bot, seen.frame)
+    v.audit()
     if ctx.leave:
-        return _leave_line(bot)
+        return _leave_line(bot, v)
     if ctx.choose:
-        from ..tasks.dialogue import menu_shown
-        return _choose(bot, ctx, menu_shown(bot))
+        return _choose(bot, ctx, v)
     if not ctx.menus:
-        return _dialog_blocker(bot, seen)
-    # 메뉴를 다루는 일 (아르바이트): 말을 건 직후 메뉴 버튼([수락]·[결과 보고])은 1~2초 늦게 뜬다 → 패킷이 대사라고 하면
-    # 바로 넘기고, 아니면 조금 기다렸다 다시 본다. 메뉴가 뜨기 전에 넘기기를 눌러 수락을 놓쳤다 (2026-10-26 10:34 콜헨)
-    # 버튼이 보이면 바로 Space. 넘길 대사('대화 넘기기' 버튼)가 남았으면 넘기고, 메뉴만 떠 있으면 오른쪽 위를 누르지 않고
-    # 버튼이 그려지길 기다린다 — 메뉴 앞에서 넘기기 자리를 거듭 누르며 30초 가까이 수락을 못 했다 (2026-10-28 08:00:42~08:01:11)
-    from ..tasks.dialogue import lines_left, menu_open, next_line
+        return _dialog_blocker(bot, seen, v)
+    return _job_menu(bot, ctx, v)
+
+
+def _job_menu(bot, ctx, v):
+    """메뉴를 다루는 일 (아르바이트): 우리 버튼([수락]·[결과 보고] — Space 배지)이 보이면 Space, 넘길 대사가 남았으면 넘기고,
+    메뉴만 떠 있으면 버튼이 그려지길 기다린다. 우리 메뉴가 아니면 대화 종료(ESC).
+    - 말을 건 직후 메뉴 버튼은 1~2초 늦게 뜬다 → 메뉴 덩어리면 3초까지 그림을 본다. 메뉴가 뜨기 전에 넘기기를 눌러 수락을
+      놓쳤다 (2026-10-26 10:34 콜헨). 메뉴 앞에서 넘기기 자리를 거듭 누르며 30초 가까이 수락을 못 했다 (2026-10-28 08:00)
+    - 버튼이 빛나는 애니메이션 중엔 템플릿 점수가 문턱에 못 미친다 → 버튼 줄 글자로도 확인하고 Space (2026-10-28 08:43·09:07
+      16초·30초씩 못 함, 11-02 09:16 사용자). 패킷이 넘길 대사가 남았다고 하면(여러 쪽 메뉴 덩어리) 버튼은 아직이라 읽지 않는다
+    - 우리 메뉴인지는 선택지 글자(패킷)로 바로 안다 — 아니면 기다리지 않고 대화 종료. 글자를 모르면 예전처럼 화면 글자로"""
+    from ..tasks import dialogue
     ctx.talked = True
     a = bot.cfg["arbeit"]
-    menu = menu_open(bot)
-    end = time.monotonic() + (3 if menu is not False else 0)
-    while True:
-        for name, key, stage in ((a["report"], "arb_report", "결과 보고"), (a["accept"], "arb_accept", "수락")):
-            if bot.exists(name):
-                ctx.note(key, stage)
-                bot.key("space")
-                return stage
-        if time.monotonic() > end or lines_left(bot):
-            break
-        bot.sleep(0.3, 0.4)
-    # 그림이 안 맞아도 버튼 줄 글자로 확인하고 Space ('수락'·'결과 보고' 에 Space 배지). 버튼이 빛나는 애니메이션 중엔
-    # 템플릿 점수가 문턱에 못 미친다 (2026-10-28 08:43·09:07 16초·30초씩 못 함). 예전엔 메뉴가 떴다고 패킷이 말할 때만
-    # 글자를 봐서, 패킷이 늦으면 '대사 넘김' 을 눌러 수락 메뉴를 지나쳤다 → 다시 지원 (2026-11-02 09:16 사용자)
-    texts = [ocr.nospace(t) for t, _, _ in ocr.find_texts(bot.frame(), gd.region("board_choices"))]
-    for word, key, stage, tpl in (("arbeit_report", "arb_report", "결과 보고", a["report"]),
-                                  ("arbeit_accept", "arb_accept", "수락", a["accept"])):
-        if any(gd.text(word) in t for t in texts):
-            # 그림으로 못 찾은 화면은 버튼 시험 화면 후보로 남긴다 (tools/button_fixture.py)
-            bot.log.debug(f"'{stage}' 버튼을 그림으로 못 찾아 글자로 확인 → Space ({bot.snapshot('missed_' + tpl).name})")
-            ctx.note(key, stage)
-            bot.key("space")
-            return stage
-    if menu and not lines_left(bot):
-        # 아르바이트가 아닌 일(클리어 뒤 정리 등)에서 뜬 NPC 메뉴는 우리 일이 아니다 → 대화 종료(ESC).
-        # 아르바이트여도 버튼이 늦게 그려지는 건 몇 초 — 계속 없으면 우리 메뉴가 아니다.
-        # 클리어 뒤 로나 메뉴(판의 조언·상점·대화 종료) 앞에서 3분 가까이 '메뉴 버튼 기다림' 만 했다 (2026-11-06 11:16)
-        # 연달아 기다린 횟수만 센다 — 지난번 메뉴에서 기다린 것이 남아 다음 메뉴를 일찍 닫지 않게 (판정 점검 2026-11-16)
-        now = int(time.monotonic())
-        waits = ctx.n.get("menu_wait", 0) if now - ctx.n.get("menu_wait_at", 0) <= MENU_WAIT_GAP else 0
-        ctx.n["menu_wait_at"] = now
-        if ctx.task != "arbeit" or waits >= 3:
-            ctx.n["menu_wait"] = 0
-            bot.log.info(f"우리 일이 아닌 NPC 메뉴 → 대화 종료 ({bot.snapshot('npc_menu_other').name})")
-            _esc(bot)
-            return "대화 종료"
-        ctx.n["menu_wait"] = waits + 1
-        bot.log.debug(f"메뉴는 떠 있는데 '수락'·'결과 보고' 버튼을 못 찾음 ({bot.snapshot('arbeit_menu').name})")
-        return "메뉴 버튼 기다림"
-    next_line(bot)
+    stages = (("arbeit_report", a["report"], "arb_report", "결과 보고"), ("arbeit_accept", a["accept"], "arb_accept", "수락"))
+    ours = v.has(*(gd.text(w) for w, *_ in stages))
+    if ours is not False:
+        end = time.monotonic() + (3 if v.menu is not False else 0)
+        while True:
+            for _w, tpl, key, stage in stages:
+                if bot.exists(tpl):
+                    ctx.note(key, stage)
+                    bot.key("space")
+                    return stage
+            if time.monotonic() > end or v.lines_left:
+                break
+            bot.sleep(0.3, 0.4)
+            v = dialogue.now(bot)
+        if not (v.lines_left and v.lines_src == "packet"):
+            texts = [ocr.nospace(t) for t, _, _ in ocr.find_texts(bot.frame(), gd.region("board_choices"))]
+            for word, tpl, key, stage in stages:
+                if v.has(gd.text(word)) is not False and any(gd.text(word) in t for t in texts):
+                    # 그림으로 못 찾은 화면은 버튼 시험 화면 후보로 남긴다 (tools/button_fixture.py)
+                    bot.log.debug(f"'{stage}' 버튼을 그림으로 못 찾아 글자로 확인 → Space ({bot.snapshot('missed_' + tpl).name})")
+                    ctx.note(key, stage)
+                    bot.key("space")
+                    return stage
+    if v.menu_up:
+        return _menu_wait(bot, ctx, v, ours)
+    dialogue.next_line(bot)
     return Did.LINE
 
 
-def _choose(bot, ctx, shown):
-    """선택지 중 ctx.choose 낱말이 든 것을 누른다. 선택지 버튼은 메뉴(패킷 · 없으면 CLI)가 켜진 뒤 조금 늦게 그려진다 →
-    버튼 줄을 글자로 읽고, 원하는 것이 없으면 아무거나 누르지 않고 기다린다 (시간 상한은 태스크 몫). 고른 뒤 남은 대사는 넘긴다."""
-    from ..tasks.dialogue import next_line
-    if "chosen" not in ctx.events and (shown if shown is not None else Activity.of(bot.activity()).selecting):
+def _menu_wait(bot, ctx, v, ours):
+    """메뉴는 떠 있는데 우리 버튼을 못 찾음. 우리 메뉴가 아니면(선택지 글자 · 아르바이트가 아닌 일) 바로 대화 종료(ESC) —
+    클리어 뒤 로나 메뉴(판의 조언·상점·대화 종료) 앞에서 3분 가까이 '메뉴 버튼 기다림' 만 했다 (2026-11-06 11:16).
+    아르바이트여도 버튼이 늦게 그려지는 건 몇 초 — 연달아 세 번 넘게 못 찾으면 대화 종료. 연달아 기다린 횟수만 센다 —
+    지난번 메뉴에서 기다린 것이 남아 다음 메뉴를 일찍 닫지 않게 (판정 점검 2026-11-16)."""
+    now = int(time.monotonic())
+    waits = ctx.n.get("menu_wait", 0) if now - ctx.n.get("menu_wait_at", 0) <= MENU_WAIT_GAP else 0
+    ctx.n["menu_wait_at"] = now
+    if ctx.task != "arbeit" or ours is False or waits >= 3:
+        ctx.n["menu_wait"] = 0
+        if ctx.task == "arbeit" and ours is not False:
+            bot.log.info(f"메뉴 버튼을 연달아 {waits}번 못 찾음 → 대화 종료 ({bot.snapshot('npc_menu_other').name})")
+        else:
+            seen = f"선택지 {'·'.join(v.choices)}" if v.choices else bot.snapshot("npc_menu_other").name
+            bot.log.info(f"우리 일이 아닌 NPC 메뉴 → 대화 종료 ({seen})")
+        _esc(bot)
+        return "대화 종료"
+    ctx.n["menu_wait"] = waits + 1
+    bot.log.debug(f"메뉴는 떠 있는데 '수락'·'결과 보고' 버튼을 못 찾음 ({bot.snapshot('arbeit_menu').name})")
+    return "메뉴 버튼 기다림"
+
+
+def _choose(bot, ctx, v):
+    """선택지 중 ctx.choose 낱말이 든 것을 누른다. 선택지 버튼은 메뉴가 켜진 뒤 조금 늦게 그려진다 → 버튼 줄을 글자로 읽고
+    (자리는 화면만 안다), 원하는 것이 없으면 아무거나 누르지 않고 기다린다 (시간 상한은 태스크 몫). 선택지 글자(패킷)에 그
+    낱말이 없으면 읽지 않고 기다린다. 고른 뒤 남은 대사는 넘긴다."""
+    from ..tasks import dialogue
+    if "chosen" not in ctx.events and v.menu_up:
+        if v.has(ctx.choose) is False:
+            bot.sleep(1, 1.3)
+            return Did.CHOICE_WAIT
         hit = next(((t, x, y) for t, x, y in ocr.find_texts(bot.frame(), gd.region(ctx.choose_region))
                     if ctx.choose in ocr.nospace(t)), None)
         if not hit:
@@ -160,40 +180,35 @@ def _choose(bot, ctx, shown):
         ctx.event("chosen")
         bot.sleep(1.2, 1.6)
         return f"선택지 '{hit[0]}'"
-    next_line(bot)
+    dialogue.next_line(bot)
     return Did.LINE
 
 
-def _leave_line(bot):
-    """대화를 마치는 중: 메뉴가 떠 있으면 ESC('대화 종료'), 대사(작별 인사 등 — ESC 로 안 넘어간다)면 넘기기 자리.
-    메뉴는 패킷, 모르면 CLI(선택 기다림)로 본다."""
-    from ..tasks.dialogue import menu_shown, next_line, step, wait_next
-    shown = menu_shown(bot)
-    if shown is None:
-        shown = bool(Activity.of(bot.activity()).selecting)
-    if not shown:
-        next_line(bot)
+def _leave_line(bot, v):
+    """대화를 마치는 중: 메뉴가 떠 있으면 ESC('대화 종료'), 아니면 넘기기 (작별 인사 등 — ESC 로 안 넘어간다)."""
+    from ..tasks import dialogue
+    if not v.menu_up:
+        dialogue.next_line(bot)
         return Did.LINE
-    before = step(bot)
+    before = v.step
     bot.key("esc")
-    if wait_next(bot, before, 3) is None:
+    if dialogue.wait_next(bot, before, 3) is None:
         bot.sleep(1.2, 1.6)
     return "대화 종료"
 
 
-def _dialog_blocker(bot, seen):
-    """기다리는 중에 끼어든 대화 (메뉴는 건드리지 않는다): 오른쪽 위 '대화 넘기기' 버튼이 보이거나, 패킷이 NPC 가 말을 걸어
-    왔고 메뉴는 없다고 할 때 대사를 넘긴다. 주간 목표('모험가 길드의 정기 의뢰')를 그 주에 처음 채우면 조작이 돌아오는 순간
-    에반이 찾아와 보상 이야기를 한다 — 나가기 뒤뿐 아니라 던전·사냥터 '다시 하기' 뒤 다음 판 안에서도 (사용자 2026-10-27).
+def _dialog_blocker(bot, seen, v):
+    """기다리는 중에 끼어든 대화 (메뉴는 건드리지 않는다): 대화 넘기기 버튼이 보이거나, 패킷이 NPC 가 말을 걸어 왔고 메뉴는
+    없다고 할 때 대사를 넘긴다. 주간 목표('모험가 길드의 정기 의뢰')를 그 주에 처음 채우면 조작이 돌아오는 순간 에반이 찾아와
+    보상 이야기를 한다 — 나가기 뒤뿐 아니라 던전·사냥터 '다시 하기' 뒤 다음 판 안에서도 (사용자 2026-10-27).
     뒤에서 도는 중이면 클릭이 게임을 앞으로 가져오므로 스스로 넘어가길 기다리고, 30초 넘게 그대로일 때만 누른다."""
-    from ..tasks.dialogue import dialog_shown, packet_state, menu_open
-
-    hit = bot.skip_button(seen.frame)
-    s = packet_state(bot)
-    # 대화 창이 떠 있을 때만 — HUD 가 보이면 창이 아직 안 열렸다(그때 '대화 넘기기' 자리를 누르면 HUD 버튼이 눌릴 수 있다).
+    from ..tasks import dialogue
+    s = v.packet
+    # 대화 창이 떠 있을 때만 — HUD 가 보이면 창이 아직 안 열렸다(그때 넘기기 자리를 누르면 HUD 버튼이 눌릴 수 있다).
     # 다른 창 위에서 '대화 중' 신호만 남은 때도 누르지 않는다 (2026-11-15 각인 강화 창 위에서 '대사 넘김')
-    talk = s is not None and s.in_dialogue and menu_open(bot) is False and dialog_shown(bot, seen.frame)
-    if not (hit and hit[0] == "dialog") and not talk:
+    talk = s is not None and s.in_dialogue and v.menu is False and v.drawn
+    xy = v.skip_xy
+    if xy is None and not talk:
         bot.marks.skip_seen = None
         return None
     if bot.behind():
@@ -204,11 +219,10 @@ def _dialog_blocker(bot, seen):
         if time.monotonic() - since < 30:
             return None
     bot.marks.skip_seen = None
-    if hit and hit[0] == "dialog":
-        bot.click(hit[1])
+    if xy is not None:
+        dialogue.tap(bot, xy, v)
         return Did.TALK_SKIP
-    from ..tasks.dialogue import next_line
-    next_line(bot)
+    dialogue.next_line(bot)
     return Did.LINE
 
 
