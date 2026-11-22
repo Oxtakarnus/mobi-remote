@@ -9,7 +9,9 @@ from pathlib import Path
 from unittest import mock
 
 from mabi.packet_monitor import PacketMonitor
+from mabi.packet_monitor import days
 from mabi.packet_monitor.days import DayLog
+from mabi.packet_table import load
 
 
 def at(s: str) -> datetime:
@@ -72,6 +74,22 @@ class RememberTest(unittest.TestCase):
         m.apply("channel.entering", {"channel": 3})  # 관찰 기록 (2026-11-22)
         m.apply("daily.attendance_start", {})
         self.assertEqual(rec, [("channel.entering", 15), ("daily.attendance_start", 15)])
+
+    def test_attendance_end_candidates_kept(self):
+        """출석 끝 신호 후보(출석부 갱신 넷)도 남기고, 출석 대화 시작 뒤 몇 초에 왔는지 로그에 쓴다 (2026-11-23)."""
+        for key in days.ATTENDANCE_END:
+            self.assertIsNotNone(load().by_key(key), key)
+        m = PacketMonitor(None)
+        m.state.char_id = 15
+        rec = []
+        m.days.record = lambda key, vals, char=None, name=None: rec.append(key)
+        m.apply("daily.attendance_start", {})
+        with self.assertLogs("mabi", "INFO") as cm:
+            for key in days.ATTENDANCE_END:
+                m.apply(key, {})
+        self.assertEqual(rec, ["daily.attendance_start", *days.ATTENDANCE_END])
+        self.assertEqual(len(cm.output), 4)
+        self.assertIn("출석 대화 시작 뒤", cm.output[0])
 
     def test_today_needs_running(self):
         m = PacketMonitor(None)

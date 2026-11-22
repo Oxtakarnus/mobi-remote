@@ -7,7 +7,7 @@ from collections import deque
 from ..game_state import FIELD_OUT, NOT_IN_DUNGEON
 from ..place import ABYSS, FIELD, FIELD_BOSS, OPEN_MAPS, is_instance
 from ..spear import MAP_NAME
-from .days import KEYS as DAY_KEYS
+from .days import ATTENDANCE_END, KEYS as DAY_KEYS
 from .state import CLI_FACTS, Seen, _snapshot
 
 log = logging.getLogger("mabi")
@@ -144,6 +144,11 @@ class Events:
         elif key == "daily.attendance_start":
             s.attendance_at = time.monotonic()
             log.info("패킷: 출석 대화 시작")
+        elif key in ATTENDANCE_END:
+            # 출석 끝 신호 후보 (실측 전, 11-23) — 출석 대화 시작 뒤 몇 초에 오는지 남긴다 (days.ATTENDANCE_END)
+            since = (f"출석 대화 시작 뒤 {time.monotonic() - s.attendance_at:.1f}초" if s.attendance_at
+                     else "출석 대화 시작 신호 없이")
+            log.info("패킷: 출석부 신호 %s (%s) — 출석 끝 신호 후보", key.split(".", 1)[1], since)
         elif key == "dungeon.state":
             s.dungeon_state = vals.get("state_name")
             log.info("패킷: 던전 상태 %s", s.dungeon_state)

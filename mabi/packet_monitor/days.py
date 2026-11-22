@@ -16,10 +16,16 @@ from pathlib import Path
 
 from ..profile import RESET_HOUR, game_date
 
+# 출석 끝 신호 후보 (실측 전, 2026-11-23) — 서버가 보내는 출석부 갱신 넷. 출석 대화 시작 뒤 언제 오는지 하루 기록과 로그에
+# 남겨, 대화가 끝날 때 오는 것이 있으면 끝 신호로 쓴다 (지금은 끝을 몰라 화면의 말풍선 모양·90초로 짐작한다). 게임이 보내는
+# '출석 끝' 메시지는 보내는 쪽 패킷이라 감시가 읽지 않는다
+ATTENDANCE_END = ("daily.attendance_update", "daily.attendance_add", "daily.attendance_remove",
+                  "daily.attendance_rewardable")
 # 하루 기록에 남기는 이벤트 — '오늘 이 신호가 있었나' 를 쓰는 판단이 생기면 여기에 넣는다 (Events._remember 가 거른다).
 # 이 밖에 리모콘 쪽 판단(judge.*)은 PacketMonitor.observe 가 남긴다 — 대화 판정 출처끼리 어긋남 judge.dialogue (tasks.dialogue)
 KEYS = frozenset({
     "daily.attendance_start",  # 출석 — observed.attendance_today (계정에 하루 한 번)
+    *ATTENDANCE_END,           # 출석 끝 신호 후보 (실측 전)
     # 관찰 기록 — 이어 할 때 멈춘 단계가 그사이 끝났는지 (observed 가 묻는다)
     "session.logout_ok",       # 로그아웃 → 캐릭터 선택 화면
     "char.personal_data",      # 접속한 캐릭터 (char 가 새 캐릭터 번호)
@@ -34,6 +40,8 @@ ROWS_MAX = 5000  # 기억하는 줄 수 상한 (since 가 본다)
 
 
 _SAY = {"session.logout_ok": "로그아웃", "char.personal_data": "접속", "daily.attendance_start": "출석",
+        "daily.attendance_update": "출석부 갱신", "daily.attendance_add": "출석부 추가",
+        "daily.attendance_remove": "출석부 빠짐", "daily.attendance_rewardable": "출석 보상 갱신",
         "channel.entering": "맵", "dungeon.state": "던전", "field.context": "사냥터", "drill.result": "드릴 클리어"}
 
 
