@@ -6,6 +6,7 @@ from unittest import mock
 
 from mabi.packet_monitor import PacketMonitor
 from mabi.place import DRILL
+from mabi.session import GameSession
 from mabi.tasks.abyss import AbyssRepeat
 from mabi.tasks.boss_skills import KINDS, BossSkills
 from mabi.tasks.raid import RaidRepeat
@@ -14,6 +15,9 @@ ABYSS = "InstanceAbyssDungeon"
 
 
 class FakeBot:
+    in_combat = GameSession.in_combat  # 전투 판정은 Bot 의 것 그대로
+    _act_state = GameSession._act_state
+
     def __init__(self):
         self.packets = PacketMonitor(None)
         self.packets.status = "running"

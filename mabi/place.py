@@ -13,7 +13,7 @@
 from dataclasses import dataclass
 
 from . import gamedata as gd
-from .game_state import Activity
+from .game_state import FIELD_OUT, Activity
 
 # 맵 종류 (패킷 channel_type 이름). 맵 종류 글자는 여기서만 적고 다른 모듈은 이 이름을 쓴다
 ABYSS = "InstanceAbyssDungeon"
@@ -21,6 +21,7 @@ RAID = "InstanceRaid"
 RAID_LOBBY = "InstanceRaidLobby"       # 출항선 (레이드마다 같은 맵)
 DUNGEON = "InstanceDungeon"
 DRILL = "InstanceBreakthroughDungeon"  # 나이트메어 드릴
+DIMENSION = "InstanceDimension"       # 검은 구멍 (사냥터·필드 안에서 들어간다)
 INSTANCE = "Instance"                  # 콘텐츠 맵(던전·어비스·레이드·드릴 …) 맵 종류의 머리 — is_instance
 FIELD = "BattleField"                  # 사냥터
 OPEN_FIELD = "Field"                   # 마을·일반 필드
@@ -35,10 +36,12 @@ OPEN_MAPS = (OPEN_FIELD, FIELD, FIELD_BOSS, HOUSING_INN, SCENARIO_FIELD)  # 던�
 # 맵 종류마다 CLI get_activity 가 답하는 (던전 안, 사냥터 안) — None 은 따지지 않음. 표에 없는 종류는 (None, False).
 # 패킷 맵이 CLI 와 어긋나나(packet_monitor.cli_sync.map_contradicts)를 이 표 하나로 본다 — 새 맵 종류는 여기 한 줄.
 # 어비스·레이드·드릴은 CLI 가 던전으로 치지 않아 던전 안팎을 보지 않는다. 필드 보스 영역은 사냥터를 거쳐 들어가
-# CLI 가 사냥터 안으로 답한다 (2026-11-16 — 어긋남으로 봐 맵을 지우자 전투가 '영역 밖으로 나옴' 으로 끝났다)
+# CLI 가 사냥터 안으로 답한다 (2026-11-16 — 어긋남으로 봐 맵을 지우자 전투가 '영역 밖으로 나옴' 으로 끝났다).
+# 검은 구멍·심층 던전도 사냥터 안에서 들어가면 CLI 가 사냥터 안으로 답해 사냥터 안팎을 보지 않는다 — 예전엔 들어갈 때마다
+# 맵을 지웠다 (11월 로그 검은 구멍 97번·심층 던전 50번, 점검 2026-11-22)
 CLI_FLAGS = {
     OPEN_FIELD: (False, False), FIELD: (False, True), FIELD_BOSS: (False, None),
-    HOUSING_INN: (False, False), SCENARIO_FIELD: (False, False), DUNGEON: (True, False),
+    HOUSING_INN: (False, False), SCENARIO_FIELD: (False, False), DUNGEON: (True, None), DIMENSION: (False, None),
 }
 INN_SUFFIX = "여관"   # CLI 장소 이름 '반호르 여관' — 여관 보관함 구역에선 CLI Housing.IsInHousing 이 false (2026-10-31 실측)
 
@@ -80,7 +83,7 @@ def place(bot) -> Place:
     if loading is not None:  # 패킷이 맵을 안다
         # 사냥터 상태를 모르면(CLI 맞춤·작업 시작 점검이 모름으로 돌림 — CLI 는 진행 중과 클리어 뒤를 못 가른다) 맵 종류로.
         # 예전엔 모름으로 둬 이어 하기가 사냥터 맵 안인 줄 몰랐다 (점검 2026-11-22)
-        field = (s.field_state != "NotInBattlefield" if s.field_state is not None
+        field = (s.field_state != FIELD_OUT if s.field_state is not None
                  else s.channel_type == FIELD if s.channel_type and not loading else None)
         return Place(loading, None if loading else (s.channel_type or None), "packet",
                      s.channel_name, s.dungeon_state, field)

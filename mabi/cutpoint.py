@@ -50,7 +50,7 @@ def safe(bot) -> bool:
     if not p.ok:
         return False
     s = p.state
-    return bool(not s.loading and s.channel_type == OPEN_FIELD and not s.abyss_matching and not s.dead)
+    return bool(not s.loading and s.channel_type == OPEN_FIELD and not s.matching and not s.dead)
 
 
 def check(bot, step: str) -> None:

@@ -31,8 +31,8 @@ from . import ui_text
 from ..screen import BASE_H, BASE_W, REG_KEYS, exclusive_fullscreen, is_16_9, screen_mode
 from ..bot import Bot
 from ..exceptions import DisplayFixFailed, MissingTemplate, StepTimeout
-from ..game_state import Activity
-from ..place import ABYSS, RAID, RAID_LOBBY
+from ..game_state import FIELD_INSIDE, Activity
+from ..place import ABYSS, FIELD_BOSS, RAID, RAID_LOBBY, is_instance
 
 WIDTH, HEIGHT = 1920, 1080
 SCALE = 80
@@ -336,12 +336,16 @@ def busy(bot: Bot) -> str:
     if p.ok:
         if st.dungeon_state in ("Entering", "InProgress", "Cleared"):
             return "던전 안"
-        if st.field_state in ("InProgress", "WaitingForChannelTransfer"):
+        if st.field_state in FIELD_INSIDE:
             return "사냥터 안"
-        if st.channel_type == ABYSS or st.abyss_result or st.abyss_matching in (1, 2, 3):
+        if st.channel_type == ABYSS or st.abyss_result or st.matching:
             return "어비스 안·매칭 중"
         if st.channel_type in (RAID, RAID_LOBBY):
             return "레이드 안·출항선"
+        # 드릴·검은 구멍·보스 영역 등 따로 들어가는 맵 — 예전엔 목록에 없어 드릴 안에서도 ESC 부터 눌렀다 (드릴 결과 창의 ESC 는
+        # '나가기', 점검 2026-11-22)
+        if is_instance(st.channel_type) or st.channel_type == FIELD_BOSS:
+            return f"콘텐츠 맵 안 ({st.channel_type})"
         if st.in_dialogue:
             return "NPC 대화 중"
     a = Activity.of(bot.activity())
@@ -386,7 +390,8 @@ class InterfaceFit:
             return False
         if not after_login and not bot.in_game():
             return False
-        if not after_login and (why := busy(bot)):
+        # 방금 접속했어도 콘텐츠 안일 수 있다 — 접속 단계는 살아 있는 캐릭터를 드릴 안에 남겨 그 구역부터 잇게 한다
+        if (why := busy(bot)):
             bot.log.info(f"{why} → 인터페이스 맞추기는 나중에")
             return False
         self.tried = True

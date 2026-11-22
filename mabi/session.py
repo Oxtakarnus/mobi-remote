@@ -29,7 +29,7 @@ SHOT_NAME = re.compile(r"\d{8}_\d{6}_.+\.png")  # snapshot() 이 붙이는 이�
 # 평균 차이로 본다 — 막힌 대화 앞 NPC·촛불 움직임은 이웃끼리 5 남짓, 다른 화면끼리는 대개 20 넘음 (2026-11-22 사진으로 잼)
 SHOT_SAME_GAP = 300.0
 SHOT_SAME_DIFF = 8.0
-LOADING_DOUBT = 20.0  # 패킷 로딩이 이보다 길면 새 맵 진입을 놓쳤나 CLI 로 본다 (map_loading)
+LOADING_DOUBT = packet_monitor.LOADING_DOUBT  # 패킷 로딩이 이보다 길면 새 맵 진입을 놓쳤나 CLI 로 본다 (map_loading)
 
 
 def prune_shots(shot_dir: Path, log=None, keep_days: int = SHOT_KEEP_DAYS) -> int:
@@ -235,7 +235,8 @@ class GameSession:
         """패킷으로 본 맵 로딩 중 여부 (맵을 떠났고 새 맵에 아직 안 들어감). 모르면 None —
         감시가 꺼졌거나 끊김, 또는 감시를 켠 뒤 아직 맵을 옮긴 적이 없음.
         로딩이 LOADING_DOUBT 초 넘게 가면 CLI 와 맞춰 본다 — 흐름이 끊겨 맵 진입 패킷을 놓치면 로딩 중이 그대로 남는다.
-        CLI 가 답하면(로딩 중엔 답하지 않는다) 게임 안이니 패킷은 모르는 것(None)으로 → 부르는 쪽이 CLI·화면으로."""
+        CLI 가 답하면(로딩 중엔 답하지 않는다) 게임 안이니 패킷은 모르는 것(None)으로 → 부르는 쪽이 CLI·화면으로.
+        이때 CLI 맞춤(merge_cli)이 패킷 상태의 로딩도 풀고 맵을 모름으로 돌린다 — 상태를 바로 읽는 곳도 같은 답을 본다."""
         p = self.packets
         if not p.ok or (p.state.channel is None and not p.state.loading):
             return None
@@ -281,9 +282,13 @@ class GameSession:
         a = self._act_state(act)
         return a.traveling and a.travel_left > 0
 
-    def in_combat(self, act: dict | None = None) -> bool:
-        """전투 중인가. 패킷(내 캐릭터 전투 상태)이 알면 그것, 모르면 CLI IsInCombat."""
+    def in_combat(self, act: dict | None = None, cli_first: bool = False) -> bool:
+        """전투 중인가. 패킷(내 캐릭터 전투 상태)이 알면 그것, 모르면 CLI IsInCombat. 전투 판정은 이것 하나로.
+        cli_first: 받아 둔 CLI 답(act)이 있으면 그것을 먼저 — 궁극기·변신(boss_skills)은 판 진행 루프가 방금 받은 답으로 본다
+        (예전엔 그쪽이 CLI 키를 직접 읽었다)."""
         p = self.packets
+        if cli_first and act:
+            return self._act_state(act).combat
         if p.ok and p.state.in_combat is not None:
             return p.state.in_combat
         return self._act_state(act).combat

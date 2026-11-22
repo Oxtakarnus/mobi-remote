@@ -57,6 +57,7 @@ class PacketState:
     boss_battle: bool = False
     dead: bool | None = None         # 내 캐릭터가 쓰러짐 (부활 창 열림). 나한테만 오는 부활 가능 여부로 안다
     dead_at: float = 0.0             # 쓰러진 때 (monotonic)
+    dead_src: str = ""               # 쓰러짐을 정한 것 — "actor"(쓰러짐 알림, 파티 판) · "revive"(부활 창) · "cli"
     revives_used: int | None = None  # 이 판에서 쓴 부활 횟수 (화면의 '남은 부활 횟수' = 최대 - 쓴 횟수)
     revives_max: int | None = None
     satiety: int | None = None
@@ -150,6 +151,11 @@ class PacketState:
     @property
     def in_dialogue(self) -> bool:
         return self.dialogue_npc is not None
+
+    @property
+    def matching(self) -> bool:
+        """우연한 만남 매칭 중인가 (요청·찾는 중·잡힘). 매칭 판정은 이것 하나로 — 곳마다 (1, 2, 3) 이나 참거짓으로 따로 봤다."""
+        return bool(self.abyss_matching)
 
     @property
     def dialogue_known(self) -> bool:

@@ -310,6 +310,15 @@ def _finish_inside(bot: Bot, cut: dict, kind: str | None) -> bool:
         return True
 
 
+def _clear_screen(bot: Bot) -> bool:
+    """클리어 화면(화면 터치)이나 보상 화면(나가기·다시 하기)이 보이나 — 판정은 clear.touch_prompt·detect.reward_button 하나로.
+    예전엔 그림 틀 둘(터치·나가기)만 봐서 반투명 터치 글자·'다시 하기' 만 있는 보상 화면을 놓쳤다 (점검 2026-11-22)."""
+    from ..monitor.detect import reward_button
+    from .clear import touch_prompt
+    frame = bot.frame()
+    return bool(touch_prompt(bot, frame) or reward_button(bot, frame))
+
+
 def _leave_dungeon(bot: Bot) -> bool:
     """던전 안이거나 클리어/보상 화면에 남아 있으면 (중단·충돌 뒤 다시 시작한 경우) 마무리하고 나온다."""
     from .clear import after_clear
@@ -318,7 +327,6 @@ def _leave_dungeon(bot: Bot) -> bool:
     from .steps import wait_until
     from .exits import leave_instance
     from ..place import ABYSS, DUNGEON, HOUSINGS, RAID, RAID_LOBBY, place
-    ui = bot.ui
     # 끊긴 숙제 — 접속 단계가 진행 기록을 'login' 으로 덮었으면 그 전 것(before)을 본다 (DailyState.interrupted).
     # 요일 던전이면 보상 화면에서 추가 루팅까지 (그냥 나가면 숙제 쪽은 일일 달성만 보고 끝내 추가 루팅이 빠진다)
     cut = cut_task(bot)
@@ -367,8 +375,7 @@ def _leave_dungeon(bot: Bot) -> bool:
             wait_field(bot, "", bot.cfg["silver"]["field_timeout"])
             return True
     state = dungeon_state(bot)  # 패킷, 모르면 CLI
-    reward = state == "Cleared" or state != "InProgress" and (bot.exists(ui["dungeon_touch"])
-                                                              or bot.exists(ui["reward_exit"]))
+    reward = state == "Cleared" or state != "InProgress" and _clear_screen(bot)
     if state is None and not reward and place(bot).kind == DUNGEON:
         # 던전 맵인데 상태를 모름 (CLI 가 답을 못 함) — '던전 아님' 으로 보면 다음 숙제가 던전 안에서 창을 열다 실패하고
         # 정리가 판을 버리고 나온다. 진행 중으로 보고 기다린다 (play_dungeon 이 상태를 모르면 화면으로 본다).

@@ -3,7 +3,7 @@ PacketMonitor 가 상속한다 (self.state · self._cond 를 쓴다)."""
 import logging
 import time
 
-from ..game_state import Activity
+from ..game_state import FIELD_OUT, Activity
 from ..place import ABYSS, CLI_FLAGS, RAID, RAID_LOBBY, is_instance
 
 log = logging.getLogger("mabi")
@@ -11,6 +11,7 @@ log = logging.getLogger("mabi")
 MATCH_KEEP = 600     # 작업 시작 점검: 이보다 오래전에 받은 매칭(요청·찾는 중)은 끝난 것으로 (초)
 CUTSCENE_KEEP = 120  # 작업 시작 점검: 이보다 오래전에 시작한 연출은 끝 신호를 놓친 것으로 (초)
 CLI_LAG = 5.0  # CLI 가 패킷보다 늦게 바뀌는 시간 (쓰러짐 약 3초, death1 실측) — 패킷이 이보다 최근에 바꿨으면 패킷을 믿는다
+LOADING_DOUBT = 20.0  # 패킷 로딩이 이보다 길면 새 맵 진입을 놓쳤나 CLI 로 본다 (Bot.map_loading · _merge_cli)
 
 
 def map_contradicts(channel_type: str, act: dict) -> bool:
@@ -39,6 +40,7 @@ class CliSync:
         self.gap_at = time.time()  # 이 전후의 관찰 기록은 빠졌을 수 있다 (seen_since 가 '없음' 을 믿지 않는다)
         s.channel, s.channel_type, s.channel_name = None, "", ""
         s.dungeon_state = s.field_state = s.dead = s.traveling = s.fast_travel_ok = s.combat = None
+        s.dead_src = ""
         s.abyss_matching, s.boss_battle, s.cutscene = 0, False, False
         s.others = {}  # 같은 판 사람도 — 놓친 사이 맵을 옮겼을 수 있다
         self._end_dialogue()
@@ -61,12 +63,19 @@ class CliSync:
         want = {
             "dungeon_state": a.dungeon or s.dungeon_state,
             # 사냥터 안이면 InProgress·WaitingForChannelTransfer 를 CLI 가 가르지 못한다 → 밖이라던 패킷만 모름으로
-            "field_state": ("NotInBattlefield" if not a.in_field
-                            else None if s.field_state == "NotInBattlefield" else s.field_state),
+            "field_state": (FIELD_OUT if not a.in_field else None if s.field_state == FIELD_OUT else s.field_state),
             "dead": a.dead,
         }
         out, fixed = [], False
         recent = min(asked_at, time.monotonic() - CLI_LAG)
+        # 로딩이 LOADING_DOUBT 넘게 가는데 CLI 가 답했다 (로딩 중엔 답하지 않는다) → 맵 진입을 놓쳤다. 로딩을 풀고 맵은 모름으로.
+        # 예전엔 Bot.map_loading 만 모름으로 보고, 상태를 바로 읽는 곳(끊는 자리·궁극기·파티 확인·이름 …)은 다음 맵 이동까지
+        # 로딩 중으로 봤다 (점검 2026-11-22)
+        if s.loading and asked_at - s.loading_at >= LOADING_DOUBT:
+            s.loading = False
+            s.channel, s.channel_type, s.channel_name = None, "", ""
+            out.append("로딩 → 끝 (맵 진입을 놓침, 맵 모름)")
+            fixed = True
         # 맵 종류도 CLI 와 맞춘다 (예전엔 작업 시작 점검에서만) — 흐름이 끊겨 맵 진입을 놓치면 틀린 맵에 머문다.
         # 막 들어온 맵은 CLI 가 늦게 따라오므로 둔다
         if not s.loading and s.entered_at < recent and map_contradicts(s.channel_type, act):
@@ -78,6 +87,8 @@ class CliSync:
             if cur == v or s.changed_at.get(f, 0.0) > recent:
                 continue
             setattr(s, f, v)
+            if f == "dead":
+                s.dead_src = "cli"
             out.append(f"{f} {cur} → {v}")
             fixed |= cur is not None
         if out:
@@ -121,10 +132,10 @@ class CliSync:
             a = Activity.of(act)
             s.dungeon_state = a.dungeon
             if not a.in_field:
-                s.field_state = "NotInBattlefield"
-            elif s.field_state in (None, "NotInBattlefield"):
+                s.field_state = FIELD_OUT
+            elif s.field_state in (None, FIELD_OUT):
                 s.field_state = None  # 사냥터 안인데 패킷은 밖이라 한다 → 모름
-            s.dead = a.dead
+            s.dead, s.dead_src = a.dead, "cli"
             s.traveling = a.traveling
             s.combat = "InCombat" if a.combat else "NonCombat"
             s.boss_battle = a.boss_battle

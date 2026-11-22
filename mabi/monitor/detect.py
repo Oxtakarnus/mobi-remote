@@ -96,7 +96,7 @@ REWARD_BUTTONS = ("reward_exit", "dungeon_retry")  # 보상 화면 버튼 (ui �
 def reward_button(bot, frame=None, find=None):
     """보상 화면('나가기' · '다시 하기')이 보이면 그 버튼 자리, 아니면 None. 보상 화면 판정은 이것 하나로 — 점검자(look)·
     어비스 단계(phase)·클리어 뒤 기다림(to_reward)이 같이 쓴다 (2026-11-16 점검: 셋이 버튼을 서로 다르게 봤다).
-    '화면을 터치해 주세요' 는 보상 화면 앞 단계라 넣지 않는다 (부르는 쪽이 따로 본다). find: 이미 잡은 화면에서 찾는 함수."""
+    '화면을 터치해 주세요' 는 보상 화면 앞 단계라 넣지 않는다 (clear.touch_prompt). find: 이미 잡은 화면에서 찾는 함수."""
     if find is None:
         frame = bot.frame() if frame is None else frame
 
@@ -116,10 +116,13 @@ def look(bot, frame=None, skip=(), ocr: bool = False) -> Seen:
         return Seen(LOADING, src="packet")
     if bot.packets.at_charselect():
         return Seen(CHARSELECT, src="packet")
-    if bot.packets.ok and bot.packets.state.dead and not bot.packets.state.abyss_result:
+    st = bot.packets.state
+    if bot.packets.ok and st.dead is not False and not st.abyss_result and bot.is_dead():
         # 사망 화면 위의 창은 부활한 뒤에 본다. 쓰러진 사이 판이 끝났으면(어비스 결과 — 파티가 보스를 잡음)
-        # 게임이 저절로 살려 준다 (사용자 2026-10-26) — 그 신호가 오기 전에도 부활하려 하지 말고 클리어 화면을 본다
-        return Seen(DEAD, src="packet")
+        # 게임이 저절로 살려 준다 (사용자 2026-10-26) — 그 신호가 오기 전에도 부활하려 하지 말고 클리어 화면을 본다.
+        # 쓰러짐은 Bot.is_dead 한 기준으로 — 패킷이 쓰러짐·모름이라 할 때만 묻는다 (살아 있다고 알면 CLI 를 묻지 않는다).
+        # 예전엔 패킷만 봐서, 일어남 신호를 놓치면 다음 CLI 맞춤까지 쓰러짐으로, 맵을 옮긴 뒤(모름)엔 쓰러져도 못 봤다
+        return Seen(DEAD, src="packet+cli")
     frame = bot.frame() if frame is None else frame
     from ..bot import server_down_shown
     if server_down_shown(frame):
@@ -147,7 +150,7 @@ def look(bot, frame=None, skip=(), ocr: bool = False) -> Seen:
             return Seen(DIALOG, src="packet", frame=frame)
         if (m := f(ui.get("confirm_green"))):
             return Seen(CONFIRM, m, frame=frame)
-        if (m := f(ui.get("reward_exit")) or f(ui.get("dungeon_retry"))):
+        if (m := reward_button(bot, find=f)):
             return Seen(REWARD, m, frame=frame)  # 사냥터 보상 화면은 HUD 가 보인 채로 뜬다
         if f(ui.get("dungeon_touch")):
             return Seen(TOUCH, frame=frame)

@@ -129,14 +129,15 @@ web/                          화면 (빌드 없이 <script> 여러 개가 같�
 | 얻은 것 재기 (캐릭터 접속 뒤 open, 그 캐릭터 끝에 close) | `queue_report.LootMeter` → `'loot'` 이벤트 | runner, Repeat(부르는 쪽 `daily_api._repeat_launch`), 큐 Kind 들이 같은 이벤트로 받음 |
 | 지금 어디인가 | `place.place(bot)` | 복구·나가기·시작 점검 |
 | 오늘·멈춘 뒤 그 캐릭터에게 있었던 일 (관찰 기록) — 하루 기록(`days`)·`seen_since` 를 직접 읽지 않는다 | `observed` — `attendance_today` · 멈춘 때 `stopped_at` · 끊긴 판을 떠났나 `left_since` · 사냥터 클리어 `field_cleared_since` · 심층 던전 클리어 `deep_cleared_since`·`deep_cleared_today` · 로그 한 줄 `since_line` | 출석(situation), 이어 하기 순서(runner), 끊긴 판(login.cut_task), 은동전, 공물 |
-| 맵 종류 이름 (패킷 channel_type) — 글자로 적지 않는다 | `place` 상수 `ABYSS`·`RAID`·`RAID_LOBBY`·`DUNGEON`·`DRILL`·`FIELD`(사냥터)·`OPEN_FIELD`(마을)·`FIELD_BOSS`·`OPEN_MAPS` · 콘텐츠 맵인가 `place.is_instance` | 패킷 감시, 끊는 자리, 어비스·레이드·드릴·필드 보스 |
+| 맵 종류 이름 (패킷 channel_type) — 글자로 적지 않는다 | `place` 상수 `ABYSS`·`RAID`·`RAID_LOBBY`·`DUNGEON`·`DRILL`·`DIMENSION`(검은 구멍)·`FIELD`(사냥터)·`OPEN_FIELD`(마을)·`FIELD_BOSS`·`OPEN_MAPS` · 사냥터 상태 `game_state.FIELD_*` · 콘텐츠 맵인가 `place.is_instance` | 패킷 감시, 끊는 자리, 어비스·레이드·드릴·필드 보스 |
 | CLI get_activity 읽기 (던전 상태·사냥터 안·쓰러짐·바쁨 …) — 키를 직접 읽지 않는다 | `game_state.Activity.of(act)` (`in_dungeon`·`in_field`·`busy` …) · Bot 안에서는 `_act_state` | 패킷 감시 맞추기, place, 점검자 idle, 태스크 |
 | 예외 (StepTimeout·CannotProceed·StopRequested·Stuck …) | `mabi/exceptions.py` (예전 자리 bot·content·monitor 에서 import 해도 같은 클래스) | 곳곳 |
 | 작업 시작 점검 (지난 패킷 상태를 믿지 않고 CLI 로 맞춤) | `bot.check_in()` | 모든 작업 시작·이어 하기 |
 | NPC 대화·메뉴·확인 창 처리 | `monitor` + `Ctx` (대사 내용이 아니라 메뉴·단계·버튼 글자로 판단) | 아르바이트·숙제 |
 | 점검자 처리 결과로 갈래 나누기 (기다림인가·수락했나) — 글자로 비교하지 않는다 | `monitor.Did` (StrEnum, 로그엔 글자 그대로) · 기다림 모음 `monitor.WAITS` | Bot.to_main, 접속, 어비스 정산, 아르바이트, 수리 |
 | NPC 대화가 지금 어떤가 (대화 중·창·넘길 대사·메뉴·버튼 글자) — 패킷 대화 칸·CLI 대화 키·대화 창 그림을 직접 보지 않는다 | `dialogue.now(bot, frame)` → `View` (`open`·`drawn`·`lines_left`·`menu_up`·`has` · 출처끼리 어긋남 `audit`) · 넘기기 `dialogue.tap`·`next_line` | 점검자, 끼어들기, 출석, 접속, 대장간, 요일 던전 |
-| '화면을 터치해 주세요' 글자 | `clear.touch_prompt_visible(bot, frame)` | 점검자, 클리어 뒤 |
+| 클리어 화면('화면을 터치해 주세요') · 보상 화면(나가기·다시 하기) — 템플릿을 직접 보지 않는다 | `clear.touch_prompt(bot, frame, ocr)` (그림 → 글자) · `detect.reward_button(bot, frame)` | 점검자, 클리어 뒤, 접속 정리, 던전·사냥터 기다림 |
+| 매칭 중 · 전투 중 · 쓰러짐 — 패킷 칸·CLI 키를 직접 보지 않는다 | `PacketState.matching` · `Bot.in_combat(act, cli_first)` · `Bot.is_dead(act)` | 어비스·뱅가드·끊는 자리, 궁극기, 점검자 |
 | 다른 모듈이 Bot 하나에 걸쳐 기억할 값 — bot 에 밑줄 속성을 붙이지 않는다 | `Bot.marks` (`bot.Marks` 에 칸을 더한다) · 점검자 `Bot.monitor` | 점검자, 출석, 아르바이트 |
 | 끼어들기 막는 구간 · F12 와 같은 일시정지 — stopper·_interrupting 을 직접 만지지 않는다 | `bot.no_interrupt()` · `bot.pause_as_key()` (`pause` 는 조작 사이 기본 대기) | 점검자 check, 네트워크 불안정 |
 | 화면 글자 찾기·누르기 (한 번 읽은 글자들에서 찾기는 `ui_text.match`) · 띄어쓰기 빼기 · 태그 지우기 | `tasks/ui_text` · `ocr.nospace` · `richtext.strip` | 곳곳 |

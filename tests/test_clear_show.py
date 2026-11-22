@@ -60,7 +60,7 @@ class ClearShowTest(unittest.TestCase):
         with mock.patch.object(clear, "clear_kind", return_value="dungeon"), \
                 mock.patch.dict(clear.CLEAR_KINDS, {"dungeon": (lambda st: True, lambda st: True)}), \
                 mock.patch.object(clear.time, "monotonic", clock), \
-                mock.patch.object(clear, "touch_prompt_visible", return_value=prompt_visible), \
+                mock.patch.object(clear, "touch_prompt", return_value=prompt_visible), \
                 mock.patch.object(clear, "handlers_touch", press("space")), \
                 mock.patch.object(clear, "tap_blank", press("blank")):
             clear._clear_show(bot, FakeMon(clock, menu_at=40, scene_at=scene_at), d, end=1000)
@@ -109,3 +109,20 @@ class TouchKeyTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TouchPromptTest(unittest.TestCase):
+    def test_image_then_text(self):
+        """클리어 화면 판정 하나 — 그림 틀이 맞으면 글자를 읽지 않고, 안 맞으면 글자(ocr)로. 반투명 글자라 그림만으론 놓친다."""
+        b = mock.MagicMock()
+        b.ui = {"dungeon_touch": "dungeon_touch"}
+        b.vision.has.return_value = True
+        b.vision.find.return_value = None
+        with mock.patch.object(clear, "touch_prompt_visible", return_value=True):
+            self.assertTrue(clear.touch_prompt(b, frame=1))
+            self.assertFalse(clear.touch_prompt(b, frame=1, ocr=False))
+        b.vision.find.return_value = (10, 10)
+        with mock.patch.object(clear, "touch_prompt_visible") as text:
+            self.assertTrue(clear.touch_prompt(b, frame=1))
+        text.assert_not_called()
+

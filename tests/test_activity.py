@@ -34,6 +34,11 @@ class ActivityTest(unittest.TestCase):
         self.assertFalse(map_contradicts("", {"Dungeon": {"State": "InProgress"}}))   # 맵을 모르면 어긋남이 아니다
         self.assertTrue(map_contradicts("InstanceDungeon", {}))                     # 던전 맵인데 CLI 는 던전 밖
         self.assertTrue(map_contradicts("Housing", {"Battlefield": {"IsInBattleField": True}}))   # 표에 없는 종류
+        # 검은 구멍·심층 던전은 사냥터 안에서 들어가 CLI 가 사냥터 안이라 한다 — 들어갈 때마다 맵을 지웠다 (점검 2026-11-22)
+        inside = {"Battlefield": {"IsInBattleField": True}}
+        self.assertFalse(map_contradicts("InstanceDimension", inside))
+        self.assertFalse(map_contradicts("InstanceDungeon", {**inside, "Dungeon": {"State": "InProgress"}}))
+        self.assertTrue(map_contradicts("InstanceDimension", {"Dungeon": {"State": "InProgress"}}))
 
 
 if __name__ == "__main__":

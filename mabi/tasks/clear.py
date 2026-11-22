@@ -4,6 +4,7 @@ import time
 from .. import gamedata as gd
 from ..bot import Bot
 from ..exceptions import StepTimeout
+from ..game_state import FIELD_CLEARED, FIELD_INSIDE
 from .space import dungeon_state
 from .ui_text import has_word
 
@@ -22,8 +23,19 @@ def cleared_now(bot: Bot, what: str) -> None:
         bot.on_clear()
 
 
+def touch_prompt(bot: Bot, frame=None, ocr: bool = True) -> bool:
+    """'화면을 터치해 주세요'(클리어 화면)가 보이나 — 그림 틀 → 글자(ocr). 판정은 이것 하나로 (점검 2026-11-22: 그림만·
+    글자만·둘 다로 세 갈래였다). 반투명 글자라 그림 틀로 자주 안 잡힌다 — 그림만 보다 클리어 화면 앞에 서 있었다 (뱅가드).
+    글자 읽기는 느려 자주 도는 판단(어비스 단계)은 ocr=False. 보상 화면(나가기·다시 하기)은 detect.reward_button."""
+    frame = bot.frame() if frame is None else frame
+    name = bot.ui.get("dungeon_touch")
+    if name and bot.vision.has(name) and bot.vision.find(frame, name):
+        return True
+    return bool(ocr) and touch_prompt_visible(bot, frame)
+
+
 def touch_prompt_visible(bot: Bot, frame=None) -> bool:
-    """'화면을 터치해 주세요' 글자가 보이나 (OCR, 느리다). frame 이 없으면 지금 화면을 찍는다. 점검자(detect.look)도 쓴다."""
+    """'화면을 터치해 주세요' 글자가 보이나 (OCR, 느리다) — touch_prompt 의 글자 쪽. 점검자(detect.look)가 그림을 따로 본 뒤 쓴다."""
     from ..ocr import read_ko, read_text
     frame = bot.frame() if frame is None else frame
     r = bot.cfg["dungeon"]["touch_text_region"]
@@ -55,8 +67,7 @@ def confirm_text(frame) -> tuple[int, int] | None:
 # 어비스는 abyss.to_reward 가 따로 (뒤에서 도는 작업이라 클릭 대신 키로)
 CLEAR_KINDS = {
     # 이름: (클리어 뒤 아직 그 안, 들어가 있음)
-    "field": (lambda s: s.field_state == "WaitingForChannelTransfer",
-              lambda s: s.field_state in ("InProgress", "WaitingForChannelTransfer")),
+    "field": (lambda s: s.field_state == FIELD_CLEARED, lambda s: s.field_state in FIELD_INSIDE),
     "dungeon": (lambda s: s.dungeon_state == "Cleared",
                 lambda s: s.dungeon_state in ("InProgress", "Cleared")),
 }
@@ -118,11 +129,11 @@ def _clear_show(bot: Bot, mon, d, end: float) -> None:
                 # 글자를 본 때만 Space, 보지 않고 누를 땐 빈 곳 (tap_blank — 메인 화면이면 Space 는 자동 전투)
                 gap = None if kind == "dungeon" and scened else 2.5 if blind < 3 else 10.0
                 due = gap is not None and time.monotonic() - touched > gap
-                if due or (blind >= 3 or scened) and touch_prompt_visible(bot):
+                if due or (blind >= 3 or scened) and touch_prompt(bot):
                     touched = time.monotonic()
                     blind += 1
                     (tap_blank if due else handlers_touch)(bot, ctx, seen)
-            elif touch_prompt_visible(bot):
+            elif touch_prompt(bot):
                 quiet = 0
                 handlers_touch(bot, ctx, seen)
             elif seen.what == d.MAIN:

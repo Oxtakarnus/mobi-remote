@@ -23,9 +23,9 @@ Npcap 이 없거나 표·키가 없으면 꺼진 채(status)로 있고, 봇은 �
 밖에서는 아래 이름을 이 패키지에서 가져다 쓴다. 낮은 부품(Stream·parse_tcp …)은 그 모듈에서.
 """
 from .capture import NPCAP_DIR
-from .cli_sync import CLI_LAG, map_contradicts
+from .cli_sync import CLI_LAG, LOADING_DOUBT, map_contradicts
 from .monitor import PacketMonitor, current, game_metadata, shared
 from .state import PacketState, Seen
 
-__all__ = ["NPCAP_DIR", "CLI_LAG", "map_contradicts", "PacketMonitor", "current", "game_metadata", "shared",
+__all__ = ["NPCAP_DIR", "CLI_LAG", "LOADING_DOUBT", "map_contradicts", "PacketMonitor", "current", "game_metadata", "shared",
            "PacketState", "Seen"]

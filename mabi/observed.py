@@ -8,6 +8,7 @@
 찾은 줄을 로그 글로 바꾸는 것은 describe (부르는 쪽도 observed.describe 로).
 """
 from . import gamedata as gd
+from .game_state import FIELD_CLEARED as _FIELD_CLEARED  # 사냥터 클리어 — 채널 옮김 대기로 바뀐다
 from .packet_monitor.days import day_start, describe, val
 from .place import OPEN_MAPS
 
@@ -15,7 +16,6 @@ ATTEND = "daily.attendance_start"
 JUDGE = "judge."  # 리모콘 쪽 판단 기록 (PacketMonitor.observe — 대화 판정 출처끼리 어긋남 judge.dialogue)
 # 끊긴 판을 떠났다고 볼 이벤트 — 로그아웃 · 다른 캐릭터로 접속 · 던전이 아닌 맵(마을 등) 진입 (left_since)
 _LEFT = ("session.logout_ok", "char.personal_data", "channel.entering")
-_FIELD_CLEARED = "WaitingForChannelTransfer"  # 사냥터 상태 — 클리어하면 채널 옮김 대기로 바뀐다
 
 
 # ---- 오늘 (게임 날짜, 오전 6시부터)

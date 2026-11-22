@@ -13,8 +13,9 @@ import time
 from .. import gamedata as gd
 from ..bot import Bot
 from ..exceptions import CannotProceed, StepTimeout
+from ..game_state import FIELD_CLEARED, FIELD_RUNNING
 from ..place import FIELD
-from .clear import after_clear, cleared_now, touch_prompt_visible
+from .clear import after_clear, cleared_now, touch_prompt
 from .fight import watch
 from .space import hunt_quest, wait_dungeon
 from .steps import wait_until
@@ -115,7 +116,6 @@ def play_dungeon(bot: Bot, clear_timeout: float, extra_loot: int = 0, again: str
 
 
 def _play_dungeon(bot: Bot, clear_timeout: float, extra_loot: int, again: str | None) -> str:
-    ui = bot.ui
     entered = wait_dungeon(bot, lambda s: s == "InProgress", bot.cfg["timing"]["loading"], interval=2)
     if entered == "":
         # '입장하기' 로 비용(은동전·공물)을 냈을 수 있다. 오류로 끝내면 정리가 던전에서 나가 버리므로, 던전 맵에 와 있으면
@@ -134,7 +134,7 @@ def _play_dungeon(bot: Bot, clear_timeout: float, extra_loot: int, again: str | 
             if state:
                 break
             if state is None:  # 패킷도 CLI 도 끊김 → 클리어 화면으로
-                bot.wait(ui["dungeon_touch"], timeout=max(1.0, end - time.monotonic()), interval=2.0)
+                wait_until(bot, lambda: touch_prompt(bot), max(1.0, end - time.monotonic()), 2.0, "클리어 화면")
                 state = "Cleared"
                 break
             watch(bot, ctx)  # 쓰러짐·끼어든 창
@@ -147,8 +147,8 @@ def _play_dungeon(bot: Bot, clear_timeout: float, extra_loot: int, again: str | 
         if result == "fail":
             bot.log.warning(f"던전 종료 상태: {state} → {bot.snapshot('dungeon_end').name}")
     else:
-        # CLI 를 못 쓰면 클리어 화면이 뜰 때까지 기다린다
-        bot.wait(ui["dungeon_touch"], timeout=clear_timeout, interval=2.0)
+        # CLI 를 못 쓰면 클리어 화면이 뜰 때까지 기다린다 (그림 틀만 보면 반투명 글자를 놓쳐 clear_timeout 까지 섰다)
+        wait_until(bot, lambda: touch_prompt(bot), clear_timeout, 2.0, "클리어 화면")
         result = "clear"
         cleared_now(bot, "던전")
 
@@ -182,7 +182,7 @@ def play_field(bot: Bot, place: str, clear_timeout: float, on_enter=None, again:
     bot.step("field_enter", f"{place} 사냥터 입장", place=place)
     bot.key("space")
     # 패킷이 먼저 (사냥터 상태 InProgress + 사냥터 맵 로딩 끝 — 상태는 로딩 전에 먼저 온다), 못 쓰거나 안 오면 CLI 퀘스트 목록
-    entered = bot.wait_packet(lambda s: s.field_state == "InProgress" and s.channel_type == FIELD and not s.loading,
+    entered = bot.wait_packet(lambda s: s.field_state == FIELD_RUNNING and s.channel_type == FIELD and not s.loading,
                               bot.cfg["timing"]["loading"])
     if not entered:
         wait_until(bot, lambda: bool(hunt_quest(bot, place)), bot.cfg["timing"]["loading"] if entered is None else 10,
@@ -198,7 +198,9 @@ def hunt_covered(bot: Bot) -> bool:
     HUD 가 가려지면 사냥 중이어도 '없음' 으로 나온다 (2026-10-23: 사냥 중 지도가 열려 클리어로 오판, 다음 던전으로 떠남).
     메인 화면도 클리어 화면(터치·보상 — 클리어하면 퀘스트가 사라진다)도 아니면 다른 창이 가린 것. 사냥터 판을 보는 곳
     (wait_field · 접속의 시작 정리)이 이 기준 하나를 쓴다."""
-    return not bot.at_main() and not bot.exists(bot.ui["reward_exit"]) and not touch_prompt_visible(bot)
+    from ..monitor.detect import reward_button
+    frame = bot.frame()
+    return not bot.at_main(frame) and not reward_button(bot, frame) and not touch_prompt(bot, frame)
 
 
 def wait_field(bot: Bot, place: str, clear_timeout: float, again: str | None = None) -> str:
@@ -211,18 +213,17 @@ def wait_field(bot: Bot, place: str, clear_timeout: float, again: str | None = N
     ctx = _in_ctx(bot, "사냥터 진행 중")
     # 패킷이 사냥터 상태를 알면 그걸로 — 클리어 순간(WaitingForChannelTransfer) 바로 안다. 퀘스트 목록으로 보는 아래 방식은
     # 3번 연속(15초+) 확인이 필요하고 창이 HUD 를 가리면 오판했다. 감시가 도중에 끊기면 아래 방식으로 넘어간다
-    while bot.packets.ok and bot.packets.state.field_state == "InProgress":
-        if bot.wait_packet(lambda s: s.field_state != "InProgress", 5):
-            bot.log.info(f"패킷: 사냥터 끝남 ({bot.packets.state.field_state})")
-            cleared_now(bot, "사냥터")
-            bot.step("field_reward", "사냥터 클리어 → 마무리")
-            return "again" if after_clear(bot, again=again) else "clear"
+    while bot.packets.ok and bot.packets.state.field_state == FIELD_RUNNING:
+        if bot.wait_packet(lambda s: s.field_state != FIELD_RUNNING, 5):
+            break
         watch(bot, ctx)
         if time.monotonic() > end:
             raise StepTimeout("사냥터 클리어 대기 시간 초과")
     # 끝남 신호가 watch 하는 동안 와서 위 wait_packet 이 못 봤어도 패킷은 이미 안다 — 아래 퀘스트 목록 방식(3번 · 15초+)으로
-    # 넘어가 클리어 화면 앞에 40초 가까이 서 있었다 (2026-10-28 08:32:43~08:33:21)
-    if bot.packets.ok and bot.packets.state.field_state is not None:
+    # 넘어가 클리어 화면 앞에 40초 가까이 서 있었다 (2026-10-28 08:32:43~08:33:21).
+    # 클리어는 '채널 옮김 대기' 만 — 예전엔 아는 상태면 다 끝남으로 봐, 사냥터를 떠난 것(밖)도 클리어로 셌다 (2026-11-01 12:53).
+    # 밖이거나 모르면 아래 퀘스트 목록 방식으로
+    if bot.packets.ok and bot.packets.state.field_state == FIELD_CLEARED:
         bot.log.info(f"패킷: 사냥터 끝남 ({bot.packets.state.field_state})")
         cleared_now(bot, "사냥터")
         bot.step("field_reward", "사냥터 클리어 → 마무리")

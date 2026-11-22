@@ -25,8 +25,25 @@ class InterfaceFitTest(unittest.TestCase):
         self.assertFalse(f.attempt(self.bot(in_game=False)))
         with mock.patch.object(display, "busy", return_value="어비스 안"):
             self.assertFalse(f.attempt(self.bot()))
-        with mock.patch.object(display, "prepare_interface", return_value="ok"):
+        # 방금 접속했으면 게임 안인지는 묻지 않지만, 콘텐츠 안(드릴에 남긴 캐릭터 등)인지는 본다 (점검 2026-11-22)
+        with mock.patch.object(display, "busy", return_value="콘텐츠 맵 안 (InstanceBreakthroughDungeon)"):
+            self.assertFalse(f.attempt(self.bot(in_game=False), after_login=True))
+        with mock.patch.object(display, "busy", return_value=""),                 mock.patch.object(display, "prepare_interface", return_value="ok"):
             self.assertTrue(f.attempt(self.bot(in_game=False), after_login=True))
+
+    def test_busy_in_content_maps(self):
+        """드릴·보스 영역·검은 구멍처럼 따로 들어가는 맵도 콘텐츠 안 — ESC 가 나가기가 될 수 있다."""
+        from mabi.packet_monitor import PacketState
+        b = mock.MagicMock()
+        b.packets.ok = True
+        for kind in ("InstanceBreakthroughDungeon", "FieldBoss", "InstanceDimension"):
+            b.packets.state = PacketState(channel=1, channel_type=kind)
+            self.assertIn("콘텐츠 맵 안", display.busy(b), kind)
+        b.packets.state = PacketState(channel=1, channel_type="Field")
+        b.activity.return_value = {}
+        b.cfg = {"black_hole": {"space_keyword": "검은 구멍"}}
+        with mock.patch("mabi.tasks.space.game_space", return_value="마을"):
+            self.assertEqual(display.busy(b), "")
 
     def test_failure_no_on_fit(self):
         fits = []

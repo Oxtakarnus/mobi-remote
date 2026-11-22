@@ -27,7 +27,7 @@ from ..monitor import detect as d, handlers
 from . import entry, press, ui_text
 from . import party as party_mod
 from .arrival import go_talk, wait_arrival, wait_settled, where_settled
-from .clear import touch_prompt_visible
+from .clear import touch_prompt
 from .fight import Fight
 from .exits import DungeonExit, Exit
 from .repeat import Repeat
@@ -75,7 +75,7 @@ def phase(bot: Bot):
             return None
         if st.channel_type != ABYSS:
             return "out"
-        return None if st.abyss_result or st.abyss_matching in (1, 2, 3) else "play"
+        return None if st.abyss_result or st.matching else "play"
 
     asked = []
 
@@ -98,7 +98,7 @@ def phase(bot: Bot):
     ui = bot.ui
     v = judge.decide(bot, "어비스", [
         ("패킷 로딩", lambda: "loading" if bot.map_loading() else None),
-        ("패킷 매칭", lambda: "matching" if p.ok and st.abyss_matching in (1, 2, 3) else None),
+        ("패킷 매칭", lambda: "matching" if p.ok and st.matching else None),
         ("화면 보상", lambda: "reward" if d.reward_button(bot, find=lambda n: on_screen(n) or None)
                                         or on_screen(ui.get("dungeon_touch")) else None),
         ("CLI 결과 연출", lambda: "reward" if cli_result() else None),
@@ -333,7 +333,7 @@ def enter(bot: Bot, dungeon: str, difficulty: str = "", at: str = "", solo: bool
         bot.key("space")
         if party:
             party_mod.confirm(bot)
-    ok = party_mod.started if party else (lambda s: s.abyss_matching in (1, 2, 3) or s.loading)
+    ok = party_mod.started if party else (lambda s: s.matching or s.loading)
     press.until(bot, push, press.signal(bot, ok, ENTER_TOOK, still=lambda: entry.visible(bot)),
                 "입장하기", tries=ENTER_TRIES, shot="abyss",
                 again=lambda: enter_screen(bot, dungeon, difficulty, at=where(bot, dungeon), solo=solo, party=party),
@@ -535,7 +535,7 @@ class AbyssPlay(Fight):
     def screen_end(self, seen):
         if not self.here and seen.what in (d.REWARD, d.TOUCH):
             return "clear"  # 클리어 연출로 HUD 가 사라졌다 (CLI 를 못 읽었을 때)
-        if not self.here and not seen.done and touch_prompt_visible(self.bot):
+        if not self.here and not seen.done and touch_prompt(self.bot):
             return "clear"
 
     def fighting(self, seen):
@@ -569,7 +569,7 @@ def to_reward(bot: Bot) -> str:
         seen = mon.check(ctx, guard=False, ocr=n % 2 == 0)
         if seen.finish:
             break
-        if not seen.done and seen.what in (d.MAIN, d.UNKNOWN) and touch_prompt_visible(bot):
+        if not seen.done and seen.what in (d.MAIN, d.UNKNOWN) and touch_prompt(bot):
             handlers.touch(bot, ctx, seen)  # 반투명 '화면을 터치해 주세요' (그림이 잘 안 맞는다)
         bot.sleep(1.5, 2.0)
     bot.sleep(1.5, 2.0)  # 보상 연출
@@ -790,7 +790,7 @@ class AbyssRepeat(Repeat):
         leader = self.party_role == "leader"
         if leader:  # 고정 파티: 인원이 모자라면 '도전하시겠습니까?' → 도전하기, 그 뒤 준비 UI
             party_mod.confirm(bot)
-        ok = party_mod.started if leader else (lambda s: s.abyss_matching in (1, 2, 3) or s.loading)
+        ok = party_mod.started if leader else (lambda s: s.matching or s.loading)
         for _ in range(2):  # 키가 안 들었으면 — 뒤에서는 키를 한 번 더, 앞에서는 누른다
             # 패킷: 매칭 상태(요청·찾는 중·잡힘)나 맵 로딩이 오면 눌린 것. 모르면 2~3초 뒤 화면의 '다시 하기' 버튼으로
             took = bot.wait_packet(ok, 3, since=bot.input_mark)

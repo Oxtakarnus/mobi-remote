@@ -191,3 +191,21 @@ class ContentExitTest(unittest.TestCase):
             self.assertEqual(cls.HOTKEY, "leave", cls.__name__)
         self.assertEqual(raid.RaidExit(to_field=True).HOTKEY, "leave")  # 필드로 나갈 때도 (예전 X 는 보관함 이동이 이어졌다)
         self.assertIsNone(drill.DrillExit.HOTKEY)
+
+
+class UnknownMapTest(unittest.TestCase):
+    def test_drill_and_boss_area_keep_unknown(self):
+        """감시가 켜져 있어도 맵을 모르면(그 안에서 리모콘을 다시 켬) '모름' → 안으로 보고 누른다. 예전엔 밖으로 알아
+        아무것도 누르지 않고 '나옴' 으로 끝냈다 (점검 2026-11-22)."""
+        from mabi.tasks import drill, field_boss
+        b = make_bot()
+        b.packets.ok = True
+        b.map_loading.return_value = None
+        for ex in (drill.DrillExit(), field_boss.FieldBossExit()):
+            self.assertIsNone(ex.where(b), ex.NAME)
+            self.assertTrue(ex.inside(b), ex.NAME)
+        b.map_loading.return_value = False
+        b.packets.state.channel_type = "Field"
+        self.assertIs(drill.DrillExit().where(b), False)
+        b.packets.state.channel_type = "FieldBoss"
+        self.assertIs(field_boss.FieldBossExit().where(b), True)

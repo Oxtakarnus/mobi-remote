@@ -81,8 +81,9 @@ def done(bot: Bot) -> bool | None:
     return growth_done(bot, GROWTH, "Weekly")
 
 
-def inside(bot: Bot) -> bool:
-    return on_map(bot, FIELD_BOSS) is True
+def inside(bot: Bot) -> bool | None:
+    """보스 영역 안인가 — 모름(감시 꺼짐·로딩·맵을 모름)은 None. '모름' 을 '밖' 으로 읽지 않는다 (place.on_map)."""
+    return on_map(bot, FIELD_BOSS)
 
 
 def _texts(bot: Bot, key: str) -> str:
@@ -212,21 +213,21 @@ def fight(bot: Bot) -> bool:
         seen = watch(bot, ctx, act)
         if not seen.done:
             bot.sleep(1.0, 1.3)
-    raise CannotProceed(f"필드 보스 결과가 {bot.cfg.get('field_boss', {}).get('fight_timeout', 900) // 60}분 안에 안 나옴 "
+    raise CannotProceed(f"필드 보스 결과가 {bot.cfg['field_boss']['fight_timeout'] // 60}분 안에 안 나옴 "
                         f"→ {bot.snapshot('fb_fight').name}")
 
 
 class FieldBossExit(Exit):
     """보스 영역에서 나간다: 여기서 나가기(Shift+Esc, 안 뜨면 오른쪽 위 나가기 — 던전과 다른 자리 fb_exit_button)
     → '영역에서 나가시겠습니까' 나가기(Space).
-    영역 밖이면 아무것도 누르지 않는다 (밖에서 그 자리를 누르면 다른 창이 열린다). 패킷이 없으면 안으로 보고 누른다."""
+    영역 밖이면 아무것도 누르지 않는다 (밖에서 그 자리를 누르면 다른 창이 열린다). 감시가 꺼졌거나 맵을 모르면 안으로 보고 누른다."""
     NAME, SNAP = "보스 영역", "fb_leave"
     TIMEOUT = 15  # 나가기 창을 띄우는 데 쓰는 시간 — 예전처럼 몇 번(누르기 + 3초)만 해 보고 그만둔다
 
-    UNKNOWN_INSIDE = True  # 패킷이 없으면 안으로 보고 누른다
+    UNKNOWN_INSIDE = True  # 감시가 꺼졌거나 맵을 모르면 안으로 보고 누른다
 
     def where(self, bot):
-        return inside(bot) if bot.packets.ok else None
+        return inside(bot)  # 모르면 UNKNOWN_INSIDE — 예전엔 감시가 켜져 있으면 맵을 몰라도 밖으로 봤다
 
     def dialog(self, bot, timeout):
         return ui_text.wait(bot, gd.text("fb_exit"), gd.region("fb_dialog"), timeout=max(0.0, timeout), exact=False)
@@ -253,8 +254,8 @@ def leave(bot: Bot) -> None:
 
 def fight_cut(bot: Bot, last: dict | None) -> bool:
     """보스와 싸우던 중에 끊긴 채(마지막 단계 기록 last 가 전투) 아직 보스 영역 안인가 — 숙제(run)와 접속의 시작
-    정리(finish_cut)가 이 한 기준으로 본다."""
-    return inside(bot) and (last or {}).get("step") == "fb_fight"
+    정리(finish_cut)가 이 한 기준으로 본다. 영역 안인지 모르면(리모콘을 그 안에서 다시 켜 맵을 모름) 끊긴 것으로 보지 않는다."""
+    return inside(bot) is True and (last or {}).get("step") == "fb_fight"
 
 
 def finish_cut(bot: Bot, cut: dict, kind: str | None) -> bool:

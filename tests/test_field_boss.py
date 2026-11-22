@@ -68,7 +68,8 @@ class SafeTest(unittest.TestCase):
     """끊어도 되는 곳 — 마을·일반 필드만. 따로 들어가는 곳·로딩·매칭·쓰러짐·모름은 아님."""
 
     def bot(self, ok=True, **st):
-        s = types.SimpleNamespace(**{"loading": False, "channel_type": "Field", "abyss_matching": 0, "dead": False, **st})
+        from mabi.packet_monitor import PacketState
+        s = PacketState(**{"loading": False, "channel_type": "Field", "abyss_matching": 0, "dead": False, **st})
         return types.SimpleNamespace(packets=types.SimpleNamespace(ok=ok, state=s))
 
     def test_safe(self):

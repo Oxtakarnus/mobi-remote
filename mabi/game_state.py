@@ -45,6 +45,11 @@ class GameState:
 
 
 NOT_IN_DUNGEON = "NotInDungeon"  # CLI Dungeon.State — 던전 밖 (안이면 Entering / InProgress / Cleared)
+# 패킷 사냥터 상태 (field.context). CLI 는 사냥터 안팎만 안다 (Battlefield.IsInBattleField) — 진행 중과 클리어 뒤를 못 가른다
+FIELD_OUT = "NotInBattlefield"
+FIELD_RUNNING = "InProgress"
+FIELD_CLEARED = "WaitingForChannelTransfer"  # 클리어 → 채널 옮김 대기 (보상·연출이 끝나면 나간다)
+FIELD_INSIDE = (FIELD_RUNNING, FIELD_CLEARED)
 
 
 @dataclass(frozen=True)

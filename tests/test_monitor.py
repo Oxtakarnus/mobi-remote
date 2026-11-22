@@ -27,6 +27,7 @@ def fake_bot():
     b.snapshot.return_value.name = "shot.png"
     b.background = False
     b.packets.ok = False
+    b.is_dead.return_value = False  # 쓰러짐은 Bot.is_dead 하나로 (detect.look 도)
     b.marks = Marks()
     b.no_interrupt = contextlib.nullcontext
     return b

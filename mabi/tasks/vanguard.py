@@ -62,7 +62,7 @@ def enter(bot: Bot) -> None:
     다시 읽지 않고 누르고, 매칭(어비스와 같은 패킷)·맵 로딩 신호로 본다 (press.until)."""
     bot.step("vg_enter", "뱅가드 브리치 입장 (우연한 만남)")
     press.until(bot, lambda: bot.key("space"),
-                press.signal(bot, lambda s: s.abyss_matching in (1, 2, 3) or s.loading, 12, still=lambda: _window(bot)),
+                press.signal(bot, lambda s: s.matching or s.loading, 12, still=lambda: _window(bot)),
                 "뱅가드 브리치 입장하기", shot="vg_enter")
     end = time.monotonic() + _cfg(bot)["match_timeout"]
     while time.monotonic() < end:

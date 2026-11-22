@@ -82,9 +82,11 @@ class BossSkills:
     def for_current(cls, bot: Bot, character: dict | None, boss_fight, name: str | None = None,
                     cfg: dict | None = None, inside=None) -> "BossSkills":
         """지금 접속한 캐릭터의 설정으로 — 반복(Repeat)·나이트메어 드릴·필드 보스가 같이 쓴다. character 는 고른 캐릭터
-        ({slot, name}, 없으면 None), name 은 지금 이름 (None 이면 패킷이 아는 내 이름). 슬롯 고르기는 slot_of."""
-        if name is None:
-            name = bot.packets.state.my_name if bot.packets.ok else ""
+        ({slot, name}, 없으면 None), name 은 지금 이름 (None 이면 login.current_name — 패킷 이름, 모르면 메인 화면 글자).
+        슬롯 고르기는 slot_of. 예전엔 패킷 이름만 봐서 리모콘을 다시 켠 뒤(이름 모름)엔 캐릭터별 설정 대신 기본값을 썼다."""
+        if name is None and not (character and character.get("slot") is not None):
+            from .login import current_name
+            name = current_name(bot)
         return cls.for_character(bot, bot.cfg if cfg is None else cfg, slot_of(bot, character, name or ""), boss_fight,
                                  inside)
 
@@ -122,8 +124,7 @@ class BossSkills:
         st = p.state
         if not p.ok or st.loading or st.cutscene or st.dead or not self.inside(st):
             return False
-        combat = act.get("IsInCombat") if "IsInCombat" in act else st.in_combat
-        if not combat:
+        if not self.bot.in_combat(act, cli_first=True):
             return False
         now = time.monotonic()
         boss = None  # 보스전인가 — '보스에서만' 기술이 있을 때만 본다

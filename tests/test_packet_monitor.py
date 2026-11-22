@@ -397,6 +397,8 @@ class MapWaitTest(unittest.TestCase):
         self.bot.state, self.bot._act_cache = FakeCli(["NotInDungeon"] * 3), None
         self.assertIsNone(self.bot.map_loading())  # CLI 가 답한다 → 게임 안, 패킷은 모르는 것으로
         self.bot.log.info.assert_called()
+        # 상태도 풀린다 — 상태를 바로 읽는 곳(끊는 자리·궁극기 …)도 다음 맵 이동까지 로딩 중으로 보지 않게 (점검 2026-11-22)
+        self.assertEqual((self.m.state.loading, self.m.state.channel, self.m.state.channel_type), (False, None, ""))
         self.assertIsNone(self.bot.wait_loaded(1))  # 모름 → 부르는 쪽이 CLI·화면으로 (오래 기다리지 않는다)
 
     def test_stale_signal_is_unknown(self):
@@ -456,6 +458,27 @@ class SessionTest(unittest.TestCase):
         m.apply("channel.entering", {"channel": 1, "channel_type": "Field"})
         self.assertFalse(m.state.loading)
 
+    def test_next_character_starts_without_content_state(self):
+        """로그아웃·다른 캐릭터로 접속하면 앞 캐릭터의 던전·사냥터 상태를 버린다. 마을·집에 들어오면 사냥터 밖,
+        사냥터 안에서 들어가는 검은 구멍은 사냥터 상태가 이어진다 (2026-11-16·11-20: CLI 가 몇 초 뒤 바로잡음)."""
+        m = PacketMonitor(None)
+        s = m.state
+        m.apply("field.context", {"state_name": "InProgress"})
+        m.apply("dungeon.state", {"state_name": "Cleared"})
+        m.apply("session.logout_ok", {})
+        self.assertEqual((s.field_state, s.dungeon_state), (None, None))
+        m.apply("channel.entering", {"channel": 1, "channel_type": "BattleField"})
+        self.assertEqual((s.field_state, s.dungeon_state), (None, "NotInDungeon"))  # 사냥터 상태는 알림·CLI 로
+        m.apply("field.context", {"state_name": "InProgress"})
+        m.apply("channel.entering", {"channel": 2, "channel_type": "InstanceDimension"})
+        self.assertEqual(s.field_state, "InProgress")
+        m.apply("channel.entering", {"channel": 3, "channel_type": "Field"})
+        self.assertEqual(s.field_state, "NotInBattlefield")
+        m.apply("char.personal_data", {"char_id": 5})
+        m.apply("field.context", {"state_name": "InProgress"})
+        m.apply("char.personal_data", {"char_id": 6})  # 다른 캐릭터
+        self.assertIsNone(s.field_state)
+
 
 class DeathTest(unittest.TestCase):
     def setUp(self):
@@ -487,6 +510,20 @@ class DeathTest(unittest.TestCase):
         self.assertTrue(self.m.state.dead)
         self.m.apply("revive.item_ok", {})
         self.assertFalse(self.m.state.dead)
+
+    def test_party_death_ignores_no_revive_window(self):
+        """파티 판은 쓰러짐 알림 바로 뒤 부활 가능 0 이 온다 (부활 창이 없음) — 그것으로 풀지 않는다. 예전엔 풀려 CLI 가
+        5~8초 뒤 다시 잡았다 (11-19 12:45:31). 일어남 알림으로 푼다."""
+        m, s = self.m, self.m.state
+        m.apply("char.appearing", {"actor": 9, "mine": True})
+        m.apply("actor.dead", {"actor": 9, "dead": True, "reason": 2})
+        m.apply("revive.availability", {"available": False})
+        self.assertTrue(s.dead)
+        m.apply("actor.dead", {"actor": 9, "dead": False, "reason": 0})
+        self.assertFalse(s.dead)
+        m.apply("revive.availability", {"available": True})  # 혼자 판: 부활 창으로 쓰러짐 → 0 이 풀어 준다
+        m.apply("revive.availability", {"available": False})
+        self.assertFalse(s.dead)
 
     def test_solo_death_and_revive_count(self):
         self.m.apply("revive.availability", {"available": True})
@@ -653,6 +690,37 @@ class KickTest(unittest.TestCase):
             m._server_notice("system.suspend_notify", 0, (100).to_bytes(4, "little"))
         m._link("10.0.0.1", 0x11)
         self.assertIsNone(m.kicked())
+
+
+
+class FieldWaitTest(unittest.TestCase):
+    """사냥터 클리어는 패킷 '채널 옮김 대기' 만 — 밖(NotInBattlefield)은 클리어가 아니다 (2026-11-01 12:53: 사냥터를 떠난 것을
+    클리어로 셈). 밖·모름이면 퀘스트 목록 방식으로 본다."""
+
+    def run_wait(self, state):
+        from unittest import mock
+        from mabi.tasks import dungeon
+        bot = mock.MagicMock()
+        bot.packets.ok, bot.packets.state.field_state = True, state
+        with mock.patch.object(dungeon, "hunt_quest", return_value="사냥 퀘스트"), \
+                mock.patch.object(dungeon, "watch"), mock.patch.object(dungeon, "_in_ctx"), \
+                mock.patch.object(dungeon, "after_clear", return_value=False), \
+                mock.patch.object(dungeon, "cleared_now") as cleared:
+            try:
+                return dungeon.wait_field(bot, "어딘가", 0), cleared
+            except Exception as e:  # noqa: BLE001 — 시간 초과를 돌려 보기 위해
+                return e, cleared
+
+    def test_cleared_by_packet(self):
+        got, cleared = self.run_wait("WaitingForChannelTransfer")
+        self.assertEqual(got, "clear")
+        cleared.assert_called_once()
+
+    def test_outside_is_not_clear(self):
+        from mabi.exceptions import StepTimeout
+        got, cleared = self.run_wait("NotInBattlefield")
+        self.assertIsInstance(got, StepTimeout)  # 퀘스트가 남아 있다 → 기다림 (여기선 시간 0 이라 바로 시간 초과)
+        cleared.assert_not_called()
 
 
 if __name__ == "__main__":

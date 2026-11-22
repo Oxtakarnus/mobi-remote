@@ -4,8 +4,8 @@ import logging
 import time
 from collections import deque
 
-from ..game_state import NOT_IN_DUNGEON
-from ..place import ABYSS, OPEN_MAPS, is_instance
+from ..game_state import FIELD_OUT, NOT_IN_DUNGEON
+from ..place import ABYSS, FIELD, FIELD_BOSS, OPEN_MAPS, is_instance
 from ..spear import MAP_NAME
 from .days import KEYS as DAY_KEYS
 from .state import CLI_FACTS, Seen, _snapshot
@@ -106,11 +106,15 @@ class Events:
             # 맵을 나가면(클리어 뒤 다시 하기·나가기) 궁극기·팔라딘 게이지가 처음으로 (사용자). 새 값이 오기 전에 지난 판 값을 믿지 않게
             if s.ult is not None:
                 s.ult = s.pal = 0.0
-            s.dead = None  # 쓰러진 채 맵을 옮기면 부활 신호가 안 올 수 있다 → 다시 쓰러질 때까지 CLI 로
+            s.dead, s.dead_src = None, ""  # 쓰러진 채 맵을 옮기면 부활 신호가 안 올 수 있다 → 다시 쓰러질 때까지 CLI 로
             # 마을·사냥터면 던전 밖이다. 던전을 나가는 패킷(NotInDungeon)을 놓치면 지난밤 'Cleared' 가 남아,
             # 아침에 접속 단계가 메인 화면을 던전 클리어 화면으로 알고 6명 모두 3분씩 헛돌았다 (2026-10-30 06:44)
-            if s.channel_type in OPEN_MAPS and s.dungeon_state not in (None, NOT_IN_DUNGEON):
+            if s.channel_type in OPEN_MAPS:
                 s.dungeon_state = NOT_IN_DUNGEON
+            # 마을·집·이야기 필드면 사냥터 밖이다 — 다른 캐릭터로 들어오면 앞 캐릭터의 사냥터 상태가 남아 CLI 가 몇 초 뒤에야
+            # 바로잡았다 (2026-11-16·11-20). 검은 구멍·심층 던전·보스 영역은 사냥터 안에서 들어가 그 상태가 이어진다
+            if s.channel_type and s.channel_type not in (FIELD, FIELD_BOSS) and not is_instance(s.channel_type):
+                s.field_state = FIELD_OUT
             # 대화는 맵을 옮기면 끝난다 — 끝 패킷 없이 끊긴 대화가 '대화 중' 으로 남아 끼어들기·정리가 헛돌지 않게
             self._end_dialogue()
             s.party_marks = {}  # 입장 진행은 맵을 옮기면 끝났다 (끝 알림을 놓쳤어도)
@@ -120,6 +124,7 @@ class Events:
         elif key == "session.logout_ok":  # 캐릭터 선택 화면으로 (me1 03:29:30 — 맵 떠남·세션 정리와 같은 때)
             s.in_game, s.loading = False, False
             s.me = s.my_name = None
+            s.dungeon_state = s.field_state = None  # 다음 캐릭터의 던전·사냥터는 맵 진입·CLI 로 다시 안다
             s.drill_best = None  # 다음에 접속하는 캐릭터의 기록은 맵 진입 때 새로 온다
             s.dimensions_cleared = None  # 검은 구멍 깬 목록도 캐릭터마다 다르다 — 앞 캐릭터 것으로 '완료' 라 보지 않게
             s.attendance_at = 0.0
@@ -240,6 +245,7 @@ class Events:
                 s.durability = None
                 s.recommend = None  # 앞 캐릭터의 추천 항목 (요일 던전 '안 함' 판단)이 남지 않게
                 s.dimensions_cleared = None  # 앞 캐릭터의 검은 구멍 깬 목록 (점검 2026-11-22)
+                s.dungeon_state = s.field_state = None  # 앞 캐릭터의 던전·사냥터 상태
             s.char_id = vals.get("char_id")
         elif key == "char.appearing":
             if vals.get("mine"):
@@ -266,15 +272,19 @@ class Events:
             if self.spear.active:
                 self._spear(key, vals)  # 흩어진 물길 주술사가 모두 쓰러지면 투창 패턴 끝
             if s.me is not None and vals.get("actor") == s.me:  # 파티 판에서는 부활 창 신호가 안 온다 (death1 03:10:24)
-                s.dead = bool(vals.get("dead"))
+                s.dead, s.dead_src = bool(vals.get("dead")), "actor"
                 if s.dead:
                     s.dead_at = time.monotonic()
                 log.info("패킷: 내 캐릭터 %s", "쓰러짐" if s.dead else "일어남")
         elif key == "revive.availability":
-            was, s.dead = s.dead, bool(vals.get("available"))
-            if s.dead:
-                s.dead_at = time.monotonic()
-            if s.dead or was:  # 맵에 들어갈 때마다 0 이 오므로 쓰러져 있다가 풀릴 때만 '부활'로 남긴다
+            was = s.dead
+            if vals.get("available"):
+                s.dead, s.dead_src, s.dead_at = True, "revive", time.monotonic()
+            elif not (was and s.dead_src == "actor"):
+                s.dead = False
+            # 파티 판은 부활 창이 없어 쓰러짐 알림 바로 뒤 0 이 온다 — 그것으로 풀면 쓰러짐이 5~8초 늦게 CLI 로 다시 잡혔다
+            # (11월 로그 16번 중 15번, 점검 2026-11-22). 쓰러짐 알림으로 쓰러진 것은 일어남 알림·부활 응답·CLI 로 푼다
+            if s.dead != was and (s.dead or was):  # 맵에 들어갈 때마다 0 이 오므로 쓰러져 있다가 풀릴 때만 '부활'로 남긴다
                 log.info("패킷: %s", "쓰러짐" if s.dead else "부활")
         elif key == "dimension.cleared":
             s.dimensions_cleared = vals.get("times")
@@ -287,7 +297,7 @@ class Events:
         elif key == "revive.count":
             s.revives_used, s.revives_max = vals.get("used"), vals.get("max")
         elif key in ("revive.checkpoint_ok", "revive.item_ok"):
-            s.dead = False
+            s.dead, s.dead_src = False, "revive"
         elif key == "cutscene.play":
             s.cutscene = True
             s.changed_at["cutscene"] = time.monotonic()

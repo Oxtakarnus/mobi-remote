@@ -48,8 +48,9 @@ def packet_best(bot: Bot) -> int | None:
     return p.state.drill_best
 
 
-def inside(bot: Bot) -> bool:
-    return on_map(bot, DRILL) is True
+def inside(bot: Bot) -> bool | None:
+    """드릴 구역 안인가 — 모름(감시 꺼짐·로딩·맵을 모름)은 None. '모름' 을 '밖' 으로 읽지 않는다 (place.on_map)."""
+    return on_map(bot, DRILL)
 
 
 def _texts(bot: Bot, key: str) -> list[str]:
@@ -214,10 +215,10 @@ class DrillExit(Exit):
     결과 창(의 '나가기' 버튼)을 확인 창 자리에 둔다. 안인지는 패킷 맵으로 — 모르면 안으로 보고 누르고, 다 나왔는지는 메인 화면으로."""
     NAME, SNAP, HOTKEY = "나이트메어 드릴", "drill_leave", None  # 결과 창의 나가기(ESC)라 여기서 나가기 키를 쓰지 않는다
 
-    UNKNOWN_INSIDE = True  # 패킷이 없으면 안으로 보고 누른다 (결과 창 '나가기' 라 다른 곳과 헷갈리지 않는다)
+    UNKNOWN_INSIDE = True  # 감시가 꺼졌거나 맵을 모르면 안으로 보고 누른다 (결과 창 '나가기' 라 다른 곳과 헷갈리지 않는다)
 
     def where(self, bot):
-        return inside(bot) if bot.packets.ok else None
+        return inside(bot)  # 모르면 UNKNOWN_INSIDE — 예전엔 감시가 켜져 있으면 맵을 몰라도 밖으로 봤다
 
     def dialog(self, bot, timeout):
         return (ui_text.wait(bot, gd.text("drill_exit"), gd.region("drill_result_buttons"), timeout=max(0.0, timeout))

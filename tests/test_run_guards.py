@@ -182,7 +182,9 @@ class FieldAtLoginTest(unittest.TestCase):
               mock.patch("mabi.tasks.space.game_space", return_value="센마이 평원"),
               mock.patch("mabi.tasks.space.hunt_quest", return_value=hunt),
               mock.patch("mabi.tasks.space.dungeon_state", return_value="NotInDungeon"),
-              mock.patch("mabi.tasks.dungeon.touch_prompt_visible", return_value=False),
+              mock.patch("mabi.tasks.dungeon.touch_prompt", return_value=False),
+              mock.patch("mabi.monitor.detect.reward_button", return_value=None),
+              mock.patch("mabi.tasks.login._clear_screen", return_value=False),
               mock.patch("mabi.tasks.dungeon.wait_field") as wf):
             login._leave_dungeon(b)
         return wf.called
