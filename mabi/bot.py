@@ -780,6 +780,8 @@ class Bot:
         포만감은 CLI 로 (Bot.satiety — SATIETY_EVERY 초마다 묻는다). 예전엔 부를 때마다 좌상단 음식 아이콘의 'B' 표시 그림을
         찾았다 — 그 표시는 게임 설정 '음식 바로 먹기 버튼 표시' 기준(기본 포만감 25%)에 뜬다 (사용자 2026-11-22). CLI 가 답하지
         않을 때만 예전처럼 'B' 표시로 본다.
+        표시가 떠도 게임은 포만감이 바닥 가까이여야 먹게 해 준다 — 2026-11-22 실측: 25~6% 에서는 아이템 사용 답이 없었고
+        4·3·2·0% 에서는 먹혔다 (먹은 뒤 포만감 100 + 남은 값). 그래서 eat_at 기본은 0 (사용자 2026-11-22).
         하루 횟수 제한은 없다 (예전 run.food_max=2 — 드릴에서 2번을 채운 뒤 배고파도 못 먹어 사용자가 없앰, 2026-11-08).
         음식이 없으면 (no_food) 누르지 않는다. 먹은 횟수는 기록만 한다. 일일 미션 쪽에서는 음식을 먹지 않는다."""
         slot = self.character["slot"] if self.character else None
@@ -789,7 +791,7 @@ class Bot:
         if self.no_food(look=False):
             return False
         ratio = self.satiety()
-        if ratio is None:  # CLI 가 답하지 않음 → 화면의 'B' 표시
+        if ratio is None:  # CLI 가 답하지 않음 → 화면의 'B' 표시 (25% 부터 떠서 바닥 전엔 못 먹고 EAT_GAP 마다 다시 누른다)
             name = self.ui.get("food_b")
             if not name or not self.vision.has(name) or not self.exists(name):
                 return False

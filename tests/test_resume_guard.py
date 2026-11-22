@@ -1,6 +1,8 @@
 """리모콘을 콘텐츠 안에서 켜 패킷이 아직 맵을 모를 때·이어 하기 때 지금 상태를 잘못 보지 않는지."""
 import logging
+import tomllib
 import unittest
+from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
 
@@ -60,11 +62,11 @@ class BusyTest(unittest.TestCase):
         self.assertEqual(display.busy(bot_with(PacketState(), act={}, space="던바튼")), "")
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 class EatTest(unittest.TestCase):
+    # 기준은 진짜 기본 설정에서 읽는다 — 기본을 바꾸면 게임에서 본 것(6% 안 먹힘·0% 먹힘)과 바로 대 본다
+    EAT_AT = tomllib.loads((Path(__file__).resolve().parent.parent / "config.default.toml")
+                           .read_text(encoding="utf-8"))["game"]["eat_at"]
+
     def _bot(self, came, ratio=None, shown=True, food=True):
         from mabi.bot import Bot
         keys, looked = [], []
@@ -81,25 +83,27 @@ class EatTest(unittest.TestCase):
             return shown
 
         b = SimpleNamespace(ui={"food_b": "food_b"}, vision=SimpleNamespace(has=lambda n: True), character=None,
-                            daily=None, cfg={"run": {}, "game": {"eat_at": 25}}, no_food=lambda look=True: look and not food,
+                            daily=None, cfg={"run": {}, "game": {"eat_at": self.EAT_AT}}, no_food=lambda look=True: look and not food,
                             exists=exists, satiety=lambda **kw: ratio, looked=looked,
                             packets=pk, key=keys.append, log=logging.getLogger("test"), sleep=lambda *a: None)
         return b, keys, Bot.eat_if_hungry
 
     def test_cli_satiety_decides_without_screen(self):
-        """포만감은 CLI 로 — 기준(게임 기본 25%) 아래면 그림 없이 먹고, 위면 화면을 보지도 않는다 (사용자 2026-11-22)."""
-        b, keys, eat = self._bot(came=True, ratio=0.2, shown=False)
+        """포만감은 CLI 로 — 기준 아래면 그림 없이 먹고, 위면 화면을 보지도 않는다 (사용자 2026-11-22).
+        기본 기준은 0% — 바로 먹기 버튼이 뜨는 25% 부터 누르면 6% 까지 안 먹혀 1분마다 B·경고만 남았다 (실측 2026-11-22)."""
+        b, keys, eat = self._bot(came=True, ratio=0.0, shown=False)
         self.assertTrue(eat(b))
         self.assertEqual((keys, b.looked), (["b"], []))
+        for ratio in (0.06, 0.25):  # 버튼은 떠 있지만 게임이 안 받는 곳
+            b, keys, eat = self._bot(came=True, ratio=ratio)
+            self.assertFalse(eat(b))
+            self.assertEqual((keys, b.looked), ([], []))
         b, keys, eat = self._bot(came=True, ratio=0.5)
-        self.assertFalse(eat(b))
-        self.assertEqual((keys, b.looked), ([], []))
-        b, keys, eat = self._bot(came=True, ratio=0.5)
-        b.cfg["game"]["eat_at"] = 50  # 게임 설정을 50% 로 바꿨으면
+        b.cfg["game"]["eat_at"] = 50  # 설정에서 기준을 올렸으면
         self.assertTrue(eat(b))
 
     def test_hungry_without_food_does_not_press(self):
-        b, keys, eat = self._bot(came=True, ratio=0.1, food=False)  # 음식 없음 표시 → B 는 제작 창을 연다
+        b, keys, eat = self._bot(came=True, ratio=0.0, food=False)  # 음식 없음 표시 → B 는 제작 창을 연다
         self.assertFalse(eat(b))
         self.assertEqual(keys, [])
 
@@ -110,7 +114,7 @@ class EatTest(unittest.TestCase):
 
     def test_eat_confirmed_by_my_use_reply(self):
         """먹었나는 내 요청의 답(아이템 사용)으로 — 함께하기에선 남이 먹은 포만감 알림도 온다 (점검 2026-11-22)."""
-        b, keys, eat = self._bot(came=True, ratio=0.1)
+        b, keys, eat = self._bot(came=True, ratio=0.0)
         self.assertTrue(eat(b))
         self.assertEqual(b.packets.waited[0], "item.use_ok")
 
@@ -142,3 +146,7 @@ class SpearForegroundTest(unittest.TestCase):
             r = abyss.AbyssRepeat(mock.MagicMock(), cfg)
             r.setup()
             self.assertIs(r.behind, behind)
+
+
+if __name__ == "__main__":
+    unittest.main()
