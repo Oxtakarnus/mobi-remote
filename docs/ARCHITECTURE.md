@@ -139,6 +139,7 @@ web/                          화면 (빌드 없이 <script> 여러 개가 같�
 | 클리어 화면('화면을 터치해 주세요') · 보상 화면(나가기·다시 하기) — 템플릿을 직접 보지 않는다 | `clear.touch_prompt(bot, frame, ocr)` (그림 → 글자) · `detect.reward_button(bot, frame)` | 점검자, 클리어 뒤, 접속 정리, 던전·사냥터 기다림 |
 | 빠른 이동(T)이 먹었나 · 음식을 먹었나 — 누른 것으로 끝내지 않는다 | `Bot.fast_travel` (예약 답 `fast_travel.reserve_ok`·예약 상태) · `Bot.eat_if_hungry` (아이템 사용 답 `item.use_ok`) | 모든 이동, 메인 화면·싸우는 동안 |
 | 배고픔 — 화면 'B' 표시를 바퀴마다 찾지 않는다 | `Bot.satiety()` (CLI get_my_info Vitals, 30초마다) · 기준 `[game] eat_at` (기본 25%) | `Bot.eat_if_hungry` (메인 화면·싸우는 동안) |
+| 고정 파티가 가득 찼나 — 모자라면 파티장이 우연한 만남으로 채우고 다른 던전 가기로 다시 | `party.size` (패킷 파티 정보 인원 + 들어옴·빠짐) · `AbyssRepeat.party_chance` · `abyss.other_dungeon` | 어비스 고정 파티장 |
 | 보스 영역 안인가 — 패킷 맵, 모르면 CLI 가 사냥터 밖일 때만 밖 | `field_boss.inside` · 끊긴 전투 `field_boss.fight_cut` | 필드 보스, 접속 정리 |
 | 매칭 중 · 전투 중 · 쓰러짐 — 패킷 칸·CLI 키를 직접 보지 않는다 | `PacketState.matching` · `Bot.in_combat(act, cli_first)` · `Bot.is_dead(act)` | 어비스·뱅가드·끊는 자리, 궁극기, 점검자 |
 | 다른 모듈이 Bot 하나에 걸쳐 기억할 값 — bot 에 밑줄 속성을 붙이지 않는다 | `Bot.marks` (`bot.Marks` 에 칸을 더한다) · 점검자 `Bot.monitor` | 점검자, 출석, 아르바이트 |

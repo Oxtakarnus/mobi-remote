@@ -189,17 +189,32 @@ class Events:
             had = s.party_id
             s.party_id = vals.get("party") or 0
             s.party_leader = vals.get("leader") if s.party_id else None
+            size = vals.get("size") if s.party_id else 0
+            if s.party_id and size is not None and size != s.party_size:
+                log.info("패킷: 파티 %d명", size)
+            s.party_size = size
             if not s.party_id:
                 s.party_marks = {}
                 if had:
                     s.party_out_at = time.monotonic()
                     log.info("패킷: 파티가 없어짐")
+        elif key == "party.member_add":
+            if s.party_size is not None:
+                s.party_size += 1
+            log.info("패킷: 파티원이 들어옴 (%s명)", s.party_size if s.party_size is not None else "?")
         elif key == "party.member_out":
             s.party_out_at = time.monotonic()
+            if s.party_size:
+                s.party_size -= 1
             log.info("패킷: 파티원이 파티에서 나감")
         elif key == "party.left":
             s.party_out_at = time.monotonic()
+            s.party_size = 0
             log.info("패킷: 내가 파티에서 나감")
+        elif key in ("party.restore", "party.restore_data"):
+            # 우연한 만남(전 서버 매칭) 뒤 원래 파티를 되살리는 것으로 보이는 이름 — 아직 받아 본 적 없다. 고정 파티로 우연한
+            # 만남을 돌 때 오는지 보려고 남긴다 (사용자 2026-11-22 고정 파티 우연한 만남)
+            log.info("패킷: 우연한 만남 파티 복구 신호 %s %s", key, vals or "")
         elif key == "party.leader":
             s.party_leader = vals.get("leader")
             log.info("패킷: 파티장 바뀜 (%s)", "나" if s.party_leader == s.char_id else "다른 파티원")

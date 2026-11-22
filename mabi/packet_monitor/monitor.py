@@ -321,6 +321,7 @@ class PacketMonitor(LinkWatch, CliSync, Events):
             self.look.personal(body)
         elif ev.key == "party.info":
             vals["leader"] = party_leader(body)
+            vals["size"] = party_size(body)
         self.apply(ev.key, vals)
 
     def _spear(self, key: str, vals: dict) -> None:
@@ -347,16 +348,34 @@ class PacketMonitor(LinkWatch, CliSync, Events):
         self.forget(f"패킷 흐름 끊김 ({why})")
 
 
-def party_leader(body: bytes) -> int | None:
-    """파티 정보 본문의 파티장 캐릭터 번호. 파티 이름(길이가 바뀜) 뒤에 있어 표 칸으로 못 적는다 —
-    [27:31] 이름 바이트 길이 n, 이름 끝 + 12 에 u64 (party-1120b: 이름 20바이트 → 63, 파티 없음 → 43 에 ff…). 못 읽으면 None."""
+def _leader_at(body: bytes) -> int | None:
+    """파티 정보 본문의 파티장 번호 자리. 파티 이름(길이가 바뀜) 뒤에 있어 표 칸으로 못 적는다 —
+    [27:31] 이름 바이트 길이 n, 이름 끝 + 12 (party-1120b: 이름 20바이트 → 63, 파티 없음 → 43)."""
     if len(body) < 31:
         return None
-    at = 31 + struct.unpack_from("<I", body, 27)[0] + 12
-    if at + 8 > len(body):
+    return 31 + struct.unpack_from("<I", body, 27)[0] + 12
+
+
+def party_leader(body: bytes) -> int | None:
+    """파티 정보 본문의 파티장 캐릭터 번호 u64 (파티가 없으면 ff…). 못 읽으면 None."""
+    at = _leader_at(body)
+    if at is None or at + 8 > len(body):
         return None
     v = struct.unpack_from("<Q", body, at)[0]
     return None if v == 0xFFFFFFFFFFFFFFFF else v
+
+
+PARTY_MAX = 8  # 파티 인원으로 읽은 값이 이보다 크면 자리가 어긋난 것 (못 읽음)
+
+
+def party_size(body: bytes) -> int | None:
+    """파티 정보 본문의 인원 (나 포함, 파티가 없으면 0) — 파티장 번호 끝 + 9 의 u32, 그 뒤로 파티원 정보가 한 사람씩 붙는다
+    (party-1120·1120b: 1명 2038바이트 → 1, 2명 3959·3973바이트 → 2, 파티 없음 81바이트 → 0). 못 읽으면 None."""
+    at = _leader_at(body)
+    if at is None or at + 21 > len(body):
+        return None
+    n = struct.unpack_from("<I", body, at + 17)[0]
+    return n if n <= PARTY_MAX else None
 
 
 _shared: PacketMonitor | None = None

@@ -6,18 +6,19 @@ import unittest
 from unittest import mock
 
 from mabi.packet_monitor import PacketMonitor
-from mabi.packet_monitor.monitor import party_leader
+from mabi.packet_monitor.monitor import party_leader, party_size
 from mabi.packet_table import _read
 from mabi.tasks import party
 
 ME, FRIEND, PARTY = 0x174ADF700000, 0x178AF7E00001, 0x1A1F0A712DA
 
 
-def info_body(name: str, leader: int | None) -> bytes:
-    """파티 정보 앞부분: [0:8] 파티 번호 · [27:31] 이름 길이 · 이름 · 12바이트 뒤 파티장."""
+def info_body(name: str, leader: int | None, size: int = 0) -> bytes:
+    """파티 정보 앞부분: [0:8] 파티 번호 · [27:31] 이름 길이 · 이름 · 12바이트 뒤 파티장 · 그 끝 + 9 에 인원."""
     raw = name.encode("utf-16le")
     head = struct.pack("<Q", PARTY if name else 0) + bytes(19) + struct.pack("<I", len(raw)) + raw + bytes(12)
-    return head + struct.pack("<Q", 0xFFFFFFFFFFFFFFFF if leader is None else leader) + bytes(30)
+    lead = struct.pack("<Q", 0xFFFFFFFFFFFFFFFF if leader is None else leader)
+    return head + lead + bytes(9) + struct.pack("<I", size) + bytes(17)
 
 
 def play_body(marks: dict) -> bytes:
@@ -38,6 +39,33 @@ class PartyTest(unittest.TestCase):
     def test_leader_after_name(self):
         self.assertEqual(party_leader(info_body("파티 이름 열 글자짜리", ME)), ME)
         self.assertIsNone(party_leader(info_body("", None)))
+
+    def test_size_after_leader(self):
+        """인원은 파티장 번호 끝 + 9 (party-1120·1120b: 1명 → 1, 2명 → 2, 파티 없음 → 0)."""
+        self.assertEqual(party_size(info_body("파티 이름 열 글자짜리", ME, 3)), 3)
+        self.assertEqual(party_size(info_body("짧은", FRIEND, 2)), 2)
+        self.assertEqual(party_size(info_body("", None)), 0)
+        self.assertIsNone(party_size(bytes(20)))
+        self.assertIsNone(party_size(info_body("이름", ME, 300)))  # 자리가 어긋난 값
+
+    def test_size_follows_members(self):
+        s = self.m.state
+        self.assertIsNone(s.party_size)
+        self.m.apply("party.info", {"party": PARTY, "leader": ME, "size": 2})
+        self.m.apply("party.member_add", {})
+        self.assertEqual(s.party_size, 3)
+        self.m.apply("party.member_out", {})
+        self.assertEqual(s.party_size, 2)
+        self.m.apply("party.info", {"party": 0, "leader": None, "size": 0})
+        self.assertEqual(s.party_size, 0)
+        self.m.apply("party.info", {"party": PARTY, "leader": ME, "size": 4})
+        self.m.apply("party.left", {})
+        self.assertEqual(s.party_size, 0)
+
+    def test_table_has_member_add(self):
+        from mabi.packet_table import load
+        for key in ("party.member_add", "party.restore", "party.restore_data"):
+            self.assertIsNotNone(load().by_key(key), key)
 
     def test_list_fields(self):
         b = play_body({ME: 1, FRIEND: 0x0B})

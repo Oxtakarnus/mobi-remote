@@ -5,6 +5,8 @@
   → 우연한 만남 매칭 (모두 모이면 자동 입장) → 들어가면 숏컷 자동 진행·자동 전투가 저절로 켜진다
   → 클리어하면 '던전 클리어 / 화면을 터치해 주세요' → 보상 화면(나가기 ESC / 다시 하기 Space / 다른 던전 가기)
   → '다시 하기' = 같은 던전·난이도로 다시 매칭 → 4초 세고 입장
+고정 파티 (tasks.party): 4명이 다 찼으면 우연한 만남을 끄고 준비 UI 로 입장, 클리어 뒤 다시 하기. 4명이 안 되면 우연한
+만남을 켜고 입장해 빈자리를 채우고, 클리어 뒤 '다른 던전 가기' → 목록에서 같은 어비스 → 입장 (사용자 11-22).
 판이 끝났을 때 장비 내구도(패킷)가 repair_below 이하면 '다시 하기' 대신 나가서 대장간에서 전체 수리하고 다시 입장한다 (tasks.repair).
 쓰러지면 '행동불능' + '남은 부활 횟수 N/M' 과 오른쪽 아래 '여신상에서 부활' / '여기서 부활'(R, 아이템 1개) 이 뜬다.
 최대 횟수 M 은 함께하기·난이도 등에 따라 다르다 (3, 6 을 봤다) — 고정값으로 보지 않는다.
@@ -321,19 +323,22 @@ ENTER_TRIES = 3  # 입장하기를 눌러도 매칭·입장이 시작되지 않�
 ENTER_TOOK = 8   # 입장하기 뒤 매칭·맵 로딩 신호를 기다리는 초
 
 
-def enter(bot: Bot, dungeon: str, difficulty: str = "", at: str = "", solo: bool = False, party: bool = False) -> None:
+def enter(bot: Bot, dungeon: str, difficulty: str = "", at: str = "", solo: bool = False, party: bool = False,
+          party_chance: bool = False) -> None:
     """입장 창을 맞추고(enter_screen — 탭·난이도·우연한 만남은 누르기만) 입장하기(Space). 패킷에 매칭(우연한 만남)이나
     맵 로딩 신호가 오면 된 것 (press.until — 안 오면 창을 다시 맞춰 ENTER_TRIES 번까지, 그래도면 까닭을 붙여 NotSeen).
     패킷을 모르면 신호를 기다리지 않는다 (뒤의 매칭·입장 기다림이 상한까지 본다).
     2026-11-16 사용자: 입장 창인지만 알면 아는 자리를 누르고 결과로 확인.
-    party: 고정 파티 파티장 — 인원이 모자라면 뜨는 '도전하시겠습니까?' 에 도전하기, 신호는 파티 입장 진행(준비 UI)."""
+    party: 고정 파티 파티장 — 인원이 모자라면 뜨는 '도전하시겠습니까?' 에 도전하기, 신호는 파티 입장 진행(준비 UI).
+    party_chance: 가득 차지 않은 고정 파티의 파티장 — 우연한 만남을 켜고 들어간다 (party 는 False). 우연한 만남이 안 켜져
+    '도전하시겠습니까?' 가 뜨면(능력치가 난이도 기준에 못 미치면 스위치가 없다) 도전하기 — 예전처럼 파티끼리 (준비 UI)."""
     enter_screen(bot, dungeon, difficulty, at=at, solo=solo, party=party)
 
     def push():
         bot.key("space")
-        if party:
+        if party or party_chance:
             party_mod.confirm(bot)
-    ok = party_mod.started if party else (lambda s: s.matching or s.loading)
+    ok = party_mod.started if party else (lambda s: s.matching or s.loading or (party_chance and party_mod.started(s)))
     press.until(bot, push, press.signal(bot, ok, ENTER_TOOK, still=lambda: entry.visible(bot)),
                 "입장하기", tries=ENTER_TRIES, shot="abyss",
                 again=lambda: enter_screen(bot, dungeon, difficulty, at=where(bot, dungeon), solo=solo, party=party),
@@ -576,6 +581,42 @@ def to_reward(bot: Bot) -> str:
     return "reward"
 
 
+OTHER_LOOK = 15  # '다른 던전 가기' 뒤 어비스 목록이 뜨길 기다리는 초
+
+
+def other_dungeon(bot: Bot, dungeon: str) -> str:
+    """보상 화면 '다른 던전 가기' → 어비스 목록. 가득 차지 않은 고정 파티의 파티장이 다시 하기 대신 쓴다 (사용자 11-22:
+    목록에서 같은 어비스 → 우연한 만남 확인 → 입장하기). 단축키가 없어 글자를 찾아 누른다 (게임을 앞에 둔다).
+    목록이 뜨면 'list', 입장 화면이 바로 뜨면 'entry' — 부르는 쪽(enter)이 그 자리부터 잇는다. 버튼을 못 찾았거나 목록이
+    안 뜨면 보상 화면에서 나가(ESC) '' — 메뉴에서 연다.
+    목록은 화면으로만 본다 — 같은 맵에 남으면 지난 판 결과(패킷)가 남아 phase·where 는 아직 보상 화면이라 한다."""
+    bot.background = False
+    hit = None
+    for _ in range(3):
+        hit = ui_text.find(bot, gd.text("abyss_other"), gd.region("reward_buttons"), exact=False)
+        if hit:
+            break
+        bot.sleep(0.8, 1.2)
+    if hit:
+        bot.log.info("보상 화면 → 다른 던전 가기 (어비스 목록에서 다시 입장)")
+        bot.click(hit)
+        end = time.monotonic() + OTHER_LOOK
+        while time.monotonic() < end:
+            bot.sleep(1.0, 1.3)
+            if bot.map_loading():
+                bot.wait_loaded(max(1.0, end - time.monotonic()))
+            if ui_text.find(bot, dungeon, gd.region("abyss_list")):
+                return "list"
+            if entry.visible(bot):
+                return "entry"
+        bot.log.warning(f"'다른 던전 가기' 뒤 어비스 목록이 안 뜸 → 메뉴에서 다시 → {bot.snapshot('abyss_other').name}")
+    else:
+        bot.log.warning(f"보상 화면에 '다른 던전 가기' 가 안 보임 → 나가서 메뉴에서 → {bot.snapshot('abyss_other').name}")
+    if d.reward_button(bot):
+        exit_reward(bot)
+    return ""
+
+
 def exit_reward(bot: Bot) -> None:
     """보상 화면 '나가기'(ESC) → 필드 메인 화면까지."""
     bot.key("esc")
@@ -635,6 +676,21 @@ class AbyssRepeat(Repeat):
 
     match_at = 0.0  # 입장·다시 하기를 누른 때 — 그 뒤에 새로 들어간 맵만 이번 판 (entered_since)
     party_since = 0.0  # 반복을 시작한 때 — 그 뒤에 파티에서 누가 빠지면 카드를 끝낸다 (party_broken)
+    chance_round = False  # 이번 판을 고정 파티 우연한 만남으로 들어갔나 — 판이 끝나면 다시 하기 대신 다른 던전 가기
+
+    def party_chance(self, say: bool = False) -> bool:
+        """고정 파티장인데 파티가 가득 차지 않았나 (party.FULL 명 미만, 패킷) — 그러면 우연한 만남을 켜고 들어가 빈자리를
+        채우고 (준비 UI 없음), 판이 끝나면 다시 하기 대신 다른 던전 가기로 목록에서 다시 들어간다 (사용자 11-22).
+        가득 찼으면 예전처럼 우연한 만남을 끄고 준비 UI 로. 인원을 모르면 (리모콘을 켠 뒤 파티 정보가 아직 안 옴) 예전처럼
+        — 어비스에 들어가면 파티 정보가 와서 그 판이 끝난 뒤부터 맞는다. say: 고른 것을 로그에 남긴다."""
+        if self.party_role != "leader":
+            return False
+        n = party_mod.size(self.bot.packets)
+        chance = n is not None and n < party_mod.FULL
+        if say:
+            self.bot.log.info(f"고정 파티 {n}명 → " + ("우연한 만남으로 빈자리를 채움" if chance else "파티끼리 (준비 UI)")
+                              if n is not None else "고정 파티 인원을 아직 모름 (파티 정보가 안 옴) → 파티끼리 (준비 UI)")
+        return chance
 
     def party_broken(self) -> bool:
         """고정 파티에서 누가 빠졌나 (파티원이 나감·내가 나감·파티 없음, 패킷). 그러면 카드를 끝낸다 — 판 도중이면
@@ -668,6 +724,7 @@ class AbyssRepeat(Repeat):
         bot, a = self.bot, self.a
         bot.background = self.behind
         self.party_since = time.monotonic()
+        self.chance_round = self.party_chance()  # 판 도중·보상 화면에서 시작했으면 지금 인원으로
         stage = {"play": "play", "reward": "reward", "matching": "match"}.get(at, "entry")
         if stage == "match":
             # 매칭 중에 시작함 — 지금 선 맵(마을, 또는 다시 하기 뒤 지난 판 맵) 뒤에 들어가는 어비스 맵이 이번 판. 기본값(0)으로
@@ -695,13 +752,15 @@ class AbyssRepeat(Repeat):
                 bot.step("abyss_open", f"어비스 입장 화면 ({a['dungeon']})")
                 bot.background = False
                 self.match_at = time.monotonic()
+                self.chance_round = self.party_chance(say=True)
                 enter(bot, a["dungeon"], a.get("difficulty", ""), at=at, solo=self.solo,
-                      party=self.party_role == "leader")
-                at = ""  # 처음 한 번만 — 다음 입장은 판이 끝난 자리(메인)에서
+                      party=self.party_role == "leader" and not self.chance_round, party_chance=self.chance_round)
+                at = ""  # 처음 한 번만 — 다음 입장은 판이 끝난 자리(메인, 다른 던전 가기 뒤엔 목록)에서
                 self.to_back()
                 stage = "match"
             if stage == "match" and not (inside(bot) and entered_since(bot, self.match_at) is not False):
-                bot.step("abyss_match", "파티원 준비 기다림" if self.party_role else
+                bot.step("abyss_match", "우연한 만남 매칭 중 (고정 파티)" if self.chance_round else
+                         "파티원 준비 기다림" if self.party_role else
                          "입장 중 (혼자하기)" if self.solo else "우연한 만남 매칭 중")
                 self.emit(stage="match")
                 st = bot.packets.state
@@ -756,10 +815,16 @@ class AbyssRepeat(Repeat):
                     stage = "entry"
                     continue
                 if self.party_role == "member":
-                    # 클리어 화면 '파티장 선택 대기' — 파티장이 다시 하기를 누르면 준비 UI
+                    # 클리어 화면 '파티장 선택 대기' — 파티장이 다시 하기를 누르면 준비 UI. 파티장이 우연한 만남으로 돌면
+                    # 준비 UI 없이 매칭·입장으로 끌려 간다 (wait_ready 가 로딩으로 안다)
                     if not self.wait_party("reward"):
                         exit_reward(bot)
                         break
+                elif self.chance_round or self.party_chance(say=True):
+                    # 가득 차지 않은 고정 파티 — 다시 하기 대신 다른 던전 가기 → 목록에서 같은 어비스 → 우연한 만남 → 입장
+                    # (사용자 11-22). 이번 판을 파티끼리 했어도 (인원을 몰랐음) 지금 모자란 걸 알면 이쪽으로
+                    at, stage = other_dungeon(bot, a["dungeon"]), "entry"
+                    continue
                 else:
                     self._again()
                 stage = "match"

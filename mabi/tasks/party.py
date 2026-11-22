@@ -5,6 +5,8 @@
 클리어 뒤 '다시 하기'(Space)도 같은 준비 UI 로 이어지고, 인원이 모자라면 같은 확인 창이 또 뜬다.
 파티원: 파티장이 입장을 시작하면 같은 준비 UI 가 뜨고 아래 버튼이 '준비 완료'(Space) — 누르면 '준비 취소' 로 바뀐다.
 클리어 화면 아래는 '나가기' 와 '파티장 선택 대기' — 파티장이 다시 하기를 누르면 또 준비 UI 가 뜬다.
+파티가 FULL 명이 안 되면 (사용자 11-22): 파티장은 우연한 만남을 켜고 입장해 빈자리를 채운다 (준비 UI 없음). 판이 끝나면
+다시 하기 대신 '다른 던전 가기' → 어비스 목록에서 같은 어비스 → 우연한 만남 확인 → 입장하기 (abyss.AbyssRepeat.party_chance).
 패킷: 입장 진행이 시작되면 파티원 목록과 상태가 온다 (PacketState.party_marks), 끝은 party_end 3 입장 · 4 취소.
 """
 import time
@@ -16,14 +18,27 @@ from . import ui_text
 
 ROLES = ("leader", "member")
 CONFIRM_LOOK = 2.5  # 입장하기 뒤 '도전하시겠습니까?' 창을 찾는 초 (가득 찬 파티면 안 뜬다)
+FULL = 4  # 어비스 파티가 가득 찬 인원 (입장 창 '권장 인원 4명') — 모자라면 파티장이 우연한 만남으로 채운다
+
+
+def size(packets) -> int | None:
+    """패킷: 내 파티 인원 (나 포함). 감시가 없거나 리모콘을 켠 뒤 파티 정보가 아직 안 왔으면 None, 파티가 없으면 0.
+    파티 정보는 파티를 맺거나 맵(서버)을 옮길 때마다 온다 — 어비스에 들어가면 온다 (party-1120b)."""
+    if not packets.ok:
+        return None
+    s = packets.state
+    if s.party_id is None:
+        return None
+    return s.party_size if s.party_id else 0
 
 
 def confirm(bot: Bot) -> bool:
     """'어비스에 도전하시겠습니까? 권장 인원보다 적은 인원으로…' 창이 뜨면 도전하기(Space). 눌렀으면 True.
-    패킷으로 입장 진행이 이미 시작됐으면 창이 없는 것이라 보지 않는다."""
+    패킷으로 입장 진행·우연한 만남 매칭이 이미 시작됐으면 창이 없는 것이라 보지 않는다."""
     end = time.monotonic() + CONFIRM_LOOK
     while time.monotonic() < end:
-        if bot.packets.ok and (bot.packets.state.party_marks or bot.packets.state.loading):
+        s = bot.packets.state
+        if bot.packets.ok and (s.party_marks or s.loading or s.matching):
             return False
         if ui_text.find(bot, gd.text("party_challenge"), gd.region("abyss_popup"), exact=False):
             bot.key("space")

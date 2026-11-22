@@ -103,6 +103,8 @@ class PacketState:
     # 때마다 다시 온다. 파티장은 캐릭터 고유 번호(char_id 와 같은 꼴), 파티가 없으면 None
     party_id: int | None = None
     party_leader: int | None = None
+    # 파티 인원 (나 포함) — 파티 정보로 받고 파티원 들어옴·빠짐으로 고친다. 모르면 None, 파티가 없으면 0
+    party_size: int | None = None
     # 파티 입장 진행 중이면 {캐릭터 번호: 상태} — 0 응답 없음 · 1 준비 창 뜸 · 0x0b 준비 끝. 입장 끝·맵 이동이면 비운다
     party_marks: dict = field(default_factory=dict)
     party_enter_at: float = 0.0      # 이번 입장 진행이 시작된 때 (monotonic)
