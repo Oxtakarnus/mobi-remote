@@ -133,7 +133,7 @@ class AbyssLeftoverTest(unittest.TestCase):
         r.play_round = lambda play, step: rounds.append(step) or "clear"
         r.recheck = lambda at: False
         r.yield_between = r.repair_between = lambda go_out: False
-        r._again = lambda: None
+        r._again = lambda: True  # 다시 하기가 받아들여짐
         with mock.patch.object(abyss, "to_reward", return_value="reward"), mock.patch.object(abyss, "exit_reward"),                 mock.patch.object(abyss, "inside", return_value=True),                 mock.patch.object(abyss, "entered_since", return_value=True):
             r.loop("reward")
         self.assertEqual((r.stat["clears"], len(rounds)), (1, 1))

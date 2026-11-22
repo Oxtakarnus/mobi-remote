@@ -319,6 +319,7 @@ def open_entry(bot: Bot, dungeon: str, difficulty: str = "", _moved: int = 0, at
 
 
 RETRY_LOOK = 5   # 보상 화면에서 '다시 하기' 버튼이 그려지길 기다리는 초
+AGAIN_PRESSES = 3  # '다시 하기' 를 누르는 횟수 (처음 Space + 안 받았을 때 다시) — 다 안 받으면 입장 화면부터
 ENTER_TRIES = 3  # 입장하기를 눌러도 매칭·입장이 시작되지 않으면 창을 다시 맞춰 누르는 횟수
 ENTER_TOOK = 8   # 입장하기 뒤 매칭·맵 로딩 신호를 기다리는 초
 
@@ -829,8 +830,12 @@ class AbyssRepeat(Repeat):
                     # (사용자 11-22). 이번 판을 파티끼리 했어도 (인원을 몰랐음) 지금 모자란 걸 알면 이쪽으로
                     at, stage = other_dungeon(bot, a["dungeon"]), "entry"
                     continue
-                else:
-                    self._again()
+                elif not self._again():
+                    bot.log.warning("'다시 하기' 를 눌러도 매칭이 시작되지 않음 (월요일 주간 초기화 뒤 전리품 정산 등) → 나가서 "
+                                    f"입장 화면부터 → {bot.snapshot('abyss_again').name}")
+                    exit_reward(bot)
+                    stage = "entry"
+                    continue
                 stage = "match"
             if self.done():
                 break
@@ -846,9 +851,13 @@ class AbyssRepeat(Repeat):
         self.match_at = time.monotonic()
         return party_mod.wait_ready(bot, float(self.a.get("party_wait") or self.PARTY_WAIT), abort=self.done)
 
-    def _again(self):
+    def _again(self) -> bool:
         """보상 화면 '다시 하기' (Space) → 같은 던전·난이도로 다시 매칭. 보상 화면은 '나가기' 로도 알아보므로 '다시 하기' 가
-        그려지길 잠깐 기다린다 — 안 보여도 누르고 매칭 신호로 본다."""
+        그려지길 잠깐 기다린다 — 안 보여도 누르고 매칭 신호로 본다.
+        AGAIN_PRESSES 번 눌러도 게임이 받지 않으면 (패킷이 매칭·입장이 없다고 확실히 말하고 버튼이 그대로) False — 부르는
+        쪽이 나가서 입장 화면부터 한다. 월요일 06:00 주간 초기화 뒤엔 지난주 전리품을 정산해야 들어가는데, 다시 하기는
+        말없이 안 받아 매칭 상한 10분을 다 기다렸다 (2026-11-23 06:02 — 정산 판정은 입장 화면 길에 있다). 패킷이 모르면
+        True — 매칭 상한이 본다."""
         bot = self.bot
         try:
             bot.wait(bot.ui["dungeon_retry"], timeout=RETRY_LOOK)
@@ -860,19 +869,22 @@ class AbyssRepeat(Repeat):
         if leader:  # 고정 파티: 인원이 모자라면 '도전하시겠습니까?' → 도전하기, 그 뒤 준비 UI
             party_mod.confirm(bot)
         ok = party_mod.started if leader else (lambda s: s.matching or s.loading)
-        for _ in range(2):  # 키가 안 들었으면 — 뒤에서는 키를 한 번 더, 앞에서는 누른다
+        for n in range(AGAIN_PRESSES):  # 키가 안 들었으면 — 뒤에서는 키를 한 번 더, 앞에서는 누른다
             # 패킷: 매칭 상태(요청·찾는 중·잡힘)나 맵 로딩이 오면 눌린 것. 모르면 2~3초 뒤 화면의 '다시 하기' 버튼으로
             took = bot.wait_packet(ok, 3, since=bot.input_mark)
             if took or took is None:
                 # 패킷이 모르면 다시 누르지 않는다 — 다시 하기를 누른 뒤 매칭하는 동안에도 보상 화면(버튼)이 남아 있어,
                 # 버튼이 보인다고 또 누르면 매칭이 취소된다 (안 눌렸으면 매칭 상한 뒤 처음부터 다시 한다)
-                break
+                return True
             if not bot.exists(bot.ui["dungeon_retry"]):
-                break
+                return True
+            if n == AGAIN_PRESSES - 1:
+                return False
             if bot.behind():  # 뒤에서 도는 중이면 클릭(게임을 앞으로 가져옴) 대신 키 (2026-10-24 사용자)
                 bot.key("space")
             else:
                 bot.click(bot.ui["dungeon_retry"])
+        return True
 
 
 def repeat(bot: Bot, cfg: dict, runs: int = 0, minutes: float = 0, on_event=lambda e: None,
