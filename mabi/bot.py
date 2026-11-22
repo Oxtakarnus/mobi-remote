@@ -251,8 +251,8 @@ class Bot:
     def fast_travel_ok(self, act: dict | None = None) -> bool:
         return self.session.fast_travel_ok(act)
 
-    def in_combat(self, act: dict | None = None) -> bool:
-        return self.session.in_combat(act)
+    def in_combat(self, act: dict | None = None, cli_first: bool = False) -> bool:
+        return self.session.in_combat(act, cli_first)
 
     def dialogue_playing(self, act: dict | None = None) -> bool:
         return self.session.dialogue_playing(act)

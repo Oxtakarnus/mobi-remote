@@ -4,6 +4,7 @@ import time
 import unittest
 from unittest import mock
 
+from mabi.bot import Bot
 from mabi.packet_monitor import PacketMonitor
 from mabi.place import DRILL
 from mabi.session import GameSession
@@ -14,12 +15,22 @@ from mabi.tasks.raid import RaidRepeat
 ABYSS = "InstanceAbyssDungeon"
 
 
-class FakeBot:
-    in_combat = GameSession.in_combat  # 전투 판정은 Bot 의 것 그대로
+class FakeSession:
+    in_combat = GameSession.in_combat
     _act_state = GameSession._act_state
+
+    def __init__(self, packets):
+        self.packets = packets
+
+
+class FakeBot:
+    # 전투 판정은 진짜 Bot 래퍼 → GameSession 길을 그대로 탄다. 예전 가짜는 GameSession 것을 바로 불러,
+    # 래퍼가 cli_first 를 받지 않아 보스 기술이 켜진 판마다 TypeError 로 뻗던 것을 못 잡았다 (v3.30.9)
+    in_combat = Bot.in_combat
 
     def __init__(self):
         self.packets = PacketMonitor(None)
+        self.session = FakeSession(self.packets)
         self.packets.status = "running"
         self.packets.last_rx = time.monotonic()
         self.cfg = {"game": {"ultimate_key": "6", "paladin_key": "f5"},
