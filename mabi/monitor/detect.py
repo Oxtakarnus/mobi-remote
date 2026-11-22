@@ -134,9 +134,11 @@ def look(bot, frame=None, skip=(), ocr: bool = False) -> Seen:
 
     if bot.packets.ok and bot.packets.state.attending():
         # 패킷: 출석 대화 중 — 화면에 떠 있을 때만 출석으로. 건너뛰기가 뜨기 전 버튼 없는 대사(대화 창)도 출석이다
-        # (hit 이 없으면 대사를 넘긴다). 신호만 있고 화면엔 없으면 다른 상황으로 본다 (끝 패킷이 없어 신호가 90초 남는다)
+        # (hit 이 없으면 대사를 넘긴다). 신호만 있고 화면엔 없으면 다른 상황으로 본다 (끝 패킷이 없어 신호가 90초 남는다).
+        # 대화 창 없이 말풍선만 뜨는 대사도 출석이다 (situation.attendance_bubble — 2026-11-23 06:12)
         from ..tasks import dialogue
-        if (m := f(bot.cfg["login"].get("attendance_skip"))) or dialogue.now(bot, frame).drawn:
+        if ((m := f(bot.cfg["login"].get("attendance_skip"))) or dialogue.now(bot, frame).drawn
+                or sit.attendance_bubble(bot, frame)):
             return Seen(ATTENDANCE, m, src="packet+screen", frame=frame)
     if f(ui.get("exit_dialog")) or f(ui.get("abyss_exit_dialog")):
         return Seen(EXIT_ASK, frame=frame)

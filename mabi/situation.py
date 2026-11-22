@@ -71,7 +71,7 @@ def check_attendance(bot) -> None:
         return
     from .tasks import dialogue
     frame = bot.frame()
-    if skip_attendance_button(bot, frame) or dialogue.now(bot, frame).drawn:
+    if skip_attendance_button(bot, frame) or dialogue.now(bot, frame).drawn or attendance_bubble(bot, frame):
         return  # 아직 화면에 있다 — 끼어들기가 넘긴다
     s.attendance_at = 0.0
     bot.log.info(f"오늘 출석은 {at} 에 이미 지나감 (패킷 하루 기록) → 남은 출석 신호 지움")
@@ -84,6 +84,35 @@ def attendance_done(bot) -> None:
 def skip_attendance_button(bot, frame):
     """'출석부 건너뛰기' 버튼 자리 (없으면 None)."""
     return _find(bot, frame, bot.cfg["login"].get("attendance_skip")) or None
+
+
+BUBBLE_AFTER = 3.0  # 출석 대화 신호 뒤 말풍선 대사가 그려지고 입력을 받기까지 (접속 단계도 3초쯤 지나서 누른다)
+# NPC 말풍선: 화면 위쪽 가운데의 흰 둥근 상자. 이 띠(세로 6~26%·가로 45~55%)에서 거의 다(90%) 흰(세 채널 245 이상) 줄이
+# BUBBLE_ROWS 줄 넘으면 말풍선. 2026-11-23 실측: 출석·아르바이트 NPC 대사 42~77줄, 던전·레이드 입장 창·가공 창·필드·
+# 보상 화면 등 0~3줄
+BUBBLE_BAND = (0.06, 0.26, 0.45, 0.55)
+BUBBLE_ROWS = 20
+
+
+def attendance_bubble(bot, frame) -> bool:
+    """출석 NPC 의 버튼 없는 말풍선 대사가 떠 있나 — 대화 창('대화 기록'·넘기기 버튼) 없이 NPC 와 말풍선만 나온다.
+    2026-11-23 06:12 주간 초기화 뒤 필드로 나오자 이게 떴는데 대화 창으로 못 봐, 메인 화면 복귀가 ESC 만 6번 누르고
+    실패해 게임을 다시 켰다. 출석 신호 + 신호 뒤 BUBBLE_AFTER 초 + 로딩 아님 + 메인 HUD·ESC 메뉴가 아님 + 흰 말풍선
+    (bubble_shown) — 신호만 남은 90초 동안 입장 창 같은 다른 창을 출석으로 알고 누르지 않게 말풍선 그림도 본다."""
+    p = bot.packets
+    if not (p.ok and p.state.attending()) or time.monotonic() - p.state.attendance_at < BUBBLE_AFTER:
+        return False
+    if bot.map_loading() or bot.at_main(frame):
+        return False
+    return bubble_shown(frame) and not _find(bot, frame, bot.ui.get("menu_quit"))
+
+
+def bubble_shown(frame) -> bool:
+    """화면 위쪽 가운데에 NPC 말풍선(흰 둥근 상자)이 있나 (BUBBLE_BAND·BUBBLE_ROWS)."""
+    h, w = frame.shape[:2]
+    top, bottom, left, right = BUBBLE_BAND
+    band = frame[int(h * top):int(h * bottom), int(w * left):int(w * right), :3].min(axis=2) >= 245
+    return int((band.mean(axis=1) >= 0.9).sum()) >= BUBBLE_ROWS
 
 
 def clear_attendance(bot, frame=None) -> str | None:
@@ -108,8 +137,9 @@ def clear_attendance(bot, frame=None) -> str | None:
     if p.ok and p.state.attending():
         # 대화 창이 떠 있을 때만 — 패킷은 대사 창이 그려지기 전에 오고(그때 가운데를 누르면 필드의 무언가가 눌린다) 끝 패킷이
         # 없어 90초 남는다. 신호만 보고 기다리던 때는 사용자가 직접 넘긴 출석에 막 시작한 숙제가 25초를 헛기다렸다
-        # (2026-11-17 06:49). 창이 그려지면 그때 막힌 것으로 보고 넘긴다 (monitor.interrupts)
-        if not v.drawn:
+        # (2026-11-17 06:49). 창이 그려지면 그때 막힌 것으로 보고 넘긴다 (monitor.interrupts). 대화 창 없이 말풍선만 뜨는
+        # 출석 대사도 (attendance_bubble — 2026-11-23 06:12) 같은 왼쪽 빈 자리를 눌러 넘긴다
+        if not (v.drawn or attendance_bubble(bot, frame)):
             return None
         if time.monotonic() - bot.marks.attendance_clicked < 2:
             return Did.ATTEND_WAIT

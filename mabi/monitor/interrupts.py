@@ -47,9 +47,9 @@ def pending(bot) -> str | None:
 
 
 def shown(bot, what: str, frame) -> bool:
-    """what 이 화면에 떠 있나 — 대화 창(tasks.dialogue.View.drawn), 출석은 '출석부 건너뛰기' 도."""
+    """what 이 화면에 떠 있나 — 대화 창(tasks.dialogue.View.drawn), 출석은 '출석부 건너뛰기' 와 말풍선 대사도."""
     from ..tasks import dialogue
-    if what == "attendance" and sit.skip_attendance_button(bot, frame):
+    if what == "attendance" and (sit.skip_attendance_button(bot, frame) or sit.attendance_bubble(bot, frame)):
         return True
     return dialogue.now(bot, frame).drawn
 
