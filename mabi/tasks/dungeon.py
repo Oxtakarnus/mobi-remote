@@ -232,6 +232,11 @@ def wait_field(bot: Bot, place: str, clear_timeout: float, again: str | None = N
     covered_since = None
     # 조회 실패나 일시적인 빈 응답으로 끝났다고 오판하지 않도록 3번 연속 없어야 클리어로 본다
     while gone < 3:
+        # 퀘스트 목록으로 보는 동안 패킷이 클리어를 알려 오면 바로 — 3번(15초+)을 다 채우지 않는다 (점검 2026-11-22:
+        # 감시를 도중에 켰거나 맵 진입 때 사냥터 상태를 몰라 이 방식으로 왔을 때)
+        if bot.packets.ok and bot.packets.state.field_state == FIELD_CLEARED:
+            bot.log.info("패킷: 사냥터 끝남 (퀘스트 목록 확인 중)")
+            break
         h = hunt()
         if h == "" and hunt_covered(bot):  # 창이 HUD 를 가려 '없음' 을 믿을 수 없다 — 셈에 넣지 않는다
             h = None

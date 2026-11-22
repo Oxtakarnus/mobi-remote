@@ -21,6 +21,7 @@ FAST_TRAVEL_USABLE = ("Enabled", "RestrictedByBattlefieldEntrance", "RestrictedB
 
 
 KEY_KEEP = 64  # 이벤트 종류마다 기억하는 최근 개수 (PacketMonitor.by_key)
+ATE_GAP = 1.0  # 아이템 사용 답 뒤 이 안(초)에 온 포만감이면 내가 먹은 것 — 실측 같은 때(ms) 온다
 
 
 class Events:
@@ -320,9 +321,12 @@ class Events:
             s.ai = vals.get("ai", "")
         elif key == "char.satiety":
             # 함께하기에선 다른 캐릭터의 포만감도 온다 — 예전엔 이걸로 내 번호를 덮어써, 투창 대상·틱택토 O 담당이
-            # 나인데도 '다른 캐릭터'로 봤다 (2026-11-03 16:05·16:10). 내 번호를 모를 때만 받아들인다
+            # 나인데도 '다른 캐릭터'로 봤다 (2026-11-03 16:05·16:10). 내 번호를 모를 때도 내가 먹은 답(item.use_ok)이
+            # 바로 앞에 왔을 때만 내 것으로 본다 — 남의 것이 먹은 답 없이 온다 (캡처 board1·arbeit1·party-1120, 점검 2026-11-22)
             a = vals.get("actor")
-            if s.me is None or a is None or a == s.me:
+            used = self.by_key.get("item.use_ok")
+            ate = bool(used) and time.monotonic() - used[-1].at < ATE_GAP
+            if a is None or a == s.me or (s.me is None and ate):
                 s.satiety = vals.get("satiety")
                 s.me = s.me if a is None else a
         elif key == "equip.durability":

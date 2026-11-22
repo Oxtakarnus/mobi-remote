@@ -4,6 +4,7 @@ import struct
 import threading
 import time
 import unittest
+from unittest import mock
 
 from mabi.bot import Bot
 from mabi.session import GameSession
@@ -716,11 +717,83 @@ class FieldWaitTest(unittest.TestCase):
         self.assertEqual(got, "clear")
         cleared.assert_called_once()
 
+    def test_clear_seen_while_checking_quests(self):
+        """퀘스트 목록으로 보는 동안 패킷이 클리어를 알리면 3번을 다 채우지 않는다."""
+        from unittest import mock
+        from mabi.tasks import dungeon
+        bot = mock.MagicMock()
+        bot.packets.ok, bot.packets.state.field_state = True, None
+        states = iter([None, "WaitingForChannelTransfer"])
+
+        def hunt(*a):
+            bot.packets.state.field_state = next(states, "WaitingForChannelTransfer")
+            return "사냥 퀘스트"
+
+        with mock.patch.object(dungeon, "hunt_quest", side_effect=hunt) as hq, mock.patch.object(dungeon, "watch"),                 mock.patch.object(dungeon, "_in_ctx"), mock.patch.object(dungeon, "after_clear", return_value=False),                 mock.patch.object(dungeon, "cleared_now") as cleared:
+            self.assertEqual(dungeon.wait_field(bot, "어딘가", 600), "clear")
+        cleared.assert_called_once()
+        self.assertLessEqual(hq.call_count, 2)
+
     def test_outside_is_not_clear(self):
         from mabi.exceptions import StepTimeout
         got, cleared = self.run_wait("NotInBattlefield")
         self.assertIsInstance(got, StepTimeout)  # 퀘스트가 남아 있다 → 기다림 (여기선 시간 0 이라 바로 시간 초과)
         cleared.assert_not_called()
+
+
+class ReplyPacketTest(unittest.TestCase):
+    """내 요청의 답 패킷으로 확인 — 빠른 이동 예약·아이템 사용 (점검 2026-11-22)."""
+
+    def test_party_satiety_does_not_become_me(self):
+        m = PacketMonitor(None)
+        m.apply("char.satiety", {"actor": 77, "satiety": 100})  # 함께하기: 남이 먹음 (아이템 사용 답 없음)
+        self.assertIsNone(m.state.me)
+        m.apply("item.use_ok", {})
+        m.apply("char.satiety", {"actor": 9, "satiety": 103})   # 내가 먹음 — 같은 때 온다
+        self.assertEqual((m.state.me, m.state.satiety), (9, 103))
+        m.apply("char.satiety", {"actor": 77, "satiety": 50})
+        self.assertEqual((m.state.me, m.state.satiety), (9, 103))
+
+    def fast_bot(self, replies, ok=True):
+        from types import SimpleNamespace
+        from mabi.bot import Bot
+        keys, got = [], iter(replies)
+        pk = SimpleNamespace(ok=ok, mark=lambda: 0, wait=lambda *a, **k: next(got, None))
+        b = SimpleNamespace(packets=pk, key=keys.append, fast_travel_ok=lambda: True, log=mock.Mock(),
+                            cfg={"game": {"fast_travel_key": "t"}})
+        b._fast_travel_taken = lambda mark: Bot._fast_travel_taken(b, mark)
+        return b, keys, Bot.fast_travel
+
+    def test_fast_travel_checks_reply(self):
+        with mock.patch("mabi.keys.of", return_value="t"):
+            self._fast_travel_checks_reply()
+
+    def _fast_travel_checks_reply(self):
+        b, keys, fast = self.fast_bot([object()])
+        self.assertTrue(fast(b))
+        self.assertEqual(keys, ["t"])
+        b, keys, fast = self.fast_bot([None, object()])   # 첫 T 가 안 먹음 → 한 번 더
+        self.assertTrue(fast(b))
+        self.assertEqual(keys, ["t", "t"])
+        b, keys, fast = self.fast_bot([None, None])
+        self.assertFalse(fast(b))                           # 안 먹었다 — 부르는 쪽(wait_arrival)이 다시 누를 수 있게
+        b, keys, fast = self.fast_bot([], ok=False)         # 패킷을 못 쓰면 예전처럼 누른 것으로
+        self.assertTrue(fast(b))
+        self.assertEqual(keys, ["t"])
+
+    def test_reserved_state_counts_as_taken(self):
+        m = PacketMonitor(None)
+        m.status = "running"
+        from types import SimpleNamespace
+        from mabi.bot import Bot
+        b = SimpleNamespace(packets=m)
+        mark = m.mark()
+        m.apply("fast_travel.state", {"available_name": "None", "state_name": "ReservedToWarp"})
+        self.assertTrue(Bot._fast_travel_taken(b, mark))
+        mark = m.mark()
+        m.apply("fast_travel.state", {"available_name": "Enabled", "state_name": "None"})
+        with mock.patch("mabi.bot.FAST_TRAVEL_REPLY", 0.05):
+            self.assertFalse(Bot._fast_travel_taken(b, mark))
 
 
 if __name__ == "__main__":

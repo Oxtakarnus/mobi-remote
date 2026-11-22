@@ -52,6 +52,9 @@ class Marks:
 
 # 음식을 먹은(또는 못 먹은) 뒤 다시 B 를 누르기까지 (초)
 EAT_GAP = 60
+# 빠른 이동(T)을 눌러도 예약 답이 없으면 몇 번까지 누르나 — 키가 안 먹은 것 (창이 뒤에 있었거나 입력이 빠짐)
+FAST_TRAVEL_TRIES = 2
+FAST_TRAVEL_REPLY = 2.0  # T 를 누른 뒤 예약 답을 기다리는 시간 (초) — 실측 같은 때(ms) 온다
 
 
 def _share(frame, name: str, test) -> float:
@@ -405,20 +408,33 @@ class Bot:
         return self.wait_packet(lambda s: self.map_loading() is not True, timeout)
 
     def fast_travel(self, wait: float = 0) -> bool:
-        """빠른 이동(T) — 먼 곳으로 자동 이동 중이면 누른다. 눌렀으면 True. 모든 이동(숙제·아르바이트·어비스·레이드·수리)이 쓴다.
+        """빠른 이동(T) — 먼 곳으로 자동 이동 중이면 누른다. 먹었으면 True. 모든 이동(숙제·아르바이트·어비스·레이드·수리)이 쓴다.
         wait: 방금 이동을 시켰으면 시작되길 그만큼 기다린 뒤 본다 (패킷 traveling, 패킷이 모르면 2~3초).
-        예전엔 2~3초 쉬고 한 번만 봐서 이동이 늦게 시작되면 T 를 놓치고 걸어갔다."""
+        예전엔 2~3초 쉬고 한 번만 봐서 이동이 늦게 시작되면 T 를 놓치고 걸어갔다.
+        먹었나는 빠른 이동 예약 답(내 요청에만 온다)으로 본다 — 예전엔 누르기만 하고 먹은 것으로 봐 안 먹으면 끝까지 걸어갔다
+        (wait_arrival 은 한 번 누르면 다시 누르지 않는다). 답이 없으면 FAST_TRAVEL_TRIES 번까지. 패킷을 못 쓰면 누른 것으로."""
         key = keys.of(self, "fast_travel")
         if not key:
             return False
         if wait:
             moved = self.wait_packet(lambda s: s.traveling, wait, since=self.input_mark)
             self.sleep(0.5) if moved else self.sleep(2, 3)
-        if not self.fast_travel_ok():
-            return False
-        self.log.info("빠른 이동")
-        self.key(key)
-        return True
+        for n in range(FAST_TRAVEL_TRIES):
+            if not self.fast_travel_ok():
+                return False
+            self.log.info("빠른 이동" if not n else "빠른 이동: 예약 답이 없음 → 한 번 더")
+            mark = self.packets.mark()
+            self.key(key)
+            if not self.packets.ok or self._fast_travel_taken(mark):
+                return True
+        self.log.warning("빠른 이동: T 를 눌러도 예약 답이 없음")
+        return False
+
+    def _fast_travel_taken(self, mark: int) -> bool:
+        """mark 뒤에 빠른 이동이 예약됐나 — 예약 답(fast_travel.reserve_ok)이나 예약 상태(FastTravelState Reserved…, 같은 때
+        온다 — 둘 중 하나만 받아도)."""
+        return self.packets.wait(("fast_travel.reserve_ok", "fast_travel.state"), FAST_TRAVEL_REPLY, after=mark,
+                                 check=lambda v: str(v.get("state_name", "Reserved")).startswith("Reserved")) is not None
 
     def skip_button(self, frame=None, skip=()) -> tuple[str, Match] | None:
         """오른쪽 위 넘기기 버튼과 그 종류 ("scene" 연출 / "dialog" 대화). 없으면 None.
@@ -785,15 +801,19 @@ class Bot:
         why = "배고픔 표시" if ratio is None else f"포만감 {ratio:.0%}"
         mark = self.packets.mark()
         self.key(keys.of(self, "food"))
-        # 패킷: 먹으면 포만감이 온다. 안 오면 못 먹은 것 (어비스 판 안에서 6초마다 3분 넘게 B 만 누른 일 — 2026-10-27).
+        # 패킷: 먹으면 아이템 사용 답(내 요청에만 온다)이 온다. 안 오면 못 먹은 것 (어비스 판 안에서 6초마다 3분 넘게 B 만
+        # 누른 일 — 2026-10-27). 예전엔 포만감 알림을 기다렸는데 함께하기에선 남이 먹은 것도 온다 (캡처 board1·arbeit1·party-1120).
         # 먹었어도 'B' 표시가 바로 안 사라지고 CLI 포만감도 SATIETY_EVERY 동안 지난 값이라 먹은 뒤에도 EAT_GAP 동안은 다시 누르지 않는다
-        got = self.packets.wait("char.satiety", 4, after=mark) if self.packets.ok else None
+        got = self.packets.wait("item.use_ok", 4, after=mark) if self.packets.ok else None
         self._eat_after = time.monotonic() + EAT_GAP
         if self.packets.ok and got is None:
-            self.log.warning(f"{why} → B 를 눌렀지만 먹지 못함 (포만감 패킷 없음) → {EAT_GAP:.0f}초 뒤 다시")
+            self.log.warning(f"{why} → B 를 눌렀지만 먹지 못함 (아이템 사용 답 없음) → {EAT_GAP:.0f}초 뒤 다시")
             return False
         n = self.daily.bump(slot, "food") if tracked else 0
-        full = f" · 포만감 {got.vals.get('satiety')}" if got is not None else ""
+        me = self.packets.state.me
+        sat = self.packets.wait("char.satiety", 0.5, after=mark, check=lambda v: v.get("actor") in (None, me)) \
+            if got is not None else None
+        full = f" · 포만감 {sat.vals.get('satiety')}" if sat is not None else ""
         self.log.info(f"{why} → 음식 먹기 (B){f' — 오늘 {n}번째' if tracked else ''}{full}")
         self.sleep(1.5, 2)
         return True

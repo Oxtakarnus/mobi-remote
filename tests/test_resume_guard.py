@@ -68,8 +68,13 @@ class EatTest(unittest.TestCase):
     def _bot(self, came, ratio=None, shown=True, food=True):
         from mabi.bot import Bot
         keys, looked = [], []
-        pk = SimpleNamespace(ok=True, mark=lambda: 0,
-                             wait=lambda key, t, after=0: SimpleNamespace(vals={"satiety": 80}) if came else None)
+        waited = []
+
+        def wait(key, t, after=0, check=None):
+            waited.append(key)
+            return SimpleNamespace(vals={"satiety": 80}) if came else None
+
+        pk = SimpleNamespace(ok=True, mark=lambda: 0, wait=wait, state=SimpleNamespace(me=None), waited=waited)
 
         def exists(n):
             looked.append(n)
@@ -102,6 +107,12 @@ class EatTest(unittest.TestCase):
         b, keys, eat = self._bot(came=True, ratio=None, shown=False)
         self.assertFalse(eat(b))
         self.assertEqual((keys, b.looked), ([], ["food_b"]))
+
+    def test_eat_confirmed_by_my_use_reply(self):
+        """먹었나는 내 요청의 답(아이템 사용)으로 — 함께하기에선 남이 먹은 포만감 알림도 온다 (점검 2026-11-22)."""
+        b, keys, eat = self._bot(came=True, ratio=0.1)
+        self.assertTrue(eat(b))
+        self.assertEqual(b.packets.waited[0], "item.use_ok")
 
     def test_session_satiety_from_vitals(self):
         from mabi.session import GameSession
