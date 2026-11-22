@@ -62,7 +62,11 @@ class FakeBot:
         self.needs, self.space_closes = needs, space_closes
         self.window = mock.Mock(hwnd=1)
         self.window.find.side_effect = lambda: self.on
-        self.log, self.stopper = mock.Mock(), mock.Mock()
+        self.log, self.stopper, self.packets = mock.Mock(), mock.Mock(), mock.Mock()
+
+    @contextlib.contextmanager
+    def game_switching(self):
+        yield
 
     def key(self, k):
         self.keys.append(k)
@@ -130,7 +134,7 @@ class KickedBotTest(unittest.TestCase):
         b.session.packets.kicked.return_value = code
         b.stopper = mock.Mock()
         b.stopper.stopped.is_set.return_value = False
-        b._downing, b.deadline = False, None
+        b._switching, b.deadline = 0, None
         b.check_weight = b.check_interrupt = lambda *a: None
         return b
 
@@ -139,14 +143,14 @@ class KickedBotTest(unittest.TestCase):
         seen = []
 
         def down(bot, why):
-            seen.append((why, bot._downing))
+            seen.append((why, bool(bot._switching)))
             bot.check_stop()  # 끄는 동안 잠깐 기다려도 다시 들어오지 않는다
             return "메모"
         with mock.patch.object(restart, "server_down", side_effect=down), self.assertRaises(StopRequested):
             b.check_stop()
         self.assertEqual(seen, [("패킷: 서버가 세션을 끊음 (사유 83 · 점검)", True)])
         b.session.packets.kick_handled.assert_called_once()
-        self.assertFalse(b._downing)
+        self.assertEqual(b._switching, 0)
 
     def test_no_kick(self):
         b = self.bot(None)

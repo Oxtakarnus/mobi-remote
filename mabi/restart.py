@@ -148,18 +148,22 @@ def _quit(bot: Bot, timeout: float) -> None:
     """게임 창에 닫기 신호를 보내고 게임 프로세스가 끝날 때까지. 게임은 첫 신호에 '게임을 종료하시겠습니까?' (취소 /
     게임 종료) 창을 띄우고 두 번째 신호에 꺼진다 (2026-11-11 실기 네 번 — 두 번째 뒤 5~16초). 그래서 3초 뒤 한 번 더
     보내고, 그래도 창이 남아 있으면 다시 보낸다. 창이 닫혀도 정리하느라 프로세스가 남아 있을 수 있어 끝날 때까지
-    기다린다 (다 끝나기 전에 켜면 '이미 실행 중' 일 수 있다)."""
-    pid = _pid(bot.window.hwnd)
-    for attempt in range(CLOSE_TRIES):
-        bot.log.info("게임 창 닫기" + ("", " (종료 확인)", f" (다시 {attempt - 1})")[min(attempt, 2)])
-        _close(bot.window.hwnd)  # 앞의 _until 이 창을 다시 찾았다 (find 가 hwnd 를 새로 적는다)
-        if _until(bot, lambda: not bot.window.find(), CLOSE_TAKES if attempt else CONFIRM_TAKES):
-            break
-    else:
-        raise CannotProceed(f"닫기 신호를 {CLOSE_TRIES}번 보내도 게임 창이 그대로 → {bot.snapshot('restart_quit').name}")
-    if not _until(bot, lambda: not (pid and _alive(pid)), timeout):
-        raise CannotProceed(f"게임 창은 닫혔는데 {timeout:.0f}초 안에 프로세스가 끝나지 않음")
+    기다린다 (다 끝나기 전에 켜면 '이미 실행 중' 일 수 있다).
+    끄는 동안엔 끼어들기 등을 보지 않고(Bot.game_switching), 꺼진 뒤엔 패킷 상태를 모름으로 둔다 — 꺼진 게임의 '대화 중'
+    신호가 남아, 다시 켜는 동안 끼어들기가 없는 창을 찍다가 다시 켜기가 실패했다 (2026-11-22 08:09)."""
+    with bot.game_switching():
+        pid = _pid(bot.window.hwnd)
+        for attempt in range(CLOSE_TRIES):
+            bot.log.info("게임 창 닫기" + ("", " (종료 확인)", f" (다시 {attempt - 1})")[min(attempt, 2)])
+            _close(bot.window.hwnd)  # 앞의 _until 이 창을 다시 찾았다 (find 가 hwnd 를 새로 적는다)
+            if _until(bot, lambda: not bot.window.find(), CLOSE_TAKES if attempt else CONFIRM_TAKES):
+                break
+        else:
+            raise CannotProceed(f"닫기 신호를 {CLOSE_TRIES}번 보내도 게임 창이 그대로 → {bot.snapshot('restart_quit').name}")
+        if not _until(bot, lambda: not (pid and _alive(pid)), timeout):
+            raise CannotProceed(f"게임 창은 닫혔는데 {timeout:.0f}초 안에 프로세스가 끝나지 않음")
     bot.log.info("게임 꺼짐")
+    bot.packets.forget("게임을 끔")
 
 
 # ---------------------------------------------------------------- 서버 연결 끊김 (점검)
@@ -207,26 +211,29 @@ def start_game(cfg: dict) -> None:
 
 
 def _launch(bot: Bot, cfg: dict) -> None:
-    """넥슨 플러그 바로실행 링크로 켜고 타이틀(또는 캐릭터 선택·메인)이 보일 때까지."""
+    """넥슨 플러그 바로실행 링크로 켜고 타이틀(또는 캐릭터 선택·메인)이 보일 때까지. 켜는 동안엔 끼어들기 등을 보지
+    않는다 (Bot.game_switching — 창이 없거나 막 뜬 창이다)."""
     c, ui = cfg["restart"], bot.ui
     limit = float(c["start_timeout"])
     bot.log.info("게임 켜기 — 넥슨 플러그 바로실행")
-    start_game(cfg)
-    end = time.monotonic() + limit
-    while not bot.window.find():
-        if time.monotonic() > end:
-            raise CannotProceed(f"게임이 {limit:.0f}초 안에 켜지지 않음 — 넥슨 플러그(로그인·업데이트)를 확인한 뒤 ▶")
-        bot.sleep(2)
-    bot.log.info("게임 창이 뜸 → 타이틀 기다림")
-    screens = [ui["title_start"], ui["charselect_title"], ui["main_hud"]]
-    while True:
-        try:  # 막 뜬 창은 크기가 다르거나 검은 화면이라 찾기가 실패할 수 있다 — 끝날 때까지 다시 본다
-            if any(bot.exists(n) for n in screens):
-                return
-        except StopRequested:
-            raise
-        except Exception as e:  # noqa: BLE001
-            bot.log.debug(f"타이틀 찾기 실패 (켜지는 중): {e}")
-        if time.monotonic() > end:
-            raise CannotProceed(f"게임은 켜졌는데 {limit:.0f}초 안에 타이틀이 안 보임 → {bot.snapshot('restart_title').name}")
-        bot.sleep(2)
+    with bot.game_switching():
+        start_game(cfg)
+        end = time.monotonic() + limit
+        while not bot.window.find():
+            if time.monotonic() > end:
+                raise CannotProceed(f"게임이 {limit:.0f}초 안에 켜지지 않음 — 넥슨 플러그(로그인·업데이트)를 확인한 뒤 ▶")
+            bot.sleep(2)
+        bot.log.info("게임 창이 뜸 → 타이틀 기다림")
+        screens = [ui["title_start"], ui["charselect_title"], ui["main_hud"]]
+        while True:
+            try:  # 막 뜬 창은 크기가 다르거나 검은 화면이라 찾기가 실패할 수 있다 — 끝날 때까지 다시 본다
+                if any(bot.exists(n) for n in screens):
+                    return
+            except StopRequested:
+                raise
+            except Exception as e:  # noqa: BLE001
+                bot.log.debug(f"타이틀 찾기 실패 (켜지는 중): {e}")
+            if time.monotonic() > end:
+                raise CannotProceed(f"게임은 켜졌는데 {limit:.0f}초 안에 타이틀이 안 보임 → "
+                                    f"{bot.snapshot('restart_title').name}")
+            bot.sleep(2)

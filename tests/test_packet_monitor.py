@@ -511,15 +511,24 @@ class DeathTest(unittest.TestCase):
     def test_dialogue_action_and_menu(self):
         # 대장간: 메뉴(SelectKeyword + 선택지) → '수리' 뒤 대사(OpenNPCRepair) → 작별 인사(EndDialogue) → 끝 (repair2)
         self.m.apply("dialogue.update", {"active": True, "step": 7, "action": "SelectKeyword"})
-        self.m.apply("dialogue.prompt", {"step": 7, "open": 1, "choices": 9})
+        self.m.apply("dialogue.prompt", {"step": 7, "type": 1, "choices": 9})
         self.m.apply("dialogue.target", {"target": 36280})
         s = self.m.state
         self.assertEqual((s.dialogue_action, s.dialogue_step, s.dialogue_menu), ("SelectKeyword", 7, True))
-        self.m.apply("dialogue.prompt", {"step": 8, "open": 0, "choices": 0})
+        self.m.apply("dialogue.prompt", {"step": 8, "type": 0, "choices": 0})
         self.m.apply("dialogue.update", {"active": True, "step": 8, "action": "OpenNPCRepair"})
         self.assertEqual((s.dialogue_action, s.dialogue_step, s.dialogue_menu), ("OpenNPCRepair", 8, False))
         self.m.apply("dialogue.update", {"active": False, "step": 8, "action": ""})
         self.assertEqual((s.dialogue_action, s.dialogue_menu, s.in_dialogue), ("", False, False))
+
+    def test_menu_needs_choices(self):
+        # 아르바이트 (arbeit1 11-05): 수락 메뉴 종류 2·선택지 2 → 결과 보고 메뉴 종류 1·선택지 4 → 고른 뒤 대사 종류 3·선택지 0.
+        # 마지막은 눌러서 넘기는 대사다 — 종류만 보고 메뉴로 읽어 13분 멈췄다 (2026-11-22 문게이트 정찰)
+        m, s = self.m, self.m.state
+        m.apply("dialogue.update", {"active": True, "step": 1, "action": ""})
+        for step, kind, n, menu in ((1, 2, 2, True), (2, 0, 0, False), (3, 1, 4, True), (4, 3, 0, False)):
+            m.apply("dialogue.prompt", {"step": step, "type": kind, "choices": n})
+            self.assertEqual(s.dialogue_menu, menu, (step, kind, n))
 
 
 class LinkLogTest(unittest.TestCase):

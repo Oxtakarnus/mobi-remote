@@ -8,7 +8,7 @@
 패킷이 있으면 대사 단계를 화면보다 정확히 안다 (packet_monitor.PacketState):
   dialogue_action  이 대사 뒤 할 일 — SelectKeyword(메뉴 버튼) · EndDialogue(작별 인사) · OpenNPCRepair(수리 창) …
                    (로그·참고용. NPC 마다 대사 구성이 달라 흐름 판단은 메뉴·단계로 한다)
-  dialogue_menu    메뉴(선택지 버튼)가 떠 있음
+  dialogue_menu    메뉴(선택지 버튼)가 떠 있음 — 선택지가 있는 대사. 선택지 없는 대사(결과 보고 뒤 한마디 등)는 눌러서 넘긴다
   dialogue_step    대사마다 1씩 오름 — 눌러서 넘어갔는지, 버튼을 눌러도 아무 일이 없었는지(예: 고칠 장비가 없어 꺼진 '수리')
 패킷이 없으면 화면(대화 기록·대화 넘기기 템플릿)으로 본다.
 

@@ -200,7 +200,9 @@ class Events:
         elif key == "dialogue.update":
             s.dialogue_action, s.dialogue_step = vals.get("action") or "", vals.get("step") or s.dialogue_step
         elif key == "dialogue.prompt":
-            s.dialogue_menu = bool(vals.get("open"))
+            # 메뉴 버튼은 선택지가 있을 때만 뜬다. 대사 종류(type)만 보면 문게이트 정찰 결과 보고 뒤 대사(종류 3 '퀘스트 목표
+            # 달성', 선택지 0 — 눌러서 넘기는 대사)도 메뉴로 읽어, 버튼만 기다리며 ESC 를 13분 눌렀다 (2026-11-22 07:53~08:06)
+            s.dialogue_menu = bool(vals.get("choices"))
         elif key == "char.personal_data":
             if vals.get("char_id") != s.char_id:  # 다른 캐릭터로 접속 — 맵에 들어가야 새 번호·이름을 안다
                 s.me = s.my_name = None

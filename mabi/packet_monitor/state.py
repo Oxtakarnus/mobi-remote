@@ -74,7 +74,7 @@ class PacketState:
     # OpenNPCRepair 대장간 수리 창 · AfterRepair 수리 뒤 등. 대화가 아니면 ''
     dialogue_action: str = ""
     dialogue_step: int = 0           # 대사마다 1씩 오른다 — 눌러서 대사가 넘어갔는지 본다
-    dialogue_menu: bool = False      # NPC 메뉴(선택지 버튼)가 떠 있음
+    dialogue_menu: bool = False      # NPC 메뉴(선택지 버튼)가 떠 있음 — 선택지가 하나 이상인 대사
     ai: str = ""                     # 내 캐릭터 자동 행동 (InteractAI = NPC 에게 다가가는 중)
     cutscene: bool = False           # 컷신(연출) 재생 중
     traveling: bool | None = None    # 내 자동 이동 중 (시작·끝은 나한테만 온다). 감시를 켠 뒤 한 번도 안 왔으면 None

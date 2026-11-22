@@ -148,7 +148,7 @@ class Bot:
         self.interrupts = not dry_run
         self._npc_owned = 0
         self._interrupting = False
-        self._downing = False  # 서버 연결이 끊겨 게임을 끄는 중 (shut_down_for_server) — check_stop 이 아무것도 안 본다
+        self._switching = 0  # 게임을 끄거나 켜는 중 (game_switching) — check_stop 이 멈춤 요청만 본다
         self._interrupt_off: dict[str, float] = {}
         self._watch = None          # monitor.interrupts.Watch (처음 볼 때 만든다)
         self.interrupt_spent = 0.0  # 끼어들기에 쓴 시간 합 — 기다리는 쪽이 시간 상한을 그만큼 늘린다
@@ -260,7 +260,7 @@ class Bot:
     def check_stop(self) -> None:
         if self.stopper.stopped.is_set():
             raise StopRequested()
-        if self._downing:
+        if self._switching:
             return
         self.check_server()
         if self.deadline and time.monotonic() > self.deadline:
@@ -291,11 +291,19 @@ class Bot:
         않게 막고, 패킷 알림은 처리한 것으로 둔다. 큐에 남긴 메모를 돌려준다."""
         from . import restart
         self.packets.kick_handled()
-        self._downing = True
-        try:
+        with self.game_switching():
             return restart.server_down(self, why)
+
+    @contextmanager
+    def game_switching(self):
+        """게임을 끄거나 켜는 동안 (restart — 다시 켜기·서버 끊김) check_stop 은 멈춤 요청만 본다. 서버 끊김·시간 상한·무게·
+        끼어들기는 게임이 떠 있어야 뜻이 있다 — 끄기 직전 남은 '대화 중' 신호로 끼어들기가 30초를 쓰고, 꺼진 뒤 켜는 동안
+        다시 와서 없는 창을 찍다가 '게임 다시 켜기' 가 실패했다 (2026-11-22 08:09)."""
+        self._switching += 1
+        try:
+            yield
         finally:
-            self._downing = False
+            self._switching -= 1
 
     def check_interrupt(self) -> None:
         """패킷이 무작위 이벤트(NPC 가 말을 걺·출석)를 알리면 화면을 한 번 보고, 떠 있으면 하던 일을 멈추고 점검자가 넘긴 뒤
@@ -309,6 +317,8 @@ class Bot:
         what = self._watch.due(self)  # 패킷 상태와 시각만 본다 — 0.1초마다 불려도 가볍다
         if not what or time.monotonic() < self._interrupt_off.get(what, 0) or self.behind():
             return
+        if not self.window.find():
+            return  # 게임 창이 없다 (꺼짐) — 볼 화면이 없다
         self._interrupting = True
         t0 = time.monotonic()
         try:

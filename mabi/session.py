@@ -25,6 +25,10 @@ from .window import GameWindow
 
 SHOT_KEEP_DAYS = 7
 SHOT_NAME = re.compile(r"\d{8}_\d{6}_.+\.png")  # snapshot() 이 붙이는 이름
+# 같은 이름표로 이만큼(초) 안에 다시 찍을 때 화면이 그대로면 새로 남기지 않는다 (snapshot). 같은 화면은 작은 회색 그림(32x18)
+# 평균 차이로 본다 — 막힌 대화 앞 NPC·촛불 움직임은 이웃끼리 5 남짓, 다른 화면끼리는 대개 20 넘음 (2026-11-22 사진으로 잼)
+SHOT_SAME_GAP = 300.0
+SHOT_SAME_DIFF = 8.0
 LOADING_DOUBT = 20.0  # 패킷 로딩이 이보다 길면 새 맵 진입을 놓쳤나 CLI 로 본다 (map_loading)
 
 
@@ -46,6 +50,12 @@ def prune_shots(shot_dir: Path, log=None, keep_days: int = SHOT_KEEP_DAYS) -> in
     if n and log:
         log.info(f"오래된 스크린샷 {n}장 정리 ({keep_days}일 지남)")
     return n
+
+
+def _thumb(img: np.ndarray) -> np.ndarray:
+    """같은 화면인지 견주는 작은 회색 그림 (snapshot)."""
+    gray = cv2.cvtColor(img[..., :3], cv2.COLOR_BGR2GRAY) if img.ndim == 3 else img
+    return cv2.resize(gray, (32, 18), interpolation=cv2.INTER_AREA).astype(np.int16)
 
 
 class GameSession:
@@ -74,6 +84,7 @@ class GameSession:
         self.packets = (packet_monitor.shared(paths.logs) if cfg["game"]["packet_watch"]
                         else packet_monitor.PacketMonitor(paths.logs))
         self.shot_dir = paths.shots
+        self.last_shots: dict[str, tuple[float, Path, np.ndarray]] = {}  # 이름표마다 (찍으려 한 때, 남긴 사진, 작은 그림)
         self.box = BlackBox()  # 직전 30초 화면·누른 것 — 실패하면 dump_box 로 남긴다
         if not GameSession._shots_pruned:  # 프로세스에 한 번
             GameSession._shots_pruned = True
@@ -138,16 +149,27 @@ class GameSession:
         GameSession.posted = True
 
     def snapshot(self, tag: str, behind: bool = False) -> Path:
+        """지금 화면을 스크린샷 폴더에. 같은 이름표로 방금(SHOT_SAME_GAP 안) 찍으려 한 화면과 같으면 새로 남기지 않고 처음
+        남긴 사진을 돌려준다 — 막힌 화면 앞에서 되풀이하는 실패마다 한 장(1MB 남짓)씩 남아, 아르바이트 대사 하나에 13분 동안
+        100장이 쌓였다 (2026-11-22 07:53~08:06)."""
         self.shot_dir.mkdir(parents=True, exist_ok=True)
         path = self.shot_dir / f"{datetime.now():%Y%m%d_%H%M%S}_{tag}.png"
         try:
             # 뒤에서 돌 때는 게임 창만 (화면을 찍으면 위에 있는 다른 창이 찍힌다 — 2026-10-23 어비스 실패 사진)
             img = self.screen.grab_behind() if behind else None
-            ok, buf = cv2.imencode(".png", img if img is not None else self.screen.grab())
+            if img is None:
+                img = self.screen.grab()
         except RuntimeError:  # 게임 창이 없음 (꺼짐) — 실패 기록 중에 또 터지지 않게
             return path.with_name(path.stem + "_게임꺼짐")
+        now, thumb = time.monotonic(), _thumb(img)
+        last = self.last_shots.get(tag)
+        if last and now - last[0] < SHOT_SAME_GAP and float(np.abs(thumb - last[2]).mean()) < SHOT_SAME_DIFF:
+            self.last_shots[tag] = (now, last[1], thumb)  # 이어지는 같은 화면 — 이웃끼리 견준다 (조금씩 움직여도)
+            return last[1]
+        ok, buf = cv2.imencode(".png", img)
         if ok:
             buf.tofile(str(path))
+            self.last_shots[tag] = (now, path, thumb)
         return path
 
     def dump_box(self, tag: str, behind: bool = False) -> str:

@@ -1,5 +1,6 @@
 """게임 다시 켜기 (mabi/restart) — 연속 실행 제한 창을 보면 큐 맨 위에 카드를 올리고, 끊는 자리에서 하던 카드를 밀어내
 다시 켠 뒤 이어 한다. 큐 흐름은 가짜 카드로, 다시 켜는 순서는 가짜 봇으로 본다."""
+import contextlib
 import itertools
 import tempfile
 import threading
@@ -132,7 +133,17 @@ class FakeBot:
         self.window.hwnd = 1
         self.window.find.side_effect = lambda: self.on
         self.log = mock.Mock()
+        self.packets = mock.Mock()
         self.launched = False
+        self.switching, self.sleeps = 0, []  # 쉴 때마다 게임을 끄고 켜는 중이었나 (game_switching)
+
+    @contextlib.contextmanager
+    def game_switching(self):
+        self.switching += 1
+        try:
+            yield
+        finally:
+            self.switching -= 1
 
     def run_limit_popup(self):
         return self.popup and self.on
@@ -141,6 +152,7 @@ class FakeBot:
         self.clicks.append(xy)
 
     def sleep(self, a, b=None):
+        self.sleeps.append(self.switching > 0)
         self.calls += 1
         if len(self.closes) >= self.needs and self.calls >= self.exits_after and not self.launched:
             self.on = False  # 닫기 신호(needs 번) 뒤 꺼짐
@@ -152,6 +164,43 @@ class FakeBot:
 
     def snapshot(self, tag):
         return Path(f"{tag}.png")
+
+
+class SwitchingTest(unittest.TestCase):
+    """게임을 끄고 켜는 동안 check_stop 은 멈춤만 보고, 게임 창이 없으면 끼어들기는 화면을 보지 않는다 (2026-11-22 08:09)."""
+
+    def bot(self):
+        from mabi.bot import Bot
+        b = Bot.__new__(Bot)
+        b.session = mock.Mock()
+        b.stopper = mock.Mock()
+        b.stopper.stopped.is_set.return_value = False
+        b._switching, b.deadline, b.background = 0, None, None
+        b._interrupting, b.interrupts, b._interrupt_off = False, True, {}
+        b.interrupt_spent, b.interrupt_n = 0.0, 0
+        return b
+
+    def test_check_stop_skips_while_switching(self):
+        b = self.bot()
+        b.check_server, b.check_weight, b.check_interrupt = mock.Mock(), mock.Mock(), mock.Mock()
+        with b.game_switching():
+            b.check_stop()
+        b.check_interrupt.assert_not_called()
+        b.check_stop()
+        b.check_interrupt.assert_called_once()
+
+    def test_interrupt_needs_game_window(self):
+        b = self.bot()
+        b._watch = mock.Mock()
+        b._watch.due.return_value = "dialog"  # 꺼진 게임의 '대화 중' 신호가 남음
+        b.session.window.find.return_value = False
+        with mock.patch("mabi.monitor.interrupts.handle") as handle:
+            b.check_interrupt()
+        handle.assert_not_called()
+        b.session.window.find.return_value = True
+        with mock.patch("mabi.monitor.interrupts.handle", return_value=False) as handle:
+            b.check_interrupt()
+        handle.assert_called_once()
 
 
 class RunTest(unittest.TestCase):
@@ -177,6 +226,16 @@ class RunTest(unittest.TestCase):
         login.assert_called_once_with(bot, CFG, {"slot": 2, "name": "둘"})
         self.assertEqual(kept, [{"slot": 2, "name": "둘"}])
         self.assertIn("다시 켜고", out)
+
+    def test_switching_while_off_and_state_forgotten(self):
+        """끄고 켜는 동안 쉬는 것은 모두 game_switching 안 (끼어들기 등을 안 본다), 끈 뒤 패킷 상태는 모름으로.
+        꺼진 게임의 '대화 중' 이 남아 켜는 동안 끼어들기가 없는 창을 찍다 다시 켜기가 실패했다 (2026-11-22 08:09)."""
+        bot = FakeBot()
+        self.run_with(bot)
+        self.assertTrue(bot.sleeps)
+        self.assertTrue(all(bot.sleeps), bot.sleeps)
+        self.assertEqual(bot.switching, 0)  # 접속(login.run)은 평소대로
+        bot.packets.forget.assert_called_once_with("게임을 끔")
 
     def test_confirm_takes_second_signal(self):
         # 실제 게임: 첫 신호엔 '게임을 종료하시겠습니까?' 창, 두 번째 신호에 꺼진다 — 3초 뒤 바로 한 번 더
