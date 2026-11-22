@@ -49,6 +49,12 @@ class Events:
             self._relogin = False
         self.days.record(key, vals, self.state.char_id, name=self.state.my_name)
 
+    def _who(self, char: int | None) -> str:
+        """로그용 캐릭터 번호 — '나' 또는 번호 끝 네 자리 (파티장이 같은 사람인지 줄끼리 맞춰 볼 수 있게)."""
+        if char is None:
+            return "?"
+        return "나" if char == self.state.char_id else f"…{char & 0xFFFF:04x}"
+
     def _end_dialogue(self) -> None:
         """대화가 끝남 (끝 패킷·맵 옮김·로그아웃) — 대화 칸을 처음 값으로, 아직 덩어리를 못 만난 선택지 알림도 버린다."""
         self.state.end_dialogue()
@@ -186,42 +192,50 @@ class Events:
         elif key == "abyss.matching_cancel_ok":
             s.abyss_matching = 0
         elif key == "party.info":
-            had = s.party_id
+            # 파티를 만들거나 들어갈 때·서버를 옮길 때마다 온다. 우연한 만남(전 서버 매칭)이면 게임이 파티를 풀었다 다시
+            # 만드는 것으로 보여 (사용자 11-23 테스터 제보) 번호·파티장이 바뀔 때마다 남긴다 — 다음에 깨지면 순서를 알게
+            had, had_leader = s.party_id, s.party_leader
             s.party_id = vals.get("party") or 0
             s.party_leader = vals.get("leader") if s.party_id else None
             size = vals.get("size") if s.party_id else 0
-            if s.party_id and size is not None and size != s.party_size:
+            if s.party_id and (s.party_id != had or s.party_leader != had_leader):
+                log.info("패킷: 파티 정보 — 번호 끝 %04x · 파티장 %s · %s명", s.party_id & 0xFFFF, self._who(s.party_leader),
+                         size if size is not None else "?")
+            elif s.party_id and size is not None and size != s.party_size:
                 log.info("패킷: 파티 %d명", size)
+            if (s.party_id, s.party_leader, size) != (had, had_leader, s.party_size):
+                s.party_at = time.monotonic()
             s.party_size = size
             if not s.party_id:
                 s.party_marks = {}
                 if had:
-                    # 나가기, 또는 어비스에서 혼자 먼저 나옴 — 이땐 나감 알림 없이 이것만 온다 (party-1120b 20:05:33)
-                    s.party_gone_at = time.monotonic()
+                    # 나가기, 어비스에서 혼자 먼저 나옴(나감 알림 없이 이것만 — party-1120b 20:05:33), 우연한 만남으로 풀림
                     log.info("패킷: 파티가 없어짐")
         elif key == "party.member_add":
             if s.party_size is not None:
                 s.party_size += 1
+            s.party_at = time.monotonic()
             log.info("패킷: 파티원이 들어옴 (%s명)", s.party_size if s.party_size is not None else "?")
         elif key == "party.member_out":
             # 파티원이 빠져도 고정 파티는 남은 인원으로 계속 돈다 (사용자 11-22). 파티장이 나가면 party.leader 가 먼저 온다
             if s.party_size:
                 s.party_size -= 1
+            s.party_at = time.monotonic()
             log.info("패킷: 파티원이 파티에서 나감 (%s명)", s.party_size if s.party_size is not None else "?")
         elif key == "party.left":
-            s.party_gone_at = time.monotonic()
             s.party_size = 0
+            s.party_at = time.monotonic()
             log.info("패킷: 내가 파티에서 나감")
         elif key in ("party.restore", "party.restore_data"):
             # 우연한 만남(전 서버 매칭) 뒤 원래 파티를 되살리는 것으로 보이는 이름 — 아직 받아 본 적 없다. 고정 파티로 우연한
             # 만남을 돌 때 오는지 보려고 남긴다 (사용자 2026-11-22 고정 파티 우연한 만남)
             log.info("패킷: 우연한 만남 파티 복구 신호 %s %s", key, vals or "")
         elif key == "party.leader":
-            # 넘김, 또는 파티장이 나감 (빠짐보다 먼저 같은 ms 에 온다 — party-1120b 20:06:11). 고정 파티 카드는 끝낸다
+            # 넘김, 또는 파티장이 나감 (빠짐보다 먼저 같은 ms 에 온다 — party-1120b 20:06:11). 고정 파티 판단은 tasks.party.Watch
             if vals.get("leader") != s.party_leader:
-                s.party_leader_at = time.monotonic()
+                s.party_at = time.monotonic()
             s.party_leader = vals.get("leader")
-            log.info("패킷: 파티장 바뀜 (%s)", "나" if s.party_leader == s.char_id else "다른 파티원")
+            log.info("패킷: 파티장 바뀜 (%s)", self._who(s.party_leader))
         elif key == "party.play":
             # 단계 2 만 본다 — 같은 때 단계 0 짜리가 하나 더 와서 단계 0 으로는 끝을 알 수 없다 (끝은 party.enter_end)
             ids, marks = vals.get("ids") or [], vals.get("marks") or []

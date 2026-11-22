@@ -6,9 +6,10 @@ from types import SimpleNamespace as NS
 from unittest import mock
 
 from mabi.packet_monitor import PacketMonitor
-from mabi.tasks import abyss
+from mabi.place import ABYSS, OPEN_FIELD
+from mabi.tasks import abyss, party
 
-ME, FRIEND, PARTY = 0x174ADF700000, 0x178AF7E00001, 0x1A1F0A712DA
+ME, FRIEND, PARTY, NEW = 0x174ADF700000, 0x178AF7E00001, 0x1A1F0A712DA, 0x1A1F0A71FFF
 
 
 def packets(size):
@@ -109,10 +110,16 @@ class LoopTest(unittest.TestCase):
         self.assertEqual(r.stat["clears"], 2)
 
     def test_leader_hand_over_ends_card(self):
-        """파티장을 넘기면 (패킷 파티장 바뀜) 그 판을 마치고 보상 화면에서 나가 카드를 끝낸다."""
+        """파티장을 넘기면 (패킷 파티장 바뀜) 그 판을 마치고 보상 화면에서 나가 카드를 끝낸다 — 판 도중에 넘겨 보상
+        화면에선 이미 GRACE 가 지났다."""
         r = rep(3, results=())
         r.runs = 3
-        r.play_round = lambda play, step: (r.mon.apply("party.leader", {"leader": FRIEND}), "clear")[1]
+
+        def play(play, step):
+            r.mon.apply("party.leader", {"leader": FRIEND})
+            r.mon.state.party_at -= party.GRACE + 1
+            return "clear"
+        r.play_round = play
         en, other, ex = self.run_loop(r)
         self.assertEqual(len(en.call_args_list), 1)
         other.assert_not_called()
@@ -124,6 +131,116 @@ class LoopTest(unittest.TestCase):
         en, other, ex = self.run_loop(r, at="reward")
         other.assert_called_once()
         r._again.assert_not_called()
+
+
+class ChanceRestoreTest(unittest.TestCase):
+    """우연한 만남 판에 게임이 파티를 풀었다가 어비스 밖에서 다시 만들면 (사용자 11-23 테스터 제보) 카드를 끝내지 않고,
+    보상 화면에서 나가 파티가 다시 모이면 메뉴에서 다시 들어간다. 파티가 그대로면 예전처럼 다른 던전 가기."""
+
+    def dissolve(self, m, keep=False):
+        """매칭 → (keep 이 아니면 게임이 파티를 풂) → 어비스 맵."""
+        m.apply("abyss.matching_update", {"state": 2})
+        if not keep:
+            m.apply("party.info", {"party": 0, "leader": None})
+        m.state.abyss_matching, m.state.channel_type = 0, ABYSS
+
+    def restore(self, m, leader, size=3):
+        """보상 화면에서 나가 마을 — 파티가 새 번호로 다시 생김."""
+        m.state.channel_type = OPEN_FIELD
+        m.apply("party.info", {"party": NEW, "leader": leader, "size": size})
+
+    def run_loop(self, r, enter=None, wait_ready=None, leader=ME, size=3):
+        m = r.mon
+        m.state.channel_type = OPEN_FIELD
+        with (mock.patch.object(abyss, "to_reward", return_value="reward"),
+              mock.patch.object(abyss, "exit_reward", side_effect=lambda bot: self.restore(m, leader, size)) as ex,
+              mock.patch.object(abyss, "leave", return_value=True),
+              mock.patch.object(abyss, "enter", side_effect=enter) as en,
+              mock.patch.object(abyss, "other_dungeon", return_value="list") as other,
+              mock.patch.object(abyss.party_mod, "wait_ready", side_effect=wait_ready) as wr,
+              mock.patch.object(abyss, "inside", return_value=True),
+              mock.patch.object(abyss, "entered_since", return_value=True)):
+            r.loop("main")
+        return en, other, ex, wr
+
+    def test_leader_waits_and_enters_from_menu(self):
+        r = rep(3, results=("clear", "clear"))
+        en, other, ex, _ = self.run_loop(r, enter=lambda *a, **kw: self.dissolve(r.mon))
+        self.assertEqual(r.stat["clears"], 2)
+        other.assert_not_called()                     # 다른 던전 가기 대신 나가서
+        self.assertEqual(ex.call_count, 2)            # 판 뒤 나가기 + 마지막 판 뒤 나가기
+        self.assertEqual([c.kwargs["at"] for c in en.call_args_list], ["main", ""])   # 두 번째는 메뉴에서
+        self.assertEqual([c.kwargs["party_chance"] for c in en.call_args_list], [True, True])
+
+    def test_leader_party_kept_uses_other_dungeon(self):
+        r = rep(3, results=("clear", "clear"))
+        en, other, ex, _ = self.run_loop(r, enter=lambda *a, **kw: self.dissolve(r.mon, keep=True))
+        other.assert_called_once()
+        ex.assert_called_once()                       # 마지막 판 뒤에만
+        self.assertEqual(r.stat["clears"], 2)
+
+    def test_member_leaves_after_leader_then_waits(self):
+        r = rep(3, role="member", results=("clear", "clear"))
+        r.mon.apply("party.info", {"party": PARTY, "leader": FRIEND, "size": 3})
+
+        def leader_starts(bot, timeout, abort=None):   # 파티장이 우연한 만남으로 입장 — 파티원은 매칭에 끌려 들어간다
+            self.assertFalse(abort())
+            self.dissolve(r.mon)
+            return True
+        en, other, ex, wr = self.run_loop(r, wait_ready=leader_starts, leader=FRIEND)
+        self.assertEqual(r.stat["clears"], 2)
+        en.assert_not_called()
+        self.assertEqual(wr.call_count, 2)            # 나가서 돌아온 파티로 파티장의 다음 입장을 기다림
+        self.assertEqual(ex.call_count, 2)
+        r.bot.sleep.assert_any_call(*abyss.MEMBER_DELAY)   # 파티장이 먼저 나가게
+
+    def test_member_without_matching_signal(self):
+        """파티원이 파티장의 매칭 신호를 못 받아도 판 안에서 파티가 바뀐 걸로 알고 같은 길로 간다."""
+        r = rep(3, role="member", results=("clear", "clear"))
+        r.mon.apply("party.info", {"party": PARTY, "leader": FRIEND, "size": 3})
+
+        def leader_starts(bot, timeout, abort=None):
+            r.mon.apply("party.info", {"party": 0, "leader": None})
+            r.mon.state.channel_type = ABYSS
+            return True
+        en, other, ex, wr = self.run_loop(r, wait_ready=leader_starts, leader=FRIEND)
+        self.assertEqual(r.stat["clears"], 2)
+        self.assertEqual(wr.call_count, 2)
+        self.assertEqual(ex.call_count, 2)
+        r.bot.sleep.assert_any_call(*abyss.MEMBER_DELAY)
+
+    def test_leader_dead_waits_for_party(self):
+        """우연한 만남 판에서 쓰러져 먼저 나오면 파티가 돌아올 때까지 다음 입장을 미룬다 (파티원을 두고 가지 않게)."""
+        r = rep(3, results=("dead", "clear"))
+        r.runs = 1
+        seen = []
+
+        def go(*a, **kw):
+            seen.append(r.mon.state.party_id)
+            self.dissolve(r.mon)
+        r.bot.sleep.side_effect = lambda *a: self.restore(r.mon, ME)   # 기다리는 사이 파티원이 나와 파티가 돌아옴
+        en, other, ex, _ = self.run_loop(r, enter=go)
+        self.assertEqual(seen, [PARTY, NEW])     # 돌아온 파티로 다시 입장
+        self.assertEqual(r.stat["clears"], 1)
+
+    def test_leader_enters_with_fewer_after_gather_wait(self):
+        """파티는 돌아왔는데 판 전보다 적으면 GATHER_WAIT 뒤 지금 인원으로 들어간다 (파티원이 빠짐 — 계속)."""
+        r = rep(3, results=("clear", "clear"))
+        with mock.patch.object(party, "GATHER_WAIT", 0.0):
+            en, other, ex, _ = self.run_loop(r, enter=lambda *a, **kw: self.dissolve(r.mon), size=2)
+        self.assertEqual(r.stat["clears"], 2)
+        self.assertEqual(en.call_count, 2)
+
+    def test_member_party_kept_waits_at_reward(self):
+        r = rep(3, role="member", results=("clear", "clear"))
+        r.mon.apply("party.info", {"party": PARTY, "leader": FRIEND, "size": 3})
+
+        def leader_starts(bot, timeout, abort=None):
+            self.dissolve(r.mon, keep=True)
+            return True
+        en, other, ex, wr = self.run_loop(r, wait_ready=leader_starts, leader=FRIEND)
+        self.assertEqual(wr.call_count, 2)
+        ex.assert_called_once()                       # 보상 화면에서 파티장의 다음 입장을 기다림 — 나가지 않음
 
 
 class EnterTest(unittest.TestCase):
