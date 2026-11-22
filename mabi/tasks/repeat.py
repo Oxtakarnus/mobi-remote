@@ -8,7 +8,7 @@ raid.RaidRepeat). 공통으로 쥐는 것: 판 수·시간·사망 집계, 진�
 import ctypes
 import time
 
-from .. import cutpoint
+from .. import cutpoint, whoami
 from ..bot import Bot
 from . import login, repair
 from .boss_skills import BossSkills
@@ -24,6 +24,7 @@ class Repeat:
     finish = False
     # 판을 그만두고 나가 처음부터 다시 들어간 결과 → 세는 칸: 쓰러짐 · 시간 초과 · 같이 하던 사람이 나감 (어비스 '파티원 퇴장 시 나감')
     AGAIN = {"dead": "deaths", "timeout": "retries", "left": "lefts"}
+    character = None  # 고른 캐릭터 {slot, name} (__init__)
 
     def __init__(self, bot: Bot, cfg: dict, runs: int = 0, minutes: float = 0, on_event=lambda e: None,
                  character: dict | None = None, loot=None, iface=None):
@@ -92,6 +93,7 @@ class Repeat:
 
     def cleared(self) -> None:
         self.stat["clears"] += 1
+        whoami.remember(self.bot, self.character)  # 판을 깰 때마다 지문을 새로 (전투력이 바뀌어도 다음에 켤 때 알아보게)
         secs = round(time.monotonic() - self.t0)
         left = f" · 파티원 퇴장 {self.stat['lefts']}" if self.stat.get("lefts") else ""
         self.bot.log.info(f"클리어 {self.stat['clears']}판 (부활 {self.stat['revives']} · 쓰러져 나감 {self.stat['deaths']}{left} "
@@ -132,13 +134,20 @@ class Repeat:
         self.bot.log.info(login.run(self.bot, self.cfg, ch))
 
     def ensure_character(self, at: str) -> str:
-        """고른 캐릭터인지 확인하고 아니면 나가서 바꾼다. 콘텐츠 안이라 이름을 모르면(리모콘을 막 켬 — 패킷 이름은 맵에
-        들어갈 때 온다) 나가지 않고 이어 한 뒤 recheck 가 확인한다. 바뀐 자리를 돌려준다."""
+        """고른 캐릭터인지 확인하고 아니면 나가서 바꾼다. 이름을 모르면(리모콘을 막 켬 — 패킷 이름은 맵에 들어갈 때 오고,
+        화면 이름은 메인 화면에서만 읽힌다) 나가지 않고 이어 한 뒤 recheck 가 확인한다 — 콘텐츠 안이거나, 지금 CLI 지문이
+        이 캐릭터로 마지막에 기억한 것과 똑같을 때 (whoami — 입장 창을 띄운 채 켜도 그 자리부터). 바뀐 자리를 돌려준다."""
         ch = self.character
         if not ch:
             return at
         name = current_name(self.bot)
         if name and name_matches(name, ch.get("name", "")):
+            whoami.remember(self.bot, ch)
+            return at
+        if not name and whoami.recognize(self.bot) == ch.get("slot"):
+            self.bot.log.info(f"캐릭터 이름은 아직 모르지만 CLI 정보가 마지막으로 확인한 {ch['name']} 와 똑같음 → 그 자리부터 "
+                              "잇고 이름을 알게 되면 확인")
+            self.unchecked = ch
             return at
         if not name and at in self.INSIDE:
             self.bot.log.info(f"{self.TITLE} 진행 중이라 캐릭터 이름을 모름 → 그대로 잇고 이름을 알게 되면 확인")
@@ -153,6 +162,7 @@ class Repeat:
             return False
         ch, self.unchecked = self.unchecked, None
         if name_matches(name, ch.get("name", "")):
+            self.bot.log.info(f"이름으로 확인: {ch['name']} 맞음")
             return False
         self.bot.log.warning(f"다른 캐릭터({name})로 이어 하던 중")
         self._switch(at)
