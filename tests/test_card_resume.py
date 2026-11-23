@@ -69,6 +69,14 @@ class CardDidTest(unittest.TestCase):
         self.assertEqual(card_did(it, self.ev(2, "weekend_raid"))["slots"], {"2": ["weekend_raid"]})
 
 
+class SavedTest(unittest.TestCase):
+    def test_did_survives_restart(self):  # queue.json 에 남는다 — 다시 켠 뒤 실패 카드를 ▶ 해도 끝낸 것은 건너뛴다
+        import json
+        from mabi.craft import queue as cq
+        it = {"id": 5, "kind": "daily", "force": True, "did": {"date": game_date(), "slots": {"1": ["vanguard"]}}}
+        self.assertEqual(json.loads(cq.encode({"items": [it]}))["items"][0]["did"], it["did"])
+
+
 class DailyKindDoneTest(unittest.TestCase):
     def run_card(self, it):
         api = mock.MagicMock()

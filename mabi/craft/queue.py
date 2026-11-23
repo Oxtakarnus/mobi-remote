@@ -19,6 +19,9 @@ FIELDS = ["id", "via", "name", "label", "recipe", "target", "status", "note",
           # 가공 완료를 기다리는 동안 다른 카드에 비켜 준 카드가 돌아올 때 (epoch ms — queue_api.GoalKind.ready)
           "resumeAt",
           "doneRuns", "doneSecs", "fit",
+          # 다시(force) 숙제 카드가 이미 끝낸 캐릭터·숙제 (queue_api.card_did). 빠지면 다시 켠 뒤 실패·일시정지 카드를
+          # 이어 할 때 끝낸 캐릭터부터 다시 한다
+          "did",
           "errors"]  # 오류로 실패한 횟수 (mabi/workqueue — 1 이면 맨 아래에서 한 번 더 하는 중)  # 어비스 카드가 멈췄다 다시 돌 때 이미 한 판·초
 
 # 작업 기록 (끝난 항목 한 줄씩, queue-history.jsonl). 화면의 '기록' 창이 읽는다
