@@ -90,6 +90,7 @@
     "raid_leave_town": "콜헨으로돌아갑니다",
     "abyss_wiped": "재도전",
     "raid_leave_ok": "나가기",
+    "raid_leave_giveup": "포기하기",
     "raid_ship": "시작의 갑판",
     "raid_quest_clear": "클리어",
     "raid_quest_done": "토벌 완료",

@@ -9,6 +9,7 @@
   → 보스 처치 (패킷 레이드 상태 Cleared + 결과) → 연출 → 결과 화면 '처치 완료' 확인(Space) — 화면은 아래 가운데 '확인' 으로 본다
   → 오른쪽 맨 위 나가기 → '레이드에서 나가시겠습니까?' 출항선으로 이동(Space) → 배에서 다시 출항.
 쓰러지면 '여기서 부활' (부활 제한 3회). 다 쓰면 나가기 → 출항선으로 이동 → 다시 출항.
+함께하기 판 중간(전멸 등)의 나가기 창은 '레이드에서 퇴장하시겠습니까?' 아래 '취소 / 포기하기'(Space) — 필드(콜헨)로 나온다.
 장비 내구도가 낮으면 나가기 창에서 '파티&던전 나가기'(필드로) → 대장간 수리 → 메뉴에서 다시 입장.
 연출은 넘기지 않고 기다린다 — '장면 넘기기' 는 클릭이라 뒤에서 돌던 게임이 앞으로 나온다 (2026-10-28 사용자).
 게임을 앞에 둔 채 돌리면(background 끔) 넘긴다.
@@ -355,7 +356,9 @@ class RaidExit(Exit):
 
     def dialog(self, bot, timeout):
         """혼자하기는 '출항선으로 이동 / 파티&던전 나가기', 함께하기는 '콜헨으로 돌아갑니다.' 아래 '취소 / 나가기(Space)'
-        (함께하기엔 출항선으로 돌아가는 것이 없다 — 2026-11-03 사용자). 함께하기 창이면 '나가기' 자리를 돌려준다."""
+        (함께하기엔 출항선으로 돌아가는 것이 없다 — 2026-11-03 사용자). 함께하기 판 중간(전멸 등)엔 '레이드에서
+        퇴장하시겠습니까?' 아래 '취소 / 포기하기(Space)' — 이 창을 몰라 나가기 키·아이콘만 2분 동안 번갈아 누르다 실패했다
+        (2026-11-23 함께하기 전멸). 함께하기 창이면 Space 버튼 자리를 돌려준다."""
         end = time.monotonic() + max(0.0, timeout)
         while True:
             if hit := ui_text.find(bot, gd.text("raid_leave_ship"), gd.region("raid_leave_buttons")):
@@ -363,6 +366,9 @@ class RaidExit(Exit):
             if ui_text.find(bot, gd.text("raid_leave_town"), gd.region("raid_leave_buttons"), exact=False):
                 self.party = True
                 return ui_text.find(bot, gd.text("raid_leave_ok"), gd.region("raid_leave_party_buttons")) or gd.point("raid_leave_ok")
+            if hit := ui_text.find(bot, gd.text("raid_leave_giveup"), gd.region("raid_leave_party_buttons")):
+                self.party = True
+                return hit
             if time.monotonic() >= end:
                 return None
             bot.sleep(0.8, 1.2)

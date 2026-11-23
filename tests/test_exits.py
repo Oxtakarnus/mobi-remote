@@ -137,6 +137,34 @@ if __name__ == "__main__":
     unittest.main()
 
 
+class RaidGiveUpTest(unittest.TestCase):
+    """레이드 함께하기 판 중간(전멸 등)의 나가기 창 '레이드에서 퇴장하시겠습니까?' 취소 / 포기하기(Space).
+    못 알아봐 나가기 키·아이콘만 2분 동안 번갈아 누르다 실패했다 (2026-11-23). 그림은 블랙박스 반 크기 프레임을 키운 것
+    (나가기 창 두 칸만)."""
+
+    def test_hotkey_then_give_up_with_space(self):
+        import cv2
+        import numpy as np
+        from pathlib import Path
+        from mabi.tasks import raid
+        shown = cv2.imdecode(np.fromfile(str(Path(__file__).parent / "fixtures" / "raid_leave_giveup.png"), np.uint8),
+                             cv2.IMREAD_COLOR)
+        blank = np.zeros_like(shown)
+        b = make_bot()
+        keys = []
+        b.key.side_effect = lambda k, *a, **kw: keys.append(k)
+        b.frame.side_effect = lambda: shown if "shift+esc" in keys else blank  # 나가기 키를 눌러야 창이 뜬다
+        inside = iter([True])
+        e = raid.RaidExit(to_field=True)  # 접속·실패 뒤 정리(get_out)는 필드로 — 함께하기 창이면 그래도 Space
+        with mock.patch.object(raid.RaidExit, "where", lambda self, bot: next(inside, False)), \
+                mock.patch.object(raid.ui_text, "click") as click:
+            self.assertTrue(e.run(b))
+        self.assertEqual(keys, ["shift+esc", "space"])
+        self.assertTrue(e.party)
+        click.assert_not_called()  # '파티&던전 나가기' 를 찾아 누르지 않는다
+        b.click.assert_not_called()  # 아이콘도 안 누른다 (예전엔 창이 뜬 채 아이콘을 눌러 창이 닫혔다)
+
+
 class ContentExitTest(unittest.TestCase):
     """드릴(결과 창 ESC)·필드 보스(영역 나가기 창) — 같은 틀의 하위 클래스."""
 
