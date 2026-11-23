@@ -264,7 +264,9 @@ def open_entry(bot: Bot, dungeon: str, difficulty: str = "", _moved: int = 0, at
     버튼 글자를 못 읽었으면 그대로 둔다 — 입장하기(Space)를 누르고 결과로 안다 (예전엔 '입장하기' 가 안 읽히면 한 번도
     눌러 보지 않고 실패했다).
     주간 전리품 정산이 남았으면 LootPending 으로 멈춘다 — 정산은 별개 과정이라 여기서 하지 않는다 (enter_screen 으로 부를 것).
-    party: 고정 파티 파티장 — 함께하기 탭에서 우연한 만남을 끈다 (tasks.party)."""
+    party: 고정 파티 파티장 — 함께하기 탭에서 우연한 만남을 끈다 (tasks.party).
+    이미 맞는 게 확실한 탭·난이도는 누르지 않는다 (entry.set_tab · entry.difficulty_chosen)."""
+    now = None  # 탭을 누르기 전에 읽은 입장 창 — '우연한 만남' 이 보이면 이미 함께하기
     if at == "entry" and not ui_text.find(bot, dungeon, gd.region("abyss_entry_title")):
         bot.log.info(f"다른 어비스의 입장 화면 → 닫고 '{dungeon}' 로")
         at = ""
@@ -278,7 +280,7 @@ def open_entry(bot: Bot, dungeon: str, difficulty: str = "", _moved: int = 0, at
         bot.sleep(1.0, 1.5)
         # 입장 화면이 열렸나: 오른쪽 아래(버튼·'주요 전리품')로 본다 — 위쪽 탭은 연속 실행 제한 창이 가릴 수 있다
         for _ in range(6):
-            if entry.visible(bot):
+            if (now := entry.read(bot)):
                 break
             # 전리품 버튼을 못 읽고 지나쳤으면 '입장 불가 — 주간 전리품을 먼저 정산하세요' 가 뜬다 → 닫고 멈춤 (목록은 그대로)
             if ui_text.find(bot, gd.text("abyss_loot_first"), gd.region("abyss_popup"), exact=False):
@@ -288,10 +290,14 @@ def open_entry(bot: Bot, dungeon: str, difficulty: str = "", _moved: int = 0, at
             bot.sleep(1.0, 1.4)
         else:
             raise NotSeen(f"'{dungeon}' 입장 화면이 열리지 않음 → {bot.snapshot('abyss').name}")
-    entry.set_tab(bot, solo, "abyss")
+    elif not solo:
+        now = entry.read(bot)
+    entry.set_tab(bot, solo, "abyss", now)
     if difficulty:
-        ui_text.click(bot, difficulty, gd.region("abyss_difficulty"), what=f"난이도 '{difficulty}'", shot="abyss")
+        ui_text.click(bot, difficulty, gd.region("abyss_difficulty"), what=f"난이도 '{difficulty}'", shot="abyss",
+                      chosen=entry.difficulty_chosen)
     # 버튼: '이동하기' 면 입구로 가서 다시. 입장하기거나 못 읽었으면 그대로 (입장하기 결과로 안다)
+    # 탭 앞에서 읽은 창(now)은 막 뜨는 중이었을 수 있어 스위치 켜짐은 새로 읽는다
     e = None
     for _ in range(3):
         e = entry.read(bot)

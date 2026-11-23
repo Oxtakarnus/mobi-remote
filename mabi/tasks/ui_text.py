@@ -47,18 +47,29 @@ def wait(bot: Bot, want: str, region=None, timeout: float = 5, exact: bool = Tru
 
 
 def click(bot: Bot, want: str, region=None, exact: bool = True, what: str = "", tries: int = 4,
-          shot: str = "text", key: str | None = None) -> None:
+          shot: str = "text", key: str | None = None, chosen=None) -> bool:
     """want 글자를 찾아 누른다. tries 번 봐도 없으면 NotSeen (오류 — 큐가 한 번 더, 스크린샷 shot).
-    key: 버튼에 단축키가 붙어 있으면 글자로 있는 것만 확인하고 클릭 대신 그 키 (사용자 2026-10-28)."""
+    key: 버튼에 단축키가 붙어 있으면 글자로 있는 것만 확인하고 클릭 대신 그 키 (사용자 2026-10-28).
+    chosen(frame, items, hit): 선택지(난이도 등)가 이미 골라져 있나 — 참이면 누르지 않는다. 글자를 찾은 그 화면으로 누르기
+    전에 한 번 볼 뿐, 누른 뒤 맞았나는 다시 보지 않는다 (결과로 안다). 눌렀으면 True, 골라져 있어 그대로 두면 False."""
     for _ in range(tries):
-        hit = find(bot, want, region, exact)
+        if chosen is None:
+            hit = find(bot, want, region, exact)
+        else:
+            frame = bot.frame()
+            items = find_texts(frame, region)
+            got = match(items, want, exact)
+            if got and chosen(frame, items, got):
+                bot.log.debug(f"'{what or want}' 가 이미 골라져 있음 → 누르지 않음")
+                return False
+            hit = got[1:] if got else None
         if hit:
             if key:
                 bot.key(key)
             else:
                 bot.click(hit)
             bot.sleep(1.2, 1.6)
-            return
+            return True
         bot.sleep(1.0, 1.4)
     raise NotSeen(f"'{what or want}' 를 화면에서 찾지 못함 → {bot.snapshot(shot).name}")
 

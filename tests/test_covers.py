@@ -133,6 +133,92 @@ class SetTabTest(unittest.TestCase):
             entry.set_tab(bot, solo=True, shot="t")
         bot.click.assert_called_once_with((830, 57))
 
+    def test_together_seen_skips_tab(self):
+        """탭 앞에서 읽은 창에 '우연한 만남' 이 보이면 이미 함께하기 — 탭 글자를 읽지도 누르지도 않는다 (사용자 2026-11-23)."""
+        bot = self.bot(popup=False)
+        now = entry.Entry("enter", (True, (1850, 610)))
+        with mock.patch.object(entry.ui_text, "find", side_effect=AssertionError("탭 글자를 읽지 않는다")):
+            self.assertFalse(entry.set_tab(bot, solo=False, shot="t", now=now))
+        bot.click.assert_not_called()
+
+    def test_unsure_tab_is_clicked(self):
+        """혼자하기를 원하거나, 우연한 만남이 안 보이면 (혼자하기거나 능력치 미달 — 모른다) 지금처럼 누른다."""
+        for solo, now in ((True, entry.Entry("enter", (True, (1850, 610)))), (False, entry.Entry("move", None)), (False, None)):
+            bot = self.bot(popup=False)
+            with mock.patch.object(entry.ui_text, "find", return_value=(830, 57)):
+                self.assertTrue(entry.set_tab(bot, solo=solo, shot="t", now=now))
+            bot.click.assert_called_once_with((830, 57))
+
+
+class DifficultyChosenTest(unittest.TestCase):
+    """입장 창 난이도가 이미 골라져 있으면 누르지 않는다 — 고른 것은 빨간 테두리·글자 (entry.difficulty_chosen, 11-23)."""
+
+    def read(self, name, region):
+        from mabi import ocr
+        f = _frame(name)
+        return f, ocr.find_texts(f, gd.region(region))
+
+    def chosen(self, name, region):
+        f, items = self.read(name, region)
+        return [t for t, x, y in items if entry.difficulty_chosen(f, items, (t, x, y))]
+
+    def test_chosen_is_the_red_one(self):
+        self.assertEqual(self.chosen("abyss_difficulty_hard2.png", "abyss_difficulty"), ["매우 어려움2"])
+        self.assertEqual(self.chosen("abyss_difficulty_hell1.png", "abyss_difficulty"), ["지옥1"])  # 알약이 넓어 덜 빨갛다
+        self.assertEqual(self.chosen("raid_entry_scas.png", "raid_difficulty"), ["매우 어려움"])
+
+    def test_two_reds_is_unsure(self):  # 둘 이상 빨가면 (뒤 그림 등) 모르는 것 → 누른다
+        f, items = self.read("abyss_difficulty_hard2.png", "abyss_difficulty")
+        hit = next(i for i in items if i[0] == "매우 어려움2")
+        x, y = next((x, y) for t, x, y in items if t == "어려움")
+        both = f.copy()
+        both[y - 12:y + 12, x - 40:x + 40] = (0, 40, 250)  # 빨강 (BGR)
+        self.assertFalse(entry.difficulty_chosen(both, items, hit))
+
+    def test_click_skips_chosen(self):
+        """ui_text.click(chosen=...) — 골라져 있으면 누르지 않고 False, 아니면 그 글자를 눌러 True."""
+        from mabi.tasks import ui_text
+        bot = mock.Mock()
+        bot.frame.return_value = _frame("abyss_difficulty_hard2.png")
+        region = gd.region("abyss_difficulty")
+        self.assertFalse(ui_text.click(bot, "매우 어려움2", region, chosen=entry.difficulty_chosen))
+        bot.click.assert_not_called()
+        self.assertTrue(ui_text.click(bot, "매우 어려움", region, chosen=entry.difficulty_chosen))
+        self.assertEqual(bot.click.call_count, 1)
+
+
+class OpenEntryTest(unittest.TestCase):
+    """열린 입장 창부터 맞출 때: 탭 앞에서 읽은 창을 set_tab 에 넘기고, 난이도는 골라져 있나 보고 누른다 (11-23)."""
+
+    def run_open(self, mod, now, solo, **kw):
+        bot = mock.MagicMock()
+        read = mock.Mock(return_value=now) if now else mock.Mock(side_effect=AssertionError("창을 읽지 않는다"))
+        with mock.patch.object(mod.ui_text, "find", return_value=(960, 100)), \
+                mock.patch.object(mod.entry, "read", read), \
+                mock.patch.object(mod.entry, "set_tab") as tab, \
+                mock.patch.object(mod.ui_text, "click") as click, \
+                mock.patch.object(mod.entry, "chance_on") as on:
+            mod.open_entry(bot, "어딘가", "매우 어려움2", at="entry", solo=solo, **kw)
+        self.assertIs(click.call_args.kwargs["chosen"], entry.difficulty_chosen)
+        return bot, tab, on
+
+    def test_abyss_together(self):
+        from mabi.tasks import abyss
+        now = entry.Entry("enter", (True, (1850, 610)))
+        bot, tab, on = self.run_open(abyss, now, solo=False)
+        tab.assert_called_once_with(bot, False, "abyss", now)
+        on.assert_called_once_with(bot, now)  # 버튼·스위치는 탭·난이도 뒤에 새로 읽은 창으로
+
+    def test_raid(self):
+        from mabi.tasks import raid
+        now = entry.Entry("sail", (True, (1850, 610)))
+        bot, tab, on = self.run_open(raid, now, solo=False)
+        tab.assert_called_once_with(bot, False, "raid", now)
+        on.assert_called_once_with(bot)
+        bot, tab, on = self.run_open(raid, None, solo=True)  # 혼자하기는 탭 앞에서 창을 읽지 않는다 (알 길이 없다)
+        tab.assert_called_once_with(bot, True, "raid", None)
+        on.assert_not_called()
+
 
 class WipeTest(unittest.TestCase):
     """전멸은 첫 줄('전멸하였습니다' — 가려지는 자리) 대신 그 아래 '재도전' 줄로 본다."""

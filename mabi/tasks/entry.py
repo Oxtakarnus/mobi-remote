@@ -4,6 +4,8 @@
 '혼자하기 / 함께하기' 탭은 연속 실행 제한 창이 가리는 자리라 (data/ui.json covers) 판단에 쓰지 않는다
 (2026-11-10 친구 PC: 전멸 뒤 입장 창이 떴는데 탭이 가려져 입장 창으로 못 보고 74분 멈춤).
 탭·우연한 만남은 누르기만 하고 맞았는지 따로 보지 않는다 — 입장하기 뒤 매칭·로딩 신호가 오나로 안다 (abyss.enter).
+누르기 전에 이미 맞는 게 확실하면 누르지 않는다 (11-23 사용자: 이미 함께하기·매우 어려움2 인데도 다시 눌러 느림) —
+함께하기는 '우연한 만남' 이 보이면 (혼자하기 탭엔 없다), 난이도는 빨간 테두리·글자면 (difficulty_chosen). 모르면 누른다.
 예전엔 누른 뒤 탭을 '우연한 만남 스위치가 있나' 로 확인했는데, 스위치는 능력치(마도 저항 등)가 그 난이도 기준에
 못 미치면 함께하기에도 안 떠서 탭이 바뀌지 않은 것으로 읽고 실패했다 (2026-11-16 사용자: 입장 창인지만 알면 아는
 자리를 누르고 결과로 확인).
@@ -14,11 +16,14 @@ from dataclasses import dataclass
 from .. import gamedata as gd
 from ..bot import Bot
 from ..ocr import find_texts, nospace
-from ..vision import green_ratio
+from ..vision import green_ratio, red_ratio
 from . import ui_text
 from ..exceptions import CannotProceed
 
 BUTTONS = (("abyss_enter", "enter"), ("raid_sail", "sail"), ("abyss_move", "move"))  # ui.json 문구 → 버튼
+# 고른 난이도 글자 둘레(80x24)의 빨간 화소 비율 기준 — 잰 값: 고른 것 0.34 (지옥1 은 알약이 넓어 0.20), 안 고른 것 0.00
+# (10-25·11-16 어비스, 레이드 입장 창)
+RED_ON = 0.1
 
 
 def _switch_xy(label) -> tuple[int, int]:
@@ -137,18 +142,33 @@ def _settled(bot: Bot, timeout: float = 3) -> Entry | None:
         bot.sleep(0.5, 0.8)
 
 
-def set_tab(bot: Bot, solo: bool, shot: str) -> None:
+def difficulty_chosen(frame, items, hit) -> bool:
+    """입장 창 난이도 hit 가 이미 골라져 있나 (ui_text.click 의 chosen). 고른 난이도는 빨간 테두리·빨간 글자, 나머지는 회색
+    바탕·흰 글자다 (어비스·레이드 입장 창). 읽은 난이도 중 빨간 것이 hit 하나뿐일 때만 참 — 뒤 그림이 빨개 둘 이상이
+    빨갛게 보이면 모르는 것으로 보고 누른다. 창이 막 뜨는 중이라 덜 빨가면 안 고른 것으로 보고 누른다."""
+    def red_at(x: int, y: int) -> bool:
+        return red_ratio(frame[max(0, y - 12):y + 12, max(0, x - 40):x + 40]) >= RED_ON
+    return [(x, y) for _, x, y in items if red_at(x, y)] == [tuple(hit[1:])]
+
+
+def set_tab(bot: Bot, solo: bool, shot: str, now: Entry | None = None) -> bool:
     """탭 글자를 찾아 혼자하기(solo) 또는 함께하기를 누른다 — 누르기만 하고 바뀌었나는 보지 않는다 (입장 결과로 안다).
+    누르면 True. now: 탭을 누르기 전에 읽은 입장 창 — '우연한 만남' 이 보이면 이미 함께하기라 함께하기는 누르지 않는다
+    (혼자하기 탭엔 없다. 안 보이면 혼자하기거나 능력치 미달이라 모른다 → 누른다).
     글자가 안 보이면: 연속 실행 제한 창이 가렸으면 CannotProceed (게임을 다시 켜야 풀린다), 아니면 누르지 않고 간다."""
     name = "혼자하기" if solo else "함께하기"
+    if not solo and now is not None and now.together:
+        bot.log.debug("입장 창이 이미 함께하기 ('우연한 만남' 이 보임) → 탭을 누르지 않음")
+        return False
     for _ in range(4):
         hit = ui_text.find(bot, gd.text("raid_solo" if solo else "abyss_together"), gd.region("abyss_entry_top"), exact=False)
         if hit:
             bot.click(hit)
             bot.sleep(1.2, 1.6)
-            return
+            return True
         if bot.run_limit_popup():
             raise CannotProceed(f"'{name}' 탭을 누르지 못함 — 연속 실행 제한 창이 탭을 가림 (게임을 다시 켜야 함) "
                                 f"→ {bot.snapshot(shot).name}")
         bot.sleep(1.0, 1.4)  # 막 뜬 창이면 다시 본다
     bot.log.info(f"입장 창 '{name}' 탭 글자가 안 보임 → 누르지 않고 진행 (입장 결과로 확인)")
+    return False

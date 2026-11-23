@@ -113,7 +113,8 @@ def where(bot: Bot, raid: str) -> str:
 
 def open_entry(bot: Bot, raid: str, difficulty: str = "", at: str = "", solo: bool = True) -> None:
     """raid 입장 창을 열고 탭('혼자하기', solo 가 아니면 '함께하기' + 우연한 만남 켬) · 난이도를 맞춘다.
-    at 이 entry·list·menu 면 그 자리부터."""
+    at 이 entry·list·menu 면 그 자리부터. 이미 맞는 게 확실한 탭·난이도는 누르지 않는다 (abyss.open_entry 와 같다)."""
+    now = None  # 탭을 누르기 전에 읽은 입장 창 — '우연한 만남' 이 보이면 이미 함께하기
     if at == "entry" and not ui_text.find(bot, raid, gd.region("raid_entry_title")):
         bot.log.info(f"다른 레이드의 입장 창 → 닫고 '{raid}' 로")
         bot.key("esc")
@@ -124,13 +125,16 @@ def open_entry(bot: Bot, raid: str, difficulty: str = "", at: str = "", solo: bo
             ui_text.open_menu(bot, "raid_menu", "메뉴의 레이드", "raid", menu_open=at == "menu")
             bot.sleep(1.0, 1.5)
         ui_text.click(bot, raid, gd.region("raid_list"), what=f"레이드 '{raid}'", shot="raid")
-        if not entry.wait(bot, 8):
+        if not (now := entry.wait(bot, 8)):
             raise NotSeen(f"'{raid}' 입장 창이 열리지 않음 → {bot.snapshot('raid').name}")
-    entry.set_tab(bot, solo, "raid")
+    elif not solo:
+        now = entry.read(bot)
+    entry.set_tab(bot, solo, "raid", now)
     if difficulty:
-        ui_text.click(bot, difficulty, gd.region("raid_difficulty"), what=f"난이도 '{difficulty}'", shot="raid")
+        ui_text.click(bot, difficulty, gd.region("raid_difficulty"), what=f"난이도 '{difficulty}'", shot="raid",
+                      chosen=entry.difficulty_chosen)
     if not solo:
-        entry.chance_on(bot)
+        entry.chance_on(bot)  # 탭 앞에서 읽은 창(now)은 막 뜨는 중이었을 수 있어 스위치 켜짐은 새로 읽는다
 
 
 def _travel_to_dock(bot: Bot) -> bool:

@@ -175,3 +175,16 @@ def green_ratio(patch, **kw) -> float:
     m = green(patch, **kw)
     return float(m.mean()) if m.size else 0.0
 
+
+def red(patch, r_min: int = 170, g_max: int = 90, b_max: int = 90) -> np.ndarray:
+    """patch(BGR 화면 조각) 화소마다 빨간가. 기본 기준(R>170 · G<90 · B<90)은 입장 창에서 고른 난이도의 빨간 글자·테두리
+    (잰 값 R 약 250 · G 약 38 · B 0~5, tasks/entry)."""
+    p = np.asarray(patch).reshape(-1, 3).astype(int)
+    return (p[:, 2] > r_min) & (p[:, 1] < g_max) & (p[:, 0] < b_max)
+
+
+def red_ratio(patch, **kw) -> float:
+    """patch 중 빨간 화소 비율 (0~1, 빈 조각은 0). 기준값은 red 와 같다."""
+    m = red(patch, **kw)
+    return float(m.mean()) if m.size else 0.0
+
