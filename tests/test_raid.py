@@ -95,6 +95,16 @@ class CardTest(unittest.TestCase):
         self.assertTrue(raid.raids())
         self.assertTrue(all(raid.raids().values()))
 
+    def test_kavrak_very_hard_from_1123(self):
+        """카브락 매우 어려움은 11-23 06:00 주부터 열린다 (사용자 11-23 게임 화면) — 게임 데이터 일정에 이미 있어 목록이 저절로
+        바뀐다. 난이도 줄이 셋이 돼도 '어려움' 은 글자가 통째로 같은 것만 누른다 (ui_text.match exact)."""
+        import datetime as dt
+        from mabi.tasks import ui_text
+        self.assertEqual(raid.raids(dt.datetime(2026, 11, 23, 5, 59))["카브락"], ["입문", "어려움"])
+        self.assertEqual(raid.raids(dt.datetime(2026, 11, 23, 6, 0))["카브락"], ["입문", "어려움", "매우 어려움"])
+        row = [("입문", 100, 221), ("매우 어려움", 300, 221), ("어려움", 190, 221)]
+        self.assertEqual(ui_text.match(row, "어려움"), ("어려움", 190, 221))
+
 
 WEEK_1112 = __import__("datetime").datetime(2026, 11, 12, 12)  # 아래 화면을 찍은 주 (11-05 화면과 같은 레이드)
 
