@@ -251,17 +251,22 @@ class Monitor:
         return seen.done if seen.done not in WAITS else None
 
     # ---------------------------------------------------------------- 동작 확인
-    def act(self, ctx: Ctx, what: str, do, expect, within: float | None = None, tries: int = 2) -> bool | None:
+    def act(self, ctx: Ctx, what: str, do, expect, within: float | None = None, tries: int = 2,
+            settled: bool = False) -> bool | None:
         """what 동작을 한다: 막는 것 정리 → do() → do() 가 끝난 뒤 within 초 안에 expect() 가 참이 되나. 안 되면 다시
         (tries 번까지). 그사이 끼어들기(monitor.interrupts)를 넘겼으면 그 시도는 세지 않고 바로 다시 한다 — 끼어든 창이
         누른 것을 먹었을 수 있다 (REDO 번까지, 사용자 2026-11-17 '멈추고 확인 → 해결 → 다시 원래대로').
+        settled: 부른 쪽이 방금 정리하고 연 창을 읽은 채라 첫 시도 앞 정리를 건너뛴다 (열어 둔 아르바이트 목록 — 정리는
+        메인 화면이 아니면 창 그림을 모두 찾아본다). 다시 할 때는 정리한다.
         True 됨 / False 할 수 없음 (do() 가 False — 버튼이 없음 등, 다시 하지 않는다) / None 했는데 기대한 변화가 끝내 없음."""
         within = within or self.act_within
         n = redo = 0
         while n < tries:
             n += 1
             # 던전 창에서 하는 동작(입장)이면 그 창을 닫지 않는다
-            self.settle(Ctx(ctx.task, ctx.what, menus=True, keep_dungeon_window=ctx.keep_dungeon_window))
+            if not settled:
+                self.settle(Ctx(ctx.task, ctx.what, menus=True, keep_dungeon_window=ctx.keep_dungeon_window))
+            settled = False
             k = self.bot.interrupt_n
             if do() is False:
                 self.record(ctx, "동작", did=what, ok=False, why="할 수 없음", n=n)

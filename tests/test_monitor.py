@@ -181,6 +181,16 @@ class ActTest(unittest.TestCase):
             self.assertIsNone(self.mon().act(monitor.Ctx("t"), "x", do, lambda: False, within=6, tries=2))
         self.assertEqual(do.call_count, 2)
 
+    def test_settled_skips_first_settle_only(self):
+        """부른 쪽이 방금 정리하고 읽은 창이면 첫 시도 앞 정리를 건너뛰고, 다시 할 때는 정리한다 (열어 둔 아르바이트 목록)."""
+        m = self.mon()
+        do = mock.Mock(return_value=True)
+        clock = iter(range(0, 1000, 5))
+        with mock.patch.object(core.time, "monotonic", side_effect=lambda: next(clock)):
+            self.assertIsNone(m.act(monitor.Ctx("t"), "x", do, lambda: False, within=6, tries=2, settled=True))
+        self.assertEqual(do.call_count, 2)
+        m.settle.assert_called_once()
+
     def test_within_counts_after_do(self):
         """do() 가 오래 걸려도(창 열기·글자 읽기·빠른 이동) 기다리는 시간은 그 뒤부터 (2026-11-17 07:09 '진행하기')."""
         now = [1000.0]

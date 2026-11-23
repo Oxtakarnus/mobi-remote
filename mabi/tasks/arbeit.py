@@ -13,6 +13,7 @@ NPC 대화·작별 화면·채집·제작·가공 창·던전 창)은 점검자(
 import difflib
 import re
 import time
+from dataclasses import dataclass, field
 
 from .. import craft, gamedata as gd, monitor, ocr, richtext
 from ..bot import Bot
@@ -193,42 +194,58 @@ def _same(a: str, b: str) -> bool:
     return a in b or b in a or difflib.SequenceMatcher(None, a, b).ratio() >= 0.85
 
 
-def _panel_jobs(bot: Bot) -> list[tuple[str, tuple[int, int], int]]:
-    """퀘스트 창 아르바이트 탭에서 수락해 둔 일 ('진행하기' 카드) [(제목 짐작, 버튼 자리, 목록 쪽)].
+@dataclass
+class _Panel:
+    """퀘스트 창 아르바이트 목록을 한 번 읽은 것 (_panel_jobs). 창은 열린 채 마지막으로 읽은 쪽에 있다."""
+    cards: list = field(default_factory=list)  # 수락해 둔 일 [(제목 짐작, '진행하기' 자리, 목록 쪽)]
+    apply: tuple[int, int] | None = None       # 마지막으로 읽은 쪽의 맨 위 '지원하기' — 지원할 일이 있다
+    closed: bool = False                       # '구인 마감' — 지원할 일이 없다 (수락해 둔 일은 남았을 수 있다)
+    tracked: frozenset[str] | None = None      # 창을 열기 직전 추적 칸 제목 (track) — 창이 열려 있으면 CLI 가 못 본다
+    interrupts: int = 0                        # 창을 연 때의 끼어들기 수 (Bot.interrupt_n) — 늘었으면 목록이 닫혔을 수 있다
+
+
+def _panel_jobs(bot: Bot, track: bool = False) -> _Panel:
+    """퀘스트 창 아르바이트 탭을 읽는다 — 수락해 둔 일('진행하기' 카드), 맨 위 '지원하기', '구인 마감'.
     CLI get_quests 에는 지금 추적 중인(pinned) 아르바이트 하나만 나와서 (2026-10-22: 막힌 일 두 개가 목록에서
-    빠져 '다 끝남' 으로 기록됨) 수락한 일 전부는 이 창으로 본다. 창은 열린 채로 두고 마지막 쪽까지 내려가 있다."""
+    빠져 '다 끝남' 으로 기록됨) 수락한 일 전부는 이 창으로 본다. 창은 열린 채로 두고 마지막으로 읽은 쪽에 있다.
+    track: 창을 열기 직전 추적 칸 제목도 본다 — 창이 추적 칸을 가려 열린 동안엔 CLI 가 못 본다 (지원 뒤 새 일 가르기, apply_new)."""
     _settle(bot)  # 창을 열 때 ESC 가 남은 NPC 메뉴·전달 창을 닫아 버리지 않게
+    out = _Panel()
+    if track:
+        bot.to_main()
+        out.tracked = frozenset(j["title"] for j in accepted(bot, raw=True))
     open_arbeit_tab(bot)
-    out = []
+    out.interrupts = bot.interrupt_n
     pages = bot.cfg["arbeit"]["list_pages"]
     bot.marks.arb_scrolled = 0
     bot.marks.arb_closed = False
     for page in range(pages):
         items = _buttons(bot)
         for t, x, y in items:
-            if _is(t, PROGRESS) and not any(o[1] == (x, y) for o in out):
-                out.append((_card_title(items, x, y), (x, y), page))
-                if out[-1][0]:
-                    bot.marks.arb_titles = {*(bot.marks.arb_titles or ()), out[-1][0]}
-        # 구인 마감 ('새로운 아르바이트를 기다려주세요') — 남은 일도 지원할 일도 없다. 더 볼 것 없음
+            if _is(t, PROGRESS) and not any(o[1] == (x, y) for o in out.cards):
+                out.cards.append((_card_title(items, x, y), (x, y), page))
+                if out.cards[-1][0]:
+                    bot.marks.arb_titles = {*(bot.marks.arb_titles or ()), out.cards[-1][0]}
+        # 구인 마감 ('새로운 아르바이트를 기다려주세요') — 지원할 일이 없다. 더 볼 것 없음
         if any(w in ocr.nospace(t) for t, _, _ in items for w in gd.words("arbeit_closed")):
-            bot.marks.arb_closed = not out
+            out.closed = True
+            bot.marks.arb_closed = not out.cards
             break
         # 수락한 일('진행하기')은 목록 맨 위에 모이고 그 아래가 구인 중('지원하기') → '지원하기' 가 보이면 더 내릴 필요 없다
-        if any(_is(t, APPLY) for t, _, _ in items) or page + 1 >= pages:
+        if apply := sorted(((x, y) for t, x, y in items if _is(t, APPLY)), key=lambda b: b[1]):
+            out.apply = apply[0]
+            break
+        if page + 1 >= pages:
             break
         _scroll_panel(bot, -4)
         bot.marks.arb_scrolled += 1
     return out
 
 
-def _press_other(bot: Bot, exclude) -> str | None:
-    """추적 중이 아닌 수락한 일 중 exclude 에 없는 것의 '진행하기' 를 누른다. 누른 일의 제목 (CLI 기준) 또는 None."""
-    jobs = [j for j in _panel_jobs(bot) if not any(_same(j[0], e) for e in exclude)]
-    if not jobs:
-        bot.to_main()
-        return None
-    guess, pos, page = jobs[0]
+def _press_other(bot: Bot, card, exclude) -> str | None:
+    """열어 둔 목록(_panel_jobs)에서 추적 중이 아닌 수락한 일 card (제목 짐작, 버튼 자리, 목록 쪽) 의 '진행하기' 를
+    누른다. 누른 일의 제목 (CLI 기준) 또는 None."""
+    guess, pos, page = card
     # 내려가 있으면 그 쪽으로 돌아가서 누른다 (대개 맨 위 쪽이라 스크롤이 없다)
     if bot.marks.arb_scrolled != page:
         _scroll_panel(bot, 4 * (bot.marks.arb_scrolled + 1))
@@ -508,19 +525,20 @@ class _Job:
         return _NEXT
 
 
-def _apply_top(bot: Bot) -> bool | None:
+def _apply_top(bot: Bot, at=None) -> bool | None:
     """맨 위 '지원하기' → 이동 → 수락. 수락했으면 True, 지원할 일이 없으면 False, 눌렀는데 수락하지 못했으면 None,
     '구인 마감' 도 '지원하기' 도 못 읽었으면 'missing'.
     가는 길과 NPC 대화는 점검자가 본다: 메뉴가 늦게 떠도 '수락' 이 보일 때 누른다 — 기다리던 쪽이 '대화 넘기기' 를 눌러
-    수락을 놓치고 3분을 기다린 적이 있다 (2026-10-26 10:34). 수락 전에 대화가 끝나면 한 번 더 지원한다."""
+    수락을 놓치고 3분을 기다린 적이 있다 (2026-10-26 10:34). 수락 전에 대화가 끝나면 한 번 더 지원한다.
+    at: 열어 둔 목록에서 방금 읽은 '지원하기' 자리 — 첫 시도는 창을 다시 열지 않고 바로 누른다 (다시 할 땐 새로 연다)."""
     a = bot.cfg["arbeit"]
     mon = monitor.of(bot)
     ctx = Ctx("arbeit", "지원하기", menus=True)
     missing = False
 
     def do():
-        nonlocal missing
-        pressed = _press_apply(bot)
+        nonlocal missing, at
+        pressed, at = _press_apply(bot, at), None
         if pressed is None:
             missing = True
             return False
@@ -532,7 +550,7 @@ def _apply_top(bot: Bot) -> bool | None:
                 or bot.exists(a["accept"]))
 
     for n in range(1, 3):
-        r = mon.act(ctx, "지원하기", do, started, within=15, tries=1)
+        r = mon.act(ctx, "지원하기", do, started, within=15, tries=1, settled=at is not None)
         if r is False:
             return "missing" if missing else False
         if r and _wait_accept(bot, mon, ctx):
@@ -542,16 +560,29 @@ def _apply_top(bot: Bot) -> bool | None:
     return None
 
 
-def _press_apply(bot: Bot) -> bool | None:
+def _press_apply(bot: Bot, at=None) -> bool | None:
     """퀘스트 창 목록 맨 위 '지원하기' 를 누른다. 눌렀으면 True, 지원할 일이 없으면 False ('구인 마감'·수락해 둔 일만),
-    두 번 봐도 못 읽었으면 None."""
+    두 번 봐도 못 읽었으면 None. at: 열어 둔 목록에서 방금 읽은 자리 — 창을 다시 열지 않고 누른다."""
+    if at:
+        bot.log.debug("아르바이트: 방금 읽은 목록의 '지원하기' 를 창을 다시 열지 않고 누름")
+    b = at or _apply_button(bot)
+    if not b:
+        return b
+    bot.click(b)
+    bot.sleep(2, 2.5)
+    _fast_travel(bot)
+    return True
+
+
+def _apply_button(bot: Bot):
+    """창을 열어 맨 위 '지원하기' 자리를 찾는다. 지원할 일이 없으면 False, 두 번 봐도 못 읽었으면 None."""
     # 목록이 보이는데 '지원하기' 를 못 읽고 그냥 닫은 적이 있다 (2026-10-29 13:33, 0개 완료인데 OK) →
     # '구인 마감' 이 아니면 창을 다시 열어 한 번 더 보고, 그래도 없으면 읽은 글자와 화면을 남기고 실패로
     for n in range(1, 3):
         open_arbeit_tab(bot)
         b = _find_card_button(bot, None, APPLY)
         if b:
-            break
+            return b
         read = bot.marks.arb_read
         closed = any(w in ocr.nospace(t) for page in read for t in page for w in gd.words("arbeit_closed"))
         # 수락해 둔 일('진행하기')만 보이고 구인 카드가 없으면 오늘 지원할 일이 없는 것 — 건너뛴 일(가공 필요 등)만
@@ -564,12 +595,7 @@ def _press_apply(bot: Bot) -> bool | None:
                         f"→ {bot.snapshot('arbeit_no_apply').name}")
         bot.to_main()
         bot.sleep(1.5, 2)
-    else:
-        return None
-    bot.click(b)
-    bot.sleep(2, 2.5)
-    _fast_travel(bot)
-    return True
+    return None
 
 
 def _wait_accept(bot: Bot, mon, ctx: Ctx) -> bool:
@@ -600,7 +626,7 @@ def verify(bot: Bot, cfg: dict) -> bool:
         return False
     if bot.marks.arb_closed:
         return True  # 숙제 끝에 본 목록이 '구인 마감' (남은 일 없음) — 창을 또 열지 않는다
-    left = _panel_jobs(bot)
+    left = _panel_jobs(bot).cards
     bot.to_main()
     return not left
 
@@ -629,12 +655,14 @@ class _Round:
     """아르바이트 숙제 한 번 — 수락한 일부터, 없으면 새 일에 지원하며 max_jobs 개까지. 단계:
     준비(prepare: 카드 제목 읽기·오늘 장부 이어 받기) → [할 일 고르기(pick) → 없으면 지원(apply_new)
     → 가공 확인(alter_or_skip) → 진행하기 → _work → 결과 적기(record)] → 마무리(finish).
-    완료·건너뜀·막힘 장부(done·skipped·stuck)를 단계끼리 같이 쓴다."""
+    완료·건너뜀·막힘 장부(done·skipped·stuck)를 단계끼리 같이 쓴다. 고르다 연 목록에 '지원하기' 가 보이면
+    그 창을 연 채로 지원한다 (panel)."""
 
     def __init__(self, bot: Bot, a: dict):
         self.bot, self.a = bot, a
         self.done, self.skipped, self.stuck = [], {}, []
         self.unconfirmed = 0  # 지원했는데 수락한 일이 안 보인 횟수
+        self.panel = None  # '지원하기' 가 보이는 채로 열어 둔 목록 (_Panel — pick 이 남기고 apply_new 가 한 번 쓴다)
         self.book = _book(bot) or {}
 
     def save(self, title=None, key="arb_job", stage="진행"):
@@ -707,7 +735,10 @@ class _Round:
         job = jobs[0] if jobs else None
         if job is None:
             # 추적 중이 아닌 수락한 일 (앞 실행에서 막혔거나 사람이 받아 둔 일) 부터 이어 한다
-            title = _press_other(bot, [*skipped, *stuck, *done])
+            exclude = [*skipped, *stuck, *done]
+            panel = _panel_jobs(bot, track=True)
+            card = next((c for c in panel.cards if not any(_same(c[0], e) for e in exclude)), None)
+            title = _press_other(bot, card, exclude) if card else None
             if title:
                 bot.log.info(f"아르바이트 이어서 진행: {title}")
                 # 추적 칸에 안 보여도 그만두지 않는다 — 진행하기로 바로 NPC 대화([결과 보고] 메뉴)가 열리면 추적 칸이
@@ -717,19 +748,33 @@ class _Round:
                 job, pressed = {"title": title}, True
                 # 카드 제목을 못 읽고(OCR) 눌렀더니 이미 막혔거나 건너뛴 일이었다 (2026-10-26 08:05 '뱅가드 브리치'를
                 # 막힘 처리 직후 또 가서 8분을 더 씀) → 하지 않고 끝낸다. 제목 모를 카드를 또 누르게 되므로 목록도 여기까지
-                if any(_same(title, e) for e in [*skipped, *stuck, *done]):
+                if any(_same(title, e) for e in exclude):
                     bot.log.info(f"아르바이트 '{title}': 이미 막힘·건너뜀으로 본 일 → 이번엔 그만")
                     _leave(bot)
                     return _STOP
-        if job is None and bot.marks.arb_closed:
-            return _STOP  # 방금 본 목록이 '구인 마감' — 지원하러 창을 또 열 필요 없다
+            elif card is None and panel.apply:
+                # 누를 일이 없고 '지원하기' 가 보인다 → 창을 닫지 않는다. 지원(apply_new)이 다시 열지 않고 그 자리를 누른다
+                # (예전엔 닫고 바로 다시 열어 같은 목록을 또 읽었다 — 일 하나마다 몇 초, 사용자 2026-11-23)
+                self.panel = panel
+            elif card is None:
+                bot.to_main()
+            if job is None and panel.closed:
+                return _STOP  # 방금 본 목록이 '구인 마감' — 지원하러 창을 또 열 필요 없다
         return job, pressed
 
     def apply_new(self) -> bool:
-        """새 일에 지원하고 추적 칸에 뜨는지 본다. 이어 돌면 True, 그만할 때(지원할 일 없음·지원 실패) False."""
+        """새 일에 지원하고 추적 칸에 뜨는지 본다. 이어 돌면 True, 그만할 때(지원할 일 없음·지원 실패) False.
+        고르다 연 목록이 열려 있으면(panel — '지원하기' 가 보임) 창을 다시 열지 않고 그 자리를 누른다."""
         bot, stuck = self.bot, self.stuck
-        before = {j["title"] for j in accepted(bot, raw=True)}
-        applied = _apply_top(bot)
+        panel, self.panel = self.panel, None
+        # 지원 앞 추적 칸 제목 — 목록이 열려 있으면 창을 열기 전에 본 것 (창이 추적 칸을 가려 CLI 가 못 본다)
+        if panel is not None and panel.tracked is not None:
+            before = set(panel.tracked)
+        else:
+            before = {j["title"] for j in accepted(bot, raw=True)}
+        # 그사이 끼어든 창을 넘겼으면 목록이 닫혔을 수 있다 → 창을 새로 연다
+        at = panel.apply if panel is not None and panel.interrupts == bot.interrupt_n else None
+        applied = _apply_top(bot, at)
         if applied == "missing":
             stuck.append("(지원하기를 못 찾음)")
             return False

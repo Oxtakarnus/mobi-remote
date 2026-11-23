@@ -217,6 +217,94 @@ class ArbeitTest(unittest.TestCase):
             self.assertIs(arbeit._apply_top(bot), False)
         bot.snapshot.assert_not_called()
 
+    # 건너뛴 일 하나('진행하기') 아래 구인 카드 둘 ('지원하기')
+    LIST = [("옷감이 필요해", 1400, 230), ("티르 코네일 · 1일 남음", 1450, 270), ("진행하기", 1756, 400),
+            ("양털 납품", 1400, 480), ("티르 코네일 · 3시간 남음", 1450, 520), ("지원하기", 1756, 640),
+            ("신성한 강철", 1400, 700), ("지원하기", 1756, 860)]
+
+    @staticmethod
+    def quest(title):
+        return {"QuestTitle": title, "Source": "pinned_sub", "Objectives": []}
+
+    def round(self, query, skipped=None):
+        bot = mock.MagicMock()
+        bot.cfg = {"monitor": MONITOR, "arbeit": {"list_pages": 2, "list_scroll_at": [0, 0], "accept": "x", "travel_timeout": 1}}
+        bot.marks = Marks(arb_titles=set())
+        bot.interrupt_n = 0
+        bot.state.query.side_effect = query
+        r = arbeit._Round.__new__(arbeit._Round)
+        r.bot, r.skipped, r.stuck, r.done, r.panel, r.unconfirmed = bot, dict(skipped or {}), [], [], None, 0
+        return r
+
+    def test_open_list_applies_without_reopening(self):
+        """할 일을 찾으러 연 목록에 '지원하기' 가 보이면 창을 닫고 다시 열지 않고 그 자리를 누른다 (사용자 2026-11-23).
+        지원 앞 추적 칸 제목은 창을 열기 전에 본다 — 창이 열려 있으면 CLI 가 추적 칸을 못 본다."""
+        order = []
+
+        def query(*a, **k):
+            order.append("cli")
+            return [self.quest("[긴급 의뢰] 사이드")] + ([self.quest("양털 납품")] if "apply" in order else [])
+
+        def apply_top(bot, at):
+            order.append("apply")
+            self.assertEqual(at, (1756, 640))  # 맨 위 '지원하기'
+            return True
+        r = self.round(query, {"옷감이 필요해": "가공 필요"})
+        with mock.patch.object(arbeit, "_settle"), \
+                mock.patch.object(arbeit, "open_arbeit_tab", side_effect=lambda b: order.append("open")), \
+                mock.patch.object(arbeit.ocr, "find_texts", return_value=self.LIST), \
+                mock.patch.object(arbeit, "_apply_top", side_effect=apply_top):
+            self.assertEqual(r.pick(), (None, False))
+            self.assertIsNotNone(r.panel)
+            self.assertTrue(r.apply_new())
+        # 고르기(CLI) → 창을 열기 전 추적 칸(CLI) → 창 열기 → 다시 열지 않고 지원 → 새 일 확인(CLI)
+        self.assertEqual(order, ["cli", "cli", "open", "apply", "cli"])
+        r.bot.to_main.assert_called_once()  # 창을 열기 전 한 번뿐 — 목록은 닫지 않았다
+        self.assertIn("양털 납품", r.bot.marks.arb_titles)  # 사이드 퀘스트를 새 일로 알지 않았다
+        self.assertIsNone(r.panel)
+
+    def test_open_list_not_used_after_interrupt(self):
+        """목록을 연 뒤 끼어든 창을 넘겼으면 목록이 닫혔을 수 있다 → 창을 새로 열어 지원한다. 추적 칸은 열기 전에 본 것 그대로."""
+        r = self.round(lambda *a, **k: [])
+        r.panel = arbeit._Panel(apply=(1756, 640), tracked=frozenset(), interrupts=0)
+        r.bot.interrupt_n = 1
+        with mock.patch.object(arbeit, "_apply_top", return_value=False) as top:
+            self.assertFalse(r.apply_new())
+        top.assert_called_once_with(r.bot, None)
+        r.bot.state.query.assert_not_called()
+
+    def test_closed_list_with_skipped_job_stops_without_reopening(self):
+        """'구인 마감' 목록에 건너뛴 일만 남았으면 지원하러 창을 또 열지 않고 그만한다 (예전엔 닫고 다시 열어 마감을 또 봤다)."""
+        items = self.LIST[:3] + [("새로운 아르바이트를 기다려주세요", 1500, 600)]
+        r = self.round(lambda *a, **k: [], {"옷감이 필요해": "가공 필요"})
+        with mock.patch.object(arbeit, "_settle"), mock.patch.object(arbeit, "open_arbeit_tab") as opened, \
+                mock.patch.object(arbeit.ocr, "find_texts", return_value=items):
+            self.assertIs(r.pick(), arbeit._STOP)
+        opened.assert_called_once()
+        self.assertIsNone(r.panel)
+        self.assertEqual(r.bot.to_main.call_count, 2)  # 열기 전 · 닫기
+        self.assertFalse(r.bot.marks.arb_closed)  # 수락해 둔 일이 남았다 — 숙제 확인(verify)은 '넘김'
+
+    def test_apply_top_uses_open_list_first(self):
+        """첫 시도는 열어 둔 목록의 자리를 바로 누른다 (창 다시 열기·앞 정리 없음). 수락을 못 하면 다시 할 땐 창을 새로 연다."""
+        bot = mock.MagicMock()
+        bot.cfg = {"monitor": MONITOR, "arbeit": {"list_pages": 1, "list_scroll_at": [0, 0], "accept": "x", "travel_timeout": 1}}
+        with mock.patch.object(arbeit, "open_arbeit_tab") as opened, mock.patch.object(arbeit, "_fast_travel"), \
+                mock.patch.object(arbeit, "_wait_accept", return_value=True), \
+                mock.patch.object(arbeit.monitor.Monitor, "settle") as settle:
+            self.assertTrue(arbeit._apply_top(bot, (1756, 640)))
+        opened.assert_not_called()
+        settle.assert_not_called()
+        bot.click.assert_called_once_with((1756, 640))
+        bot.reset_mock()
+        with mock.patch.object(arbeit, "open_arbeit_tab") as opened, mock.patch.object(arbeit, "_fast_travel"), \
+                mock.patch.object(arbeit, "_wait_accept", side_effect=[False, True]), \
+                mock.patch.object(arbeit.ocr, "find_texts", return_value=[("지원하기", 1756, 700)]), \
+                mock.patch.object(arbeit.monitor.Monitor, "settle"):
+            self.assertTrue(arbeit._apply_top(bot, (1756, 640)))
+        opened.assert_called_once()
+        self.assertEqual([c.args[0] for c in bot.click.call_args_list], [(1756, 640), (1756, 700)])
+
     def test_missing_items(self):
         job = {"title": "x", "objectives": [
             {"Description": "<b>은 광석</b> 보유 82/100", "IsCompleted": False},
