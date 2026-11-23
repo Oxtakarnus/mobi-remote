@@ -58,9 +58,29 @@ class CharselectTest(unittest.TestCase):
         b.exists.side_effect = lambda n: (n == "dialog" and st["clicks"] >= 2 and not st["space"]) or n == "menu_quit"
         b.wait_any.return_value = SimpleNamespace(name="cs")
         with mock.patch.object(press.time, "monotonic", Clock()):
-            Bot.to_charselect(b)
+            Bot.menu_to_charselect(b)
         self.assertEqual(st["clicks"], 2)
         self.assertTrue(st["space"])
+
+    def test_to_charselect_goes_main_first(self):
+        b = mock.MagicMock()
+        Bot.to_charselect(b)
+        b.to_main.assert_called_once()
+        b.menu_to_charselect.assert_called_once_with(tidy=True)
+
+    def test_menu_path_does_not_need_main(self):
+        """콘텐츠에서 못 나온 채(쓰러짐·처음 보는 창) — ESC 로 메뉴가 바로 안 열려도 메인 화면으로 돌아가려 하지 않는다
+        (exits._escape). 첫 ESC 는 떠 있던 창을 닫고 둘째에 메뉴."""
+        b = mock.MagicMock()
+        b.ui = {"menu_quit": "menu_quit", "dialog_to_charselect": "dialog", "charselect_title": "cs", "title_start": "title"}
+        b.vision.has.return_value = False
+        b.wait.side_effect = [StepTimeout("메뉴 없음"), None]
+        b.wait_any.return_value = SimpleNamespace(name="cs")
+        with mock.patch.object(press, "until"):
+            Bot.menu_to_charselect(b)
+        b.to_main.assert_not_called()
+        b.clear_blockers.assert_not_called()
+        self.assertEqual([c.args[0] for c in b.key.call_args_list], ["esc", "esc"])
 
 
 class SettleTest(unittest.TestCase):

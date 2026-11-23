@@ -443,6 +443,13 @@ def _run(bot: Bot, cfg: dict, character: dict | None) -> str:
     return _Login(bot, cfg, character).run()
 
 
+def enter_again(bot: Bot) -> str:
+    """캐릭터 선택 화면에서 bot.character(접속 중이면 고를 캐릭터)로 다시 들어가 접속 직후 정리까지 — 콘텐츠에서 못 나와
+    ESC 메뉴로 캐릭터 선택 화면에 나간 뒤 (exits._escape). 시작 정리(콘텐츠 나가기)는 하지 않는다 — 그 나가기 안에서 부른다."""
+    with bot.npc_talk():
+        return _Login(bot, bot.cfg, bot.character).enter()
+
+
 class _Login:
     """접속 한 번의 단계들. 설정·화면 이름·접속 오류 창 목록을 단계끼리 같이 쓴다."""
 
@@ -457,6 +464,10 @@ class _Login:
         self.tidy_start()
         if (done := self.already_in()) is not None:
             return done
+        return self.enter()
+
+    def enter(self) -> str:
+        """선택 화면(타이틀·메인이어도)에서 이 캐릭터로 들어가 확인·정리까지."""
         m = self.reach_charselect()
         mark = self.enter_game() if m.name == self.charsel else None
         self.check_character(mark)

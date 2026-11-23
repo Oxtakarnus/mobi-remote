@@ -7,10 +7,12 @@
 예전엔 네 벌이 따로 있어 'Space 가 안 먹으면 클릭'(레이드)·'나가기 전에 판이 끝났나'(어비스)가 한쪽에만 있었다.
 
 leave_instance(bot) 는 지금 자리(place)를 보고 맞는 나가기를 부른다 — 실패 뒤 정리(runner.recover)·접속(login)이 쓴다.
+맞는 나가기로 못 나오면 안전장치 두 가지(_escape): 여기서 나가기 키 뒤 확인 창이면 Space, 그래도 안이면 ESC 메뉴로
+캐릭터 선택 화면에 나가 다시 접속. 게임을 끄고 켜지는 않는다 (사용자 2026-11-23).
 """
 import time
 
-from .. import keys
+from .. import gamedata as gd, keys, ocr
 from ..bot import Bot
 from ..exceptions import StepTimeout
 
@@ -210,21 +212,95 @@ class HousingExit(Exit):
 
 def leave_instance(bot: Bot) -> bool:
     """지금 콘텐츠(일반 던전·어비스·레이드·출항선)·보관함 구역 안이면 맞는 나가기로 밖 메인 화면까지.
-    나갔으면 True, 밖이면 False.
+    나갔으면 True, 밖이면 False. 맞는 나가기로 못 나오면 안전장치(_escape)를 해 보고, 그래도 안이면 StepTimeout.
     사냥터·검은 구멍은 나가지 않는다 (끝날 때까지 기다리는 것이 숙제 규칙 — login._leave_dungeon)."""
     from ..place import ABYSS, DUNGEON, HOUSINGS, RAID, RAID_LOBBY, place
     kind = place(bot).kind
     if kind in HOUSINGS:
-        HousingExit().run(bot)
+        name, leave = HousingExit.NAME, lambda: HousingExit().run(bot)
     elif kind == DUNGEON:
-        DungeonExit().run(bot)
+        name, leave = DungeonExit.NAME, lambda: DungeonExit().run(bot)
     elif kind == ABYSS:
         from . import abyss
-        abyss.get_out(bot)
+        name, leave = abyss.AbyssExit.NAME, lambda: abyss.get_out(bot)
     elif kind in (RAID, RAID_LOBBY):
         from . import raid
-        raid.get_out(bot)
+        name, leave = (raid.RaidExit if kind == RAID else raid.ShipExit).NAME, lambda: raid.get_out(bot)
     else:
         return False
+    try:
+        leave()
+    except StepTimeout as e:
+        _escape(bot, kind, name, e)
     bot.log.info(f"콘텐츠 안({kind}) → 나옴")
     return True
+
+
+def _confirm_dialog(bot: Bot):
+    """화면 가운데 확인 창의 '취소' 버튼 글자 자리, 없으면 None. 넓게 읽으면 ESC 표시와 한 덩이('ESc 취소')로 읽힌다.
+    '매칭 취소' 같은 다른 버튼 글자는 아니다."""
+    want = gd.text("dialog_cancel")
+    for t, x, y in ocr.find_texts(bot.frame(), gd.region("confirm_dialog")):
+        if ocr.nospace(t).lower() in (want, "esc" + want):
+            return x, y
+    return None
+
+
+class AnyDialogExit(Exit):
+    """맞는 나가기로 못 나왔을 때 첫 안전장치 (_escape): 여기서 나가기 키를 누르고, 가운데 확인 창('취소' 버튼)이 뜨면
+    무슨 창인지 알아보지 않고 Space(창의 기본 버튼)를 누른다 — 처음 보는 나가기 창이어도 나간다 (2026-11-23 레이드 함께하기
+    전멸 '포기하기' 창을 몰라 20분 동안 다음 캐릭터 접속이 줄줄이 실패). 창이 안 뜨면 누르지 않는다 (보상 화면의 Space 는
+    '다시 하기' 일 수 있다). 아이콘은 누르지 않는다. 나갔는지는 틀(_press)대로 로딩·자리로 본다."""
+    SNAP = "leave_any"
+    RETRIES = 1
+    TIMEOUT = 20
+    UNKNOWN_INSIDE = True  # 맵을 모르면 안으로 보고 누른다 — 나왔는지는 _escape 가 자리로 다시 본다
+
+    def __init__(self, kind: str, name: str):
+        self.kind, self.NAME = kind, name
+
+    def where(self, bot):
+        from ..place import on_map
+        return on_map(bot, self.kind)
+
+    def dialog(self, bot, timeout):
+        """나가기 키 뒤 뜬 확인 창 ('취소' 자리). 키를 누르기 전(timeout 0)엔 보지 않는다 — 떠 있던 창은 open_dialog 가 닫는다."""
+        if timeout <= 0:
+            return None
+        end = time.monotonic() + timeout
+        while not (hit := _confirm_dialog(bot)) and time.monotonic() < end:
+            bot.sleep(0.8, 1.2)
+        return hit
+
+    def open_dialog(self, bot):
+        if _confirm_dialog(bot):
+            bot.key("esc")  # 무슨 창인지 모르는 채 떠 있던 확인 창은 닫고 나가기 키부터
+            bot.sleep(1.0, 1.5)
+        return self.press_hotkey(bot, 3)
+
+
+def _escape(bot: Bot, kind: str, name: str, err: StepTimeout) -> None:
+    """맞는 나가기로 콘텐츠에서 못 나왔을 때 (처음 보는 창·쓰러진 채 등) — 사용자 2026-11-23 결정, 게임을 끄고 켜지는 않는다.
+    ① 여기서 나가기 키 → 가운데 확인 창이면 Space (AnyDialogExit)
+    ② ESC 메뉴 → 게임 종료 → 캐릭터 선택 화면 (메인 화면을 거치지 않는다) → bot.character 로 다시 접속 (login.enter_again —
+       실패 뒤 정리면 그 캐릭터, 접속 중이면 고를 캐릭터. 못 나온 캐릭터 때문에 다음 캐릭터 접속이 줄줄이 실패하지 않게)
+    다시 들어가서도 안이면 StepTimeout."""
+    from ..place import place
+    from . import login
+    bot.log.warning(f"{err} → 여기서 나가기 키 뒤 확인 창이면 Space")
+    try:
+        AnyDialogExit(kind, name).run(bot)
+        if place(bot).kind != kind:
+            bot.log.info(f"{name}: 나가기 키 뒤 Space 로 나옴")
+            return
+    except StepTimeout as e:
+        bot.log.warning(str(e))
+    bot.log.warning(f"{name}에서 못 나옴 → ESC 메뉴로 캐릭터 선택 화면에 나가 다시 접속")
+    try:
+        bot.menu_to_charselect()
+        bot.log.info(login.enter_again(bot))
+    except StepTimeout as e:
+        raise StepTimeout(f"{err} · 나가기 키 뒤 Space·다시 접속도 안 됨 ({e})") from e
+    if place(bot).kind == kind:
+        raise StepTimeout(f"{err} · 다시 접속해도 {name} 안 → {bot.snapshot(AnyDialogExit.SNAP).name}")
+    bot.log.info(f"{name}: 다시 접속해서 나옴")

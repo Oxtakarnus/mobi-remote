@@ -879,8 +879,14 @@ class Bot:
 
     def to_charselect(self) -> None:
         """메인 화면 → 메뉴 → 게임 종료 → '캐릭터 선택 화면으로'."""
-        ui = self.ui
         self.to_main()
+        self.menu_to_charselect(tidy=True)
+
+    def menu_to_charselect(self, tidy: bool = False) -> None:
+        """ESC 메뉴 → 게임 종료 → '캐릭터 선택 화면으로'. 메인 화면을 거치지 않는다 — 콘텐츠에서 못 나온 채(처음 보는 창·
+        쓰러짐)에도 메뉴만 열리면 나간다 (exits.leave_instance 의 안전장치). tidy: ESC 로 메뉴가 안 열리면 가린 창을 닫고
+        메인 화면으로 돌아가 다시 (to_charselect)."""
+        ui = self.ui
         # 음식 먹는 동작 직후 등에는 ESC 가 무시되기도 하므로 메뉴가 열릴 때까지 몇 번 시도한다
         for i in range(3):
             self.key("esc")
@@ -890,9 +896,10 @@ class Bot:
             except StepTimeout:
                 if i == 2:
                     raise
-                # 메인 HUD 가 보이는 채로 뜬 퀘스트 완료 창이 ESC 를 먹는다 (2026-10-24 어비스 3판 뒤 캐릭터 바꾸기)
-                self.clear_blockers(ocr=True)
-                self.to_main()
+                if tidy:
+                    # 메인 HUD 가 보이는 채로 뜬 퀘스트 완료 창이 ESC 를 먹는다 (2026-10-24 어비스 3판 뒤 캐릭터 바꾸기)
+                    self.clear_blockers(ocr=True)
+                    self.to_main()
         from .tasks import press
         dialog = ui["dialog_to_charselect"]
 
