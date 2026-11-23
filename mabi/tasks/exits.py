@@ -81,8 +81,12 @@ class Exit:
             self.uncover(bot)  # 단축키로도 안 뜸 — 가린 창(부활 창 등)을 닫아 본다
             bot.sleep(1.0, 1.5)
             return None
+        # 아이콘이 보였다가 누르기 전에 사라질 수 있다 — 판이 끝나 게임이 밖으로 내보냄 (2026-11-23 13:18 레이드: 아이콘을
+        # 10초 기다려 누르는 click 이 StepTimeout 으로 실패) → 누르지 못했으면 안인지부터 다시 본다
+        if not bot.click_if(bot.ui["abyss_exit"]):
+            bot.log.debug(f"{self.NAME} 나가기: 아이콘이 사라짐 → 안인지부터 다시")
+            return None
         bot.log.debug(f"{self.NAME} 나가기: 아이콘 클릭")
-        bot.click(bot.ui["abyss_exit"])
         return self.dialog(bot, 5)
 
     def press_hotkey(self, bot: Bot, timeout: float):

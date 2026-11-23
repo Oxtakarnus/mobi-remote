@@ -801,6 +801,12 @@ class Bot:
         # 배고픈데 음식이 없으면 B 가 제작 창을 연다 — 화면의 '음식 없음' 표시로 본다 (배고플 때만 보므로 드물다)
         if self.no_food():
             return False
+        # 쓰러져 있으면 B 가 먹히지 않는다 — 레이드 전멸 뒤 나가지 못한 채 2분마다 B 와 '먹지 못함' 경고만 남았다
+        # (2026-11-23 13:00~13:06). 부활하면 EAT_GAP 뒤 다시 본다
+        if self.is_dead():
+            self.log.debug("배고프지만 쓰러져 있음 → 먹지 않음")
+            self._eat_after = time.monotonic() + EAT_GAP
+            return False
         why = "배고픔 표시" if ratio is None else f"포만감 {ratio:.0%}"
         mark = self.packets.mark()
         self.key(keys.of(self, "food"))

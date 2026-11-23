@@ -318,14 +318,20 @@ def quick_alter(bot: Bot, names) -> bool:
 def _job_ctx(bot: Bot, title: str, alter=()) -> Ctx:
     """아르바이트 한 건. 던전 창이 열리면 그 일은 끝 (요일 던전 숙제 몫 — 던전 창 앞에서 8분을 기다리던 것, 2026-10-26).
     모자란 물품이 채집으로 못 구하는 것(가공품 등)이면 끝 (사용자 규칙: 채집품만 모자라면 채집해서 완료)."""
+    def job():
+        return next((j for j in accepted(bot) if _same(j["title"], title)), None)
+
     def missing(bot, ctx, seen):
-        job = next((j for j in accepted(bot) if _same(j["title"], title)), None)
-        if job and (bad := [n for n in ungatherable(bot, job) if n not in ctx.alter]):
+        if (j := job()) and (bad := [n for n in ungatherable(bot, j) if n not in ctx.alter]):
             return f"채집으로 못 구하는 물품 부족 ({', '.join(bad)})"
         return None
+
+    def alter_need():
+        # 가공 목록 화면에 조건을 모르고 왔을 때 — 지금 CLI 조건으로 (진행 전 alter_or_skip 과 같은 판정)
+        return alter_missing(j, gatherable(bot) or frozenset()) if (j := job()) else []
     return Ctx("arbeit", title, job=True, finish_on={d.DUNGEON_WINDOW: "dungeon"}, decide={d.ITEM_MISSING: missing},
                note=lambda key, stage: _note(bot, title, key, stage), alter=alter,
-               alter_ok=lambda names: quick_alter(bot, names))
+               alter_ok=lambda names: quick_alter(bot, names), alter_need=alter_need)
 
 
 def _moved(bot: Bot) -> bool:
@@ -600,6 +606,9 @@ def _apply_button(bot: Bot):
     return None
 
 
+AFTER_CONFIRM_GRACE = 12  # 지원하기 뒤 다른 퀘스트 '확인' 을 넘긴 다음엔 이만큼(초)만 멈춰 있어도 수락 못 함으로 본다
+
+
 def _wait_accept(bot: Bot, mon, ctx: Ctx) -> bool:
     """'지원하기' 뒤 가는 길·NPC 대화를 점검자가 보는 동안 '수락' 할 때까지 (travel_timeout). 수락했으면 True,
     끝남이 오거나 이동도 대화도 끝난 채 멈춰 있으면 False — 멈춤 판정은 도착 판정과 같은 것 (arrival.Stopped)."""
@@ -611,6 +620,10 @@ def _wait_accept(bot: Bot, mon, ctx: Ctx) -> bool:
             return True
         if seen.finish:
             break
+        if ctx.take("confirmed") and stopped.grace > AFTER_CONFIRM_GRACE:
+            # 가는 길에 다른 퀘스트 목표 대화를 '확인' 으로 넘기면 게임이 길을 놓아 수락 대화가 오지 않는다 — 45초를 다
+            # 기다리지 않는다 (2026-11-23 07:24·08:00·09:04: 매번 45초 서 있다가 다시 지원해 10여 초 만에 수락)
+            stopped = Stopped(AFTER_CONFIRM_GRACE)
         idle = seen.what == d.MAIN and seen.idle
         if stopped.see(idle):
             bot.log.info(f"아르바이트: 이동도 대화도 {stopped.grace:.0f}초 넘게 멈춤 → 수락 못 함")

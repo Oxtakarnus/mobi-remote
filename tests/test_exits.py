@@ -39,8 +39,19 @@ class ExitTest(unittest.TestCase):
     def test_icon_when_hotkey_shows_nothing(self):
         b = make_bot()
         self.assertTrue(Fake([True], [None, None, (10, 20)]).run(b))  # 키로 안 뜸 → 아이콘 → 창
-        b.click.assert_called_once_with("exit")
+        b.click_if.assert_called_once_with("exit")
         b.key.assert_called_with("space")
+
+    def test_icon_gone_before_click_rechecks_inside(self):
+        """아이콘이 보였다가 누르기 전에 사라지면 (판이 끝나 게임이 내보냄) 실패하지 않고 안인지부터 다시 본다
+        (2026-11-23 13:18 — 아이콘을 10초 기다려 누르는 click 이 StepTimeout 으로 실패)."""
+        from mabi.exceptions import StepTimeout
+        b = make_bot()
+        b.click.side_effect = StepTimeout("아이콘 없음")  # 예전처럼 기다려 누르면 실패
+        b.click_if.return_value = False
+        self.assertTrue(Fake([True, False], [None, None]).run(b))  # 키로 안 뜸 → 아이콘 사라짐 → 밖
+        b.click_if.assert_called_once_with("exit")
+        b.click.assert_not_called()
 
     def test_no_icon_and_unsure_presses_nothing_but_uncover(self):
         b = make_bot()
@@ -163,6 +174,7 @@ class RaidGiveUpTest(unittest.TestCase):
         self.assertTrue(e.party)
         click.assert_not_called()  # '파티&던전 나가기' 를 찾아 누르지 않는다
         b.click.assert_not_called()  # 아이콘도 안 누른다 (예전엔 창이 뜬 채 아이콘을 눌러 창이 닫혔다)
+        b.click_if.assert_not_called()
 
 
 class ContentExitTest(unittest.TestCase):

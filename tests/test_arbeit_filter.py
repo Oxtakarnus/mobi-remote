@@ -333,3 +333,78 @@ class PressProgressTest(unittest.TestCase):
         ok, bot = self.press(items, "좋아하는 버섯")
         self.assertFalse(ok)
         bot.click.assert_not_called()
+
+
+class AlterNeedTest(unittest.TestCase):
+    """가공 목록 화면(카드 없음)에 조건을 모르고 왔으면 지금 조건(CLI)으로 짧은 가공인지 정한다
+    (2026-11-23 07:00 '옷감이 필요해' — 옷감은 45초 가공인데 조건을 몰라 건너뜀)."""
+
+    def _run(self, need, ok=True):
+        from types import SimpleNamespace
+        from mabi import monitor
+        from mabi.monitor import handlers
+        bot = mock.MagicMock()
+        ctx = monitor.Ctx("arbeit", "옷감이 필요해", job=True, alter_ok=lambda names: ok, alter_need=lambda: need)
+        with mock.patch.object(handlers, "_short_toast", return_value=True), \
+                mock.patch.object(handlers, "_shot", return_value="x"), mock.patch.object(handlers, "_esc"), \
+                mock.patch.object(handlers, "_alter_count", return_value=0):
+            r = handlers.alter(bot, ctx, SimpleNamespace(frame=None))
+        return r, ctx, bot
+
+    def test_short_goes_on(self):
+        r, ctx, bot = self._run(["옷감"])
+        self.assertEqual(ctx.alter, ("옷감",))
+        bot.key.assert_called_with("space")  # 가공하기
+        self.assertEqual(r.result, "alter_short")  # (이 시험에선 재료 부족 알림이 뜬다)
+
+    def test_long_or_unknown_skips(self):
+        r, ctx, bot = self._run(["옷감"], ok=False)
+        self.assertEqual((r.result, ctx.alter), ("alter", ()))
+        self.assertIn("옷감", r.why)
+        bot.key.assert_not_called()
+        r, ctx, bot = self._run([])
+        self.assertEqual(r.result, "alter")
+        bot.key.assert_not_called()
+
+    def test_job_ctx_reads_current_conditions(self):
+        craft.configure(ROOT / "state", ROOT / "data", None)
+        bot = mock.MagicMock()
+        job = {"title": "옷감이 필요해", "objectives": [{"Description": f"옷감 {arbeit.HAVE} 0/5", "IsCompleted": False}]}
+        ctx = arbeit._job_ctx(bot, "옷감이 필요해")
+        with mock.patch.object(arbeit, "accepted", return_value=[job]), \
+                mock.patch.object(arbeit, "gatherable", return_value=set()):
+            self.assertEqual(ctx.alter_need(), ["옷감"])
+        with mock.patch.object(arbeit, "accepted", return_value=[]):
+            self.assertEqual(ctx.alter_need(), [])
+
+
+class WaitAcceptTest(unittest.TestCase):
+    """지원하기 뒤 수락 대기 — 가는 길에 다른 퀘스트 '확인' 을 넘기면 45초가 아니라 짧게만 기다린다
+    (2026-11-23 07:24·08:00·09:04 — 매번 45초 서 있다가 다시 지원해 수락)."""
+
+    def _run(self, confirm_at):
+        from types import SimpleNamespace
+        from mabi import monitor
+        clock, n = [0.0], [0]
+        bot = mock.MagicMock()
+        bot.cfg = {"arbeit": {"travel_timeout": 300}}
+        bot.sleep.side_effect = lambda *a: clock.__setitem__(0, clock[0] + 1)
+        ctx = monitor.Ctx("arbeit", "지원하기", menus=True)
+
+        def check(c):
+            n[0] += 1
+            if n[0] == confirm_at:
+                c.event("confirmed")  # 처리기가 '확인' 을 눌렀다
+            return SimpleNamespace(done=None, finish=None, what=arbeit.d.MAIN, idle=True)
+        mon = mock.MagicMock()
+        mon.check.side_effect = check
+        with mock.patch("time.monotonic", side_effect=lambda: clock[0]):
+            self.assertFalse(arbeit._wait_accept(bot, mon, ctx))
+        return clock[0]
+
+    def test_plain_stop_waits_full_grace(self):
+        self.assertGreater(self._run(confirm_at=0), 45)
+
+    def test_after_other_confirm_short(self):
+        t = self._run(confirm_at=3)
+        self.assertLess(t, 3 + arbeit.AFTER_CONFIRM_GRACE + 3)

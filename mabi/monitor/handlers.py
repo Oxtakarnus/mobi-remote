@@ -463,9 +463,16 @@ def alter(bot, ctx, seen):
     → 모두 받기(Space) → 가공 완료 확인(Space) → 창 닫기. 재료가 모자라면 포기 (사용자 규칙 2026-10-30). 그 밖의 가공은 건너뛴다.
     가공 칸이 꽉 차 걸리지 않으면 그 시설 완료분을 CLI 로 받고 한 번 더 한다 (_collect_full)."""
     if not ctx.alter:
-        shot = _shot(bot, "arbeit_alter")  # 닫기 전에 — 닫은 뒤 사진엔 무엇을 가공하라는 창인지 안 남았다 (2026-11-23 07:00)
-        _esc(bot)
-        return Finish("alter", f"가공이 필요한 일 → {shot}")
+        # 조건을 모르고 왔다 (추적 칸에 없던 일, 또는 미리 본 조건에 가공품이 없던 일 — 2026-11-23 07:00 '옷감이 필요해' 는
+        # 지원 직후 본 조건으로는 가공을 몰라 45초 가공인데 건너뜀) → 이 화면엔 카드가 없어 지금 조건으로 짧은 가공인지 정한다
+        need = ctx.alter_need() if ctx.alter_need else []
+        if need and ctx.alter_ok and ctx.alter_ok(need):
+            ctx.alter = tuple(need)
+            bot.log.info(f"가공 시설 창: 지금 조건으로 짧은 가공 ({', '.join(need)}) → 가공")
+        else:
+            shot = _shot(bot, "arbeit_alter")  # 닫기 전에 — 닫은 뒤 사진엔 무엇을 가공하라는 창인지 안 남았다 (2026-11-23 07:00)
+            _esc(bot)
+            return Finish("alter", f"가공이 필요한 일 ({', '.join(need) or '조건에 가공품 없음'}) → {shot}")
     ctx.n["alter"] = ctx.n.get("alter", 0) + 1
     if ctx.n["alter"] > 6:
         return Finish("stuck", f"가공을 거듭해도 일이 안 끝남 → {_shot(bot, 'arbeit_alter')}")

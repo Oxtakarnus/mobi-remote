@@ -67,7 +67,7 @@ class EatTest(unittest.TestCase):
     EAT_AT = tomllib.loads((Path(__file__).resolve().parent.parent / "config.default.toml")
                            .read_text(encoding="utf-8"))["game"]["eat_at"]
 
-    def _bot(self, came, ratio=None, shown=True, food=True):
+    def _bot(self, came, ratio=None, shown=True, food=True, dead=False):
         from mabi.bot import Bot
         keys, looked = [], []
         waited = []
@@ -85,8 +85,17 @@ class EatTest(unittest.TestCase):
         b = SimpleNamespace(ui={"food_b": "food_b"}, vision=SimpleNamespace(has=lambda n: True), character=None,
                             daily=None, cfg={"run": {}, "game": {"eat_at": self.EAT_AT}}, no_food=lambda look=True: look and not food,
                             exists=exists, satiety=lambda **kw: ratio, looked=looked,
-                            packets=pk, key=keys.append, log=logging.getLogger("test"), sleep=lambda *a: None)
+                            packets=pk, key=keys.append, log=logging.getLogger("test"), sleep=lambda *a: None,
+                            is_dead=lambda: dead)
         return b, keys, Bot.eat_if_hungry
+
+    def test_dead_does_not_press(self):
+        """쓰러져 있으면 B 를 누르지 않는다 — 레이드 전멸 뒤 나가지 못한 채 2분마다 B·'먹지 못함' 경고만 남았다
+        (2026-11-23 13:00). 한동안 다시 보지 않는다."""
+        b, keys, eat = self._bot(came=False, ratio=0.0, dead=True)
+        self.assertFalse(eat(b))
+        self.assertEqual(keys, [])
+        self.assertGreater(b._eat_after, 0)
 
     def test_cli_satiety_decides_without_screen(self):
         """포만감은 CLI 로 — 기준 아래면 그림 없이 먹고, 위면 화면을 보지도 않는다 (사용자 2026-11-22).
