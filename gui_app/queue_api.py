@@ -21,6 +21,7 @@ from mabi import queue_report
 from mabi import restart
 from mabi.craft.execute import (STEP_AGAIN, STEP_RETRY_LATER, STEP_STOP_SKILL, STEP_STOP_TRANSFER, step_command,
                                 step_failure)
+from mabi.profile import game_date
 from mabi.runner import RunOptions, load_config
 from mabi.workqueue import STOP_WHY, Kind, WorkQueue
 
@@ -70,6 +71,35 @@ def daily_progress(p: dict | None, e: dict) -> dict | None:
     return p
 
 
+DID = ("OK", "MANUAL", "DONE")  # 끝난 숙제 (task_end 상태) — 카드가 다시 돌 때 건너뛴다
+
+
+def card_did(it: dict, e: dict) -> dict | None:
+    """숙제 실행기 이벤트로 카드의 '이 카드에서 끝낸 숙제' 기록(it['did'] = {"date": 게임 날짜, "slots": {슬롯: [숙제]}})을
+    고친다. 바뀐 게 없으면 None. 다시(force) 카드는 오늘 완료 기록을 안 보므로, 밀렸다(끼어든 카드) 이어 하거나 오류 뒤
+    한 번 더 돌 때 이것으로 끝낸 캐릭터·숙제를 건너뛴다 (2026-11-23 주간 카드가 필드 보스에 밀렸다 이어 하며 1번 캐릭터부터
+    다시 해 35분을 버렸다). 게임 날짜가 바뀌면 새로 센다."""
+    if e.get("type") != "task_end" or e.get("slot") is None or e.get("task") in (None, "login") \
+            or e.get("status") not in DID:
+        return None
+    today = game_date()
+    old = it.get("did") or {}
+    slots = {k: list(v) for k, v in (old.get("slots") or {}).items()} if old.get("date") == today else {}
+    got = slots.setdefault(str(e["slot"]), [])
+    if e["task"] in got:
+        return None
+    got.append(e["task"])
+    return {"date": today, "slots": slots}
+
+
+def card_done(it: dict) -> dict[int, set[str]] | None:
+    """RunOptions.done — 오늘 이 카드에서 끝낸 숙제 {슬롯: {숙제}}. 기록이 없거나 다른 날 것이면 None."""
+    did = it.get("did") or {}
+    if did.get("date") != game_date() or not did.get("slots"):
+        return None
+    return {int(s): set(ts) for s, ts in did["slots"].items()}
+
+
 class DailyKind(Kind):
     own_loot = True  # 캐릭터마다 runner 가 잰다 ('loot' 이벤트)
 
@@ -117,6 +147,7 @@ class DailyKind(Kind):
             return False
         fit = api._q_fit()
         opts = RunOptions(chars=it.get("chars") or None, only=it.get("only") or None, force=bool(it.get("force")),
+                          done=card_done(it),  # 다시(force) 카드가 밀렸다 이어 하면 이 카드에서 끝낸 것은 건너뛴다
                           display=fit, interface_ready=bool(q.session.get("iface")),
                           restore=False,  # 되돌리기는 큐가 다 끝날 때 한 번 (_q_drained)
                           extra={"from": "queue"},
@@ -132,6 +163,8 @@ class DailyKind(Kind):
                         seen.setdefault(k, f"{e.get('label')}: {e.get('summary')}")
             if (p := daily_progress(it.get("prog"), e)) is not None:
                 fields["prog"] = p
+            if it.get("force") and (did := card_did(it, e)) is not None:
+                fields["did"] = did
             if e.get("type") == "start":
                 fields["note"] = ""  # 진행은 카드의 진행 줄(view)로 보인다
             if e.get("type") == "task_start" and e.get("label"):

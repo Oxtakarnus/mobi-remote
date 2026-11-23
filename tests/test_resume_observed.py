@@ -304,7 +304,7 @@ class FinishCutRoundTest(unittest.TestCase):
         class Fake:
             finish = False
 
-            def __init__(self, bot, cfg, runs=0):
+            def __init__(self, bot, cfg, runs=0, on_event=None):  # on_event: 깬 판 기록 (weekend._repeat)
                 made.append(self)
 
             def run(self):
@@ -325,7 +325,7 @@ class FinishCutRoundTest(unittest.TestCase):
         class Fake:
             finish = False
 
-            def __init__(self, bot, cfg, runs=0):
+            def __init__(self, bot, cfg, runs=0, on_event=None):  # on_event: 깬 판 기록 (weekend._repeat)
                 got.append(cfg["abyss"]["dungeon"])
 
             def run(self):

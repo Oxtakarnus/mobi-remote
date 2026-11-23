@@ -118,6 +118,10 @@ class RunOptions:
     only: list[str] | None = None       # 일부 숙제만
     current: bool = False               # 캐릭터 전환 없이 지금 캐릭터로
     force: bool = False                 # 오늘 끝낸 숙제도 다시
+    # 작업 큐 카드가 이미 끝낸 숙제 {슬롯: {숙제}} — 카드가 밀렸다(끼어든 카드) 이어 하거나 오류 뒤 한 번 더 돌 때.
+    # 다시(force) 카드도 이것은 다시 하지 않는다 (2026-11-23 주간 카드가 필드 보스에 밀렸다 이어 하며 1번 캐릭터부터 다시
+    # 했다). force 가 아니면 오늘 완료 기록이 이것까지 덮는다
+    done: dict | None = None
     dry_run: bool = False
     # 인터페이스 PC·80% 맞추기. 작업 큐는 한 번 도는 동안 처음 한 번만 맞추고(interface_ready = 이미 맞춤),
     # 되돌리기는 큐가 다 끝났을 때 한 번 한다 (restore=False — daily_api.daily_displayRestore)
@@ -367,6 +371,13 @@ class Runner:
         return chars
 
     @staticmethod
+    def _finished(opts: RunOptions, state, slot, tid: str) -> bool:
+        """건너뛸 끝난 숙제인가 — 보통은 오늘 완료 기록으로, 다시(force)면 이 카드에서 끝낸 것만 (opts.done)."""
+        if opts.force:
+            return tid in (opts.done or {}).get(slot, ())
+        return state.is_done(slot, tid)
+
+    @staticmethod
     def _later(bot, cfg, state, slot, tid: str, pending: list, later: set) -> str:
         """차례가 온 숙제를 이 캐릭터의 다른 숙제 뒤로 미룰 까닭 (tasks.LATER, 아니면 ""). 한 번만, 뒤에 할 숙제가 남았을 때만 —
         미뤄도 앞에 할 게 없으면 지금 하는 것과 같다."""
@@ -468,11 +479,11 @@ class Runner:
                 for c in characters[n:]:
                     results.append((f"[{c['name'] if c else '현재 캐릭터'}]", "WAIT", why))
                 break
-            if ch and not opts.force:
-                todo = [t for t in order if not state.is_done(slot, t)]
+            if ch and (not opts.force or opts.done):
+                todo = [t for t in order if not self._finished(opts, state, slot, t)]
                 if not todo:
-                    log.info(f"[{who}] 오늘 숙제 완료 기록이 있어 건너뜀")
-                    results.append((f"[{who}]", "DONE", "오늘 완료"))
+                    log.info(f"[{who}] " + ("이 카드에서 이미 끝냄 → 건너뜀" if opts.force else "오늘 숙제 완료 기록이 있어 건너뜀"))
+                    results.append((f"[{who}]", "DONE", "이 카드에서 끝냄" if opts.force else "오늘 완료"))
                     for t in order:
                         self._emit("task_end", slot=slot, task=t, label=t, **_done_view(state.get(slot, t)), seconds=0)
                     continue
@@ -498,7 +509,7 @@ class Runner:
             if status != "OK":
                 continue  # 접속 실패 시 이 캐릭터의 숙제는 건너뛴다
             self._iface.attempt(bot, after_login=True)
-            bot.also_done = {t for t in registry if ch and not opts.force and state.is_done(slot, t)}
+            bot.also_done = {t for t in registry if ch and self._finished(opts, state, slot, t)}
             heavy = bot.overweight()
             if heavy:
                 log.warning(f"[{who}] {heavy} → 이 캐릭터는 건너뜀")

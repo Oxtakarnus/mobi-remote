@@ -61,5 +61,21 @@ class CardTodayTest(unittest.TestCase):
             self.assertEqual(today_of(st, 2, ["silver"]), {"done": 1, "total": 1, "manual": []})
 
 
+class ClearsTest(unittest.TestCase):
+    """숙제 안에서 깬 판 — 끊긴 주간 숙제를 이어 할 때 뺀다 (weekend.run)."""
+
+    def test_add_reset_and_keep(self):
+        with tempfile.TemporaryDirectory() as d:
+            st = DailyState(Path(d))
+            st.add_clear(6, "weekend_abyss", "허상의 정박지")
+            st.add_clear(6, "weekend_abyss", "허상의 정박지")
+            st.add_clear(6, "weekend_raid", "화이트 서큐버스")
+            self.assertEqual(DailyState(Path(d)).clears(6, "weekend_abyss"), {"허상의 정박지": 2})  # 파일에 남는다
+            st.reset_clears(6, "weekend_abyss")
+            self.assertEqual(st.clears(6, "weekend_abyss"), {})
+            self.assertEqual(st.clears(6, "weekend_raid"), {"화이트 서큐버스": 1})
+            self.assertFalse(st.is_done(6, "weekend_abyss"))  # 숙제 기록과 섞이지 않는다
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -218,6 +218,23 @@ class DailyState:
     def last_step(self, slot: int, task: str) -> dict | None:
         return self.data.get(str(slot), {}).get(self.STEPS, {}).get(task)
 
+    # ---- 숙제 안에서 깬 판: 끊긴 숙제가 다시 돌면 그때 깬 판은 다시 하지 않는다 (평일 주간 어비스·레이드는 확인할
+    # 퀘스트가 없어 정한 판을 처음부터 다 돌았다 — 2026-11-23). 새로 시작하는 숙제는 비우고 센다 (weekend.run)
+    CLEARS = "_clears"
+
+    def clears(self, slot: int, task: str) -> dict[str, int]:
+        """{던전·레이드 이름: 깬 판 수}."""
+        return dict(self.data.get(str(slot), {}).get(self.CLEARS, {}).get(task) or {})
+
+    def add_clear(self, slot: int, task: str, place: str) -> None:
+        rec = self.data.setdefault(str(slot), {}).setdefault(self.CLEARS, {}).setdefault(task, {})
+        rec[place] = rec.get(place, 0) + 1
+        self._save()
+
+    def reset_clears(self, slot: int, task: str) -> None:
+        if self.data.get(str(slot), {}).get(self.CLEARS, {}).pop(task, None) is not None:
+            self._save()
+
     # ---- 캐릭터 상태 표시: 오늘 알게 된 사실 (예 'no_food' — 먹을 음식이 없음)
     FLAGS = "_flags"
 

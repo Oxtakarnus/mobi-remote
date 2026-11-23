@@ -114,7 +114,7 @@ class QuestCheckTest(unittest.TestCase):
 
 class RunTest(unittest.TestCase):
     def setUp(self):
-        self.bot = mock.Mock()
+        self.bot = mock.Mock(resume=None, daily=None)
         self.runs, self.places = [], []
         for p in (mock.patch.object(weekend, "not_now", return_value=""),
                   mock.patch.object(weekend, "_repeat", side_effect=self._repeat)):
@@ -183,6 +183,81 @@ class RunTest(unittest.TestCase):
             self.assertIn("클리어 3판", weekend.run(self.bot, CFG, "abyss"))
         self.assertEqual(self.runs, [("abyss", 3)])
         self.quest.assert_not_called()
+
+
+class ResumeTest(unittest.TestCase):
+    """끊겼다 이어 하면 그 전에 깬 판은 빼고 (평일 — 확인할 퀘스트가 없다). 2026-11-23 6번째 캐릭터가 정박지·동굴을 깨고
+    필드 보스에 밀렸다 — 이어 할 때 흩어진 물길만 해야 한다."""
+    WEEK = {"허상의 정박지": ["어려움"], "광기의 동굴": ["어려움"], "흩어진 물길": ["어려움"]}
+
+    def setUp(self):
+        import tempfile
+        from pathlib import Path
+        from mabi.profile import DailyState
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.day = DailyState(Path(tmp.name))
+        self.bot = mock.Mock(resume=None, daily=self.day, character={"slot": 6})
+        self.cfg = {**CFG, "weekend": {**CFG["weekend"], "abyss": {**CFG["weekend"]["abyss"], "dungeon": weekend.ALL_ABYSS}}}
+        self.places = []
+        for p in (mock.patch.object(weekend, "not_now", return_value="주말 아님"),
+                  mock.patch.object(weekend.gd, "abysses", return_value=self.WEEK),
+                  mock.patch.object(weekend, "_repeat", side_effect=self._repeat)):
+            p.start()
+            self.addCleanup(p.stop)
+
+    def _repeat(self, bot, cfg, kind, runs, place):
+        self.places.append(place)
+        return {"clears": runs}
+
+    def test_resume_skips_cleared(self):
+        self.day.add_clear(6, "weekend_abyss", "허상의 정박지")
+        self.day.add_clear(6, "weekend_abyss", "광기의 동굴")
+        self.bot.resume = {"step": "abyss_open"}  # 지난번에 끝까지 못 감
+        self.assertIn("클리어 1판", weekend.run(self.bot, self.cfg, "abyss"))
+        self.assertEqual(self.places, ["흩어진 물길"])
+
+    def test_resume_all_cleared(self):
+        for p in self.WEEK:
+            self.day.add_clear(6, "weekend_abyss", p)
+        self.bot.resume = {"step": "abyss_leave"}
+        self.assertIn("다 깸", weekend.run(self.bot, self.cfg, "abyss"))
+        self.assertEqual(self.places, [])
+        self.assertTrue(self.bot.verified)
+
+    def test_fresh_run_resets_record(self):
+        # 끝까지 간 숙제를 다시(force) 돌리면 처음부터 — 지난 기록은 비운다
+        self.day.add_clear(6, "weekend_abyss", "허상의 정박지")
+        weekend.run(self.bot, self.cfg, "abyss")
+        self.assertEqual(self.places, list(self.WEEK))
+        self.assertEqual(self.day.clears(6, "weekend_abyss"), {})
+
+    def test_weekend_uses_quest_progress_only(self):
+        # 주말엔 퀘스트 진행도가 이미 깬 판을 뺐다 — 기록으로 또 빼지 않는다
+        self.day.add_clear(6, "weekend_abyss", "허상의 정박지")
+        self.bot.resume = {"step": "abyss_open"}
+        with mock.patch.object(weekend, "not_now", return_value=""), \
+                mock.patch.object(weekend, "quest_state", return_value=Quest(True, 1, 3)):
+            weekend.run(self.bot, self.cfg, "abyss")
+        self.assertEqual(len(self.places), 2)
+
+    def test_repeat_records_each_clear(self):
+        class Rep:
+            def __init__(self, bot, cfg, runs=0, on_event=lambda e: None):
+                self.on_event = on_event
+
+            def run(self):
+                for stage in ("entry", "clear", "matching", "clear"):
+                    self.on_event({"type": "abyss", "stage": stage})
+                return {"clears": 2}
+
+        self.bot.background = self.bot.scene_skip = self.bot.watch_weight = False
+        with mock.patch.object(weekend.abyss, "AbyssRepeat", Rep):
+            ORIG_REPEAT(self.bot, self.cfg, "abyss", 2, "광기의 동굴")  # setUp 이 바꿔 둔 것 말고 원래 _repeat
+        self.assertEqual(self.day.clears(6, "weekend_abyss"), {"광기의 동굴": 2})
+
+
+ORIG_REPEAT = weekend._repeat
 
 
 class ConfigTest(unittest.TestCase):

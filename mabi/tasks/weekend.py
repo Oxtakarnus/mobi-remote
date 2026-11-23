@@ -14,6 +14,8 @@
 실기에서 어비스 3판·레이드 1판을 채운 캐릭터는 모두 퀘스트가 깨져 있었다).
 주말인지는 게임 날짜(오전 6시에 바뀜)의 요일로 본다. 주말이 아니면 퀘스트가 없으므로 확인 없이 정한 판 수만큼 돈다
 (2026-11-16 사용자: 요일 제한은 두지 않는다 — 예전엔 작업 큐 카드가 토요일까지 기다렸다).
+끊겼다 이어 하면 (먼저 할 카드에 밀림·멈춤·오류) 그 전에 깬 판은 오늘 기록(DailyState.clears)으로 빼고 남은 판만 한다 —
+평일엔 확인할 퀘스트가 없어 정한 판을 처음부터 다 돌았다 (2026-11-23). 주말엔 퀘스트 진행도가 이미 뺀다.
 """
 import re
 from contextlib import contextmanager
@@ -183,8 +185,14 @@ def plan(pick: dict, kind: str, runs: int) -> list[tuple[str, int]]:
 def _repeat(bot: Bot, cfg: dict, kind: str, runs: int, place: str, finish: bool = False) -> dict:
     sub = {**cfg, kind: {**picked(cfg, kind), "runs": runs, KINDS[kind][1]: place}}
     cls = abyss.AbyssRepeat if kind == "abyss" else raid.RaidRepeat
+    slot, task = (bot.character or {}).get("slot"), f"weekend_{kind}"
+
+    def on_event(e):  # 판을 깰 때마다 오늘 기록에 — 끊겼다 이어 하면 이 판은 다시 하지 않는다 (run)
+        if e.get("stage") == "clear" and slot is not None and bot.daily is not None:
+            bot.daily.add_clear(slot, task, place)
+
     with _kept(bot):
-        rep = cls(bot, sub, runs=runs)
+        rep = cls(bot, sub, runs=runs, on_event=on_event)
         rep.finish = finish
         return rep.run()
 
@@ -220,12 +228,35 @@ def _abyss_here(bot: Bot) -> str:
     return p.name.split(" (")[0].strip() if p.kind == ABYSS and p.name else ""
 
 
+def _cleared_before(bot: Bot, task: str) -> dict[str, int]:
+    """이 숙제를 끊긴 자리에서 이어 하는 것이면 그 전에 깬 판 {던전·레이드: 판 수}, 새로 하는 것이면 기록을 비우고 {}.
+    실행기는 지난번에 끝까지 가지 못한(단계 기록이 '끝' 이 아닌) 숙제에만 bot.resume 을 준다 (runner.step)."""
+    slot = (bot.character or {}).get("slot")
+    if bot.daily is None or slot is None:
+        return {}
+    if bot.resume:
+        return bot.daily.clears(slot, task)
+    bot.daily.reset_clears(slot, task)
+    return {}
+
+
+def _minus(todo: list[tuple[str, int]], had: dict[str, int]) -> list[tuple[str, int]]:
+    """계획에서 이미 깬 판을 던전·레이드마다 뺀다."""
+    out = []
+    for p, n in todo:
+        n -= min(n, had.get(p, 0))
+        if n:
+            out.append((p, n))
+    return out
+
+
 def run(bot: Bot, cfg: dict, kind: str) -> str:
     name, place, _ = KINDS[kind]
     pick = picked(cfg, kind)
     target = f"{pick[place]} {pick.get('difficulty', '')} {'혼자하기' if pick.get('mode') == 'solo' else '함께하기'}"
     runs, q = int(pick.get("runs") or 1), Quest(None)
-    if not_now():  # 주말 퀘스트가 없는 날 — 확인 없이 정한 판 수만큼
+    weekday = bool(not_now())
+    if weekday:  # 주말 퀘스트가 없는 날 — 확인 없이 정한 판 수만큼
         bot.log.info(f"{name}: 주말이 아님 → 퀘스트 확인 없이 정한 판 수만큼")
     else:
         q = quest_state(bot, kind)
@@ -237,11 +268,20 @@ def run(bot: Bot, cfg: dict, kind: str) -> str:
         runs = 1
     bot.log.info(f"{name}: {target} — 클리어 {runs}판" + (f" (진행도 {q.done}/{q.goal})" if q.done is not None else ""))
     todo = plan(pick, kind, runs)
+    had = _cleared_before(bot, f"weekend_{kind}")
+    if weekday and had:  # 확인할 퀘스트가 없는 날 — 끊기기 전에 깬 판은 오늘 기록으로 뺀다 (주말엔 진행도가 이미 뺐다)
+        todo = _minus(todo, had)
+        bot.log.info(f"{name}: 끊기기 전에 깬 판 " + ", ".join(f"{p} {n}판" for p, n in had.items())
+                     + (" → 남은 것만" if todo else " → 다 깸"))
+        if not todo:
+            bot.verified = True
+            return f"{target} — 끊기기 전에 다 깸"
     if len(todo) > 1:
         bot.log.info(f"{name}: " + " → ".join(f"{p} {n}판" for p, n in todo))
+    want = sum(n for _, n in todo)
     clears = sum(_repeat(bot, cfg, kind, n, p)["clears"] for p, n in todo)
-    if clears < runs:  # 반복은 판 수를 채워야 끝나므로 여기 오면 이상한 것
-        raise CannotProceed(f"{target} {runs}판 중 {clears}판만 클리어")
+    if clears < want:  # 반복은 판 수를 채워야 끝나므로 여기 오면 이상한 것
+        raise CannotProceed(f"{target} {want}판 중 {clears}판만 클리어")
     bot.verified = True  # 판 수를 채움 = 퀘스트 깸 (퀘스트 창을 다시 열지 않는다)
     return f"{target} 클리어 {clears}판"
 
