@@ -7,10 +7,16 @@ FIELDS = ["id", "via", "name", "label", "recipe", "target", "status", "note",
           "spent", "steps", "have", "startHave", "per", "runs", "wings", "partial", "base", "made",
           # 일일 숙제 카드 (kind='daily'). 빠지면 다시 켰을 때 숙제 카드인 줄 몰라 새 숙제가 바꿔 끼우지 못하고 쌓인다
           "kind", "chars", "only", "force",
+          # 주간 숙제 탭에서 고른 것 (weekend: 주간 어비스·레이드, fieldBoss: 필드 보스 — queue_api.CARD_CFG). 빠지면 다시
+          # 켠 뒤 이어 할 때 [weekend]·[field_boss] 기본값으로 돈다 (2026-11-23 '모든 어비스' 카드가 허상의 정박지로)
+          "weekend", "fieldBoss",
           # 어비스 반복 카드 (kind='abyss'; runs 는 위 runs 를 같이 쓴다 — 판 수)
           "slot", "dungeon", "difficulty", "minutes", "revive", "mode",  # mode: solo 혼자하기 · party 함께하기
           # 레이드 반복 카드 (kind='raid' — 어비스와 같고 장소 칸만 raid). 빠지면 다시 켰을 때 '레이드 None'
           "raid",
+          # 어비스 카드의 고정 파티 역할(partyRole: leader·member)과 함께하기 파티원 퇴장 시 나감(memberLeave).
+          # 빠지면 다시 켰을 때 고정 파티 카드가 우연한 만남 함께하기로 돈다
+          "partyRole", "memberLeave",
           # 한 번 하는 행동 카드 (kind='action' — 제작·채집·가공·수령·연주 버튼)
           "act", "command", "body", "detail", "skipConfirm",
           # 제작·채집·가공 카드가 처음 집을 때 기억한 캐릭터 (queue_api.card_character). 빠지면 다시 켰을 때 잊어

@@ -76,6 +76,19 @@ class SavedTest(unittest.TestCase):
         it = {"id": 5, "kind": "daily", "force": True, "did": {"date": game_date(), "slots": {"1": ["vanguard"]}}}
         self.assertEqual(json.loads(cq.encode({"items": [it]}))["items"][0]["did"], it["did"])
 
+    def test_card_picks_survive_restart(self):
+        """카드가 고른 설정도 남는다 — 다시 켠 뒤 이어 할 때 기본값으로 돌지 않게 (2026-11-23 주간 카드 '모든 어비스'
+        가 다시 켠 뒤 허상의 정박지 3판으로)."""
+        import json
+        from mabi.craft import queue as cq
+        weekly = {"id": 1, "kind": "daily", "force": True, "only": ["weekend_abyss"],
+                  "weekend": {"abyss": {"dungeon": "모든 어비스", "difficulty": "매우 어려움2", "mode": "party"}}}
+        boss = {"id": 2, "kind": "daily", "force": True, "only": ["field_boss"], "fieldBoss": {"boss": "x", "difficulty": "y"}}
+        party = {"id": 3, "kind": "abyss", "slot": 1, "dungeon": "흩어진 물길", "mode": "party", "partyRole": "leader",
+                 "memberLeave": True}
+        kept = json.loads(cq.encode({"items": [weekly, boss, party]}))["items"]
+        self.assertEqual(kept, [weekly, boss, party])
+
 
 class DailyKindDoneTest(unittest.TestCase):
     def run_card(self, it):
