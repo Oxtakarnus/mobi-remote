@@ -61,6 +61,8 @@ class QuickAlterTest(unittest.TestCase):
         bot = mock.MagicMock()
         bot.cfg = {"arbeit": {"alter_max_sec": 120}}
         self.assertTrue(arbeit.quick_alter(bot, ["옷감"]))            # 45초
+        self.assertTrue(arbeit.quick_alter(bot, ["철괴(철 광석)"]))   # 가공 시설 창 카드 = 레시피 이름 (30초)
+        self.assertTrue(arbeit.quick_alter(bot, ["철괴"]))            # 물품 이름
         self.assertFalse(arbeit.quick_alter(bot, ["깔끔 버섯 포자"]))  # 1500초
         self.assertFalse(arbeit.quick_alter(bot, ["옷감", "깔끔 버섯 포자"]))
 
@@ -181,6 +183,121 @@ class AlterFullTest(unittest.TestCase):
     def test_started_waits(self):
         r = self._run([0, 1, 1, 1, 1])
         self.assertEqual(r, "가공 → 받기")  # 시작됐고 (목록이 늘었고) 다 끝나 받음
+
+
+def _fixture(name):
+    import cv2
+    import numpy as np
+    return cv2.imdecode(np.fromfile(str(ROOT / "tests" / "fixtures" / name), np.uint8), cv2.IMREAD_COLOR)
+
+
+class AlterWindowTest(unittest.TestCase):
+    """제작 창 첫 화면이 가공 시설 창인가 — 제목을 '?' 로만 읽어도 왼쪽 위 시설 이름으로 안다 (2026-11-23 09:51)."""
+
+    def test_title_unread_but_facility_name(self):
+        from mabi.monitor import handlers
+        frame = _fixture("alter_window_metal.png")
+        titles = [t for t, _, _ in handlers.ocr.find_texts(frame, handlers.CRAFT_TITLE_AREA)]
+        self.assertFalse(any(t.endswith(handlers.ALTER_TITLE) for t in titles))  # 그날처럼 제목은 못 읽는다
+        self.assertTrue(handlers._alter_window(frame))
+
+    def test_craft_window(self):
+        from mabi.monitor import handlers
+        self.assertFalse(handlers._alter_window(_fixture("craft_window_weapon.png")))
+
+    def test_craft_handler_goes_to_alter_by_card(self):
+        """제작 창 처리기가 가공 시설 창으로 알아보고, 카드 이름(레시피 이름)으로 짧은 가공을 정해 가공하러 간다."""
+        from types import SimpleNamespace
+        from mabi.monitor import handlers
+        craft.configure(ROOT / "state", ROOT / "data", None)
+        bot = mock.MagicMock()
+        bot.cfg = {"arbeit": {"alter_max_sec": 120}}
+        ctx = mock.MagicMock(n={}, alter=(), alter_ok=lambda names: arbeit.quick_alter(bot, names))
+        with mock.patch.object(handlers, "_short_toast", return_value=False), mock.patch.object(handlers, "fast_travel"):
+            r = handlers.craft(bot, ctx, SimpleNamespace(frame=_fixture("alter_window_metal.png"), hit=None))
+        self.assertEqual(r, "가공하러 감")
+        self.assertEqual(ctx.alter, ("철괴(철 광석)",))
+        x, y = bot.click.call_args[0][0]
+        self.assertLess(abs(x - 690), 30)
+        self.assertLess(abs(y - 289), 30)  # 카드 이름 위 (카드 가운데)
+
+
+class AlterNameTest(unittest.TestCase):
+    """가공품 이름 맞추기 — 물품 이름('철괴')으로 레시피 이름('철괴(철 광석)') 카드·가공 목록을 찾는다."""
+
+    def test_like(self):
+        from mabi.monitor import handlers
+        craft.configure(ROOT / "state", ROOT / "data", None)
+        like = handlers._alter_like(["철괴"])
+        self.assertTrue(like("철괴(철 광석)"))
+        self.assertTrue(like("철괴"))
+        self.assertFalse(like("강철괴"))
+        self.assertFalse(like(None))
+        self.assertTrue(handlers._alter_like(["철괴(철 광석)"])("철괴(철광석)"))  # 띄어쓰기만 다름
+
+    def test_alter_go_finds_recipe_card_by_product(self):
+        from types import SimpleNamespace
+        from mabi.monitor import handlers
+        craft.configure(ROOT / "state", ROOT / "data", None)
+        bot = mock.MagicMock()
+        ctx = mock.MagicMock(n={}, alter=("철괴",))
+        with mock.patch.object(handlers.ocr, "find_texts", return_value=[("3", 715, 279), ("철괴(철 광석)", 690, 349)]), \
+                mock.patch.object(handlers, "_short_toast", return_value=False), mock.patch.object(handlers, "fast_travel"):
+            r = handlers._alter_go(bot, ctx, SimpleNamespace(frame=None))
+        self.assertEqual(r, "가공하러 감")
+        bot.click.assert_called_once_with((690, 289))
+
+
+class AlterCollectTest(unittest.TestCase):
+    """가공 칸이 꽉 차 가공이 안 걸리면 그 시설 완료분을 CLI 로 받고 한 번 더 한다 (사용자 2026-11-23). 한 일에 한 번만."""
+
+    METAL = "금속 가공 시설"
+
+    def _run(self, works, ok=True, tried=False):
+        from types import SimpleNamespace
+        from mabi.monitor import handlers
+        craft.configure(ROOT / "state", ROOT / "data", None)
+        bot = mock.MagicMock()
+        bot.state.query.return_value = {"works": works}
+        bot.state.cli.run.return_value = SimpleNamespace(ok=ok, error=None if ok else "blocked", reason=None, message="")
+        ctx = mock.MagicMock(n={"alter_collect": 1} if tried else {}, alter=("철괴(철 광석)",))
+        with mock.patch.object(handlers, "_short_toast", return_value=False), \
+                mock.patch.object(handlers, "_shot", return_value="x"), mock.patch.object(handlers, "_esc"), \
+                mock.patch.object(handlers.time, "monotonic", side_effect=[0, 1, 5, 9, 13]):
+            r = handlers.alter(bot, ctx, SimpleNamespace(frame=None))
+        return r, bot
+
+    def full(self, done=True):
+        return [{"DisplayName": "철괴(철 광석)", "FacilityName": self.METAL, "IsCompleted": done}] * 7
+
+    def test_collects_and_retries(self):
+        from mabi.monitor import handlers
+        r, bot = self._run(self.full())
+        self.assertEqual(r, "가공 칸 비움 → 다시 가공")
+        bot.to_main.assert_called_once()
+        bot.state.cli.run.assert_called_once_with("complete_altering_work", {"displayName": "철괴(철 광석)"},
+                                                  timeout=handlers.COLLECT_TIMEOUT)
+
+    def test_only_once_per_job(self):
+        r, bot = self._run(self.full(), tried=True)
+        self.assertEqual(r.result, "alter_full")
+        bot.state.cli.run.assert_not_called()
+
+    def test_in_progress_full_skips(self):
+        r, bot = self._run(self.full(done=False))
+        self.assertEqual(r.result, "alter_full")
+        bot.state.cli.run.assert_not_called()
+
+    def test_collect_failed_skips(self):
+        r, bot = self._run(self.full(), ok=False)
+        self.assertEqual(r.result, "alter_full")
+
+    def test_facility_from_recipes(self):
+        """가공 목록에 같은 가공품이 없으면 시설은 레시피 표로 — 그 시설의 다른 가공품 완료분을 받는다."""
+        works = [{"DisplayName": "강철괴", "FacilityName": self.METAL, "IsCompleted": True}] * 7
+        r, bot = self._run(works)
+        self.assertEqual(r, "가공 칸 비움 → 다시 가공")
+        bot.state.cli.run.assert_called_once_with("complete_altering_work", {"displayName": "강철괴"}, timeout=mock.ANY)
 
 
 class PressProgressTest(unittest.TestCase):

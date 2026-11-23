@@ -87,6 +87,11 @@ class RecipeTable:
         self.load()
         return list(self._by_product.get(bare(product)) or [])
 
+    def alter_rows(self, name) -> list[dict]:
+        """가공 레시피 줄 — 물품 이름('철괴', 아르바이트 조건)으로도, 레시피 이름('철괴(철 광석)', 가공 시설 창 카드·
+        가공 목록)으로도 찾는다."""
+        return [r for r in self.makers(name) if r["via"] == "alter"] or self.rows(name, via="alter")
+
     def selectable_makers(self, product) -> list[dict]:
         """실제로 시킬 수 있는 줄만 — 같은 이름의 둘째 줄부터는 시켜도 첫 줄이 돈다"""
         return [r for r in self.makers(product) if r["nth"] == 0]

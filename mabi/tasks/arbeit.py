@@ -306,7 +306,9 @@ def quick_alter(bot: Bot, names) -> bool:
     except RuntimeError:
         return False
     for name in names:
-        makers = [r for r in table.makers(name) if r.get("via") == "alter"]
+        # 가공 시설 창 카드는 레시피 이름('철괴(철 광석)') — 물품 이름으로만 찾으면 카드로 정하는 일(조건을 모르는 일)이
+        # '가공 필요' 로 건너뛰어진다 (2026-11-23 철괴)
+        makers = table.alter_rows(name)
         sec = makers[0].get("sec") if makers else None
         if sec is None or sec >= limit:
             return False

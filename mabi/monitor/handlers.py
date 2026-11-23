@@ -17,6 +17,8 @@ from . import detect as d
 # 제작·가공 창 왼쪽 위 제목 칸 (1920 기준). 가공 시설 창은 제목이 '…가공' ('식재료 가공' 등)
 CRAFT_TITLE_AREA, ALTER_TITLE = (80, 15, 420, 60), "가공"
 ALTER_CARDS = (600, 160, 580, 560)  # 가공 시설 창 카드 목록 (x, y, w, h) — 카드 아래쪽에 이름
+ALTER_NAME_AREA, ALTER_FACILITY = (40, 120, 520, 55), "가공시설"  # 가공 시설 창 왼쪽 위 '금속 가공 시설 Lv.6' (띄어쓰기 없이)
+COLLECT_TIMEOUT = 90  # 가공 완료분 받기(CLI) 상한 (초) — 시설까지 가면 30초 남짓 걸린다 (실측 34초)
 
 
 MENU_WAIT_GAP = 15  # NPC 메뉴 버튼 기다림이 이만큼(초) 안에 이어져야 연달아 기다린 것
@@ -458,30 +460,35 @@ def _short_toast(bot) -> bool:
 
 def alter(bot, ctx, seen):
     """가공 시설 앞 '가공하기'. 짧은 가공(ctx.alter — 아르바이트가 정함)만 한다: Space → 끝날 때까지(CLI get_altering_works)
-    → 모두 받기(Space) → 가공 완료 확인(Space) → 창 닫기. 재료가 모자라면 포기 (사용자 규칙 2026-10-30). 그 밖의 가공은 건너뛴다."""
+    → 모두 받기(Space) → 가공 완료 확인(Space) → 창 닫기. 재료가 모자라면 포기 (사용자 규칙 2026-10-30). 그 밖의 가공은 건너뛴다.
+    가공 칸이 꽉 차 걸리지 않으면 그 시설 완료분을 CLI 로 받고 한 번 더 한다 (_collect_full)."""
     if not ctx.alter:
+        shot = _shot(bot, "arbeit_alter")  # 닫기 전에 — 닫은 뒤 사진엔 무엇을 가공하라는 창인지 안 남았다 (2026-11-23 07:00)
         _esc(bot)
-        return Finish("alter", f"가공이 필요한 일 → {_shot(bot, 'arbeit_alter')}")
+        return Finish("alter", f"가공이 필요한 일 → {shot}")
     ctx.n["alter"] = ctx.n.get("alter", 0) + 1
     if ctx.n["alter"] > 6:
         return Finish("stuck", f"가공을 거듭해도 일이 안 끝남 → {_shot(bot, 'arbeit_alter')}")
     ctx.note("arb_alter", "가공")
-    names = set(ctx.alter)
-    before = _alter_count(bot, names)
+    like = _alter_like(ctx.alter)
+    before = _alter_count(bot, like)
     bot.key("space")
     if _short_toast(bot):
         _esc(bot)
         return Finish("alter_short", f"가공 재료 부족 → {_shot(bot, 'arbeit_alter')}")
-    # 가공 칸이 (완료분으로) 꽉 차면 '가공하기' 가 걸리지 않는다. 시설 창의 '모두 받기' 는 시설에 다시 말을 걸게 해서
-    # 받는 길이 번거롭다 → 그 일은 포기하고 넘어간다 (사용자 2026-11-02). 가공 목록에 이 가공품이 늘지 않으면 꽉 찬 것
-    if before is not None and not _alter_started(bot, names, before):
+    # 가공 칸이 (완료분으로) 꽉 차면 '가공하기' 가 걸리지 않는다 — 가공 목록에 이 가공품이 늘지 않으면 꽉 찬 것.
+    # 그 시설 완료분을 CLI 로 받고 한 번 더 한다 (사용자 2026-11-23). 예전엔 받지 않고 건너뛰었다 — 시설 창 '모두 받기' 는
+    # 시설에 다시 말을 걸게 해서 번거로웠다 (2026-11-02). 받을 게 없거나 받기가 안 되면 예전처럼 그 일은 건너뛴다
+    if before is not None and not _alter_started(bot, like, before):
+        shot = _shot(bot, "arbeit_alter")
         _esc(bot)
-        return Finish("alter_full", f"가공이 걸리지 않음 (가공 칸이 꽉 참) → {_shot(bot, 'arbeit_alter')}")
+        if _collect_full(bot, ctx, like):
+            return "가공 칸 비움 → 다시 가공"
+        return Finish("alter_full", f"가공이 걸리지 않음 (가공 칸이 꽉 참) → {shot}")
     end = time.monotonic() + bot.cfg["arbeit"]["alter_wait"]
     while True:
         bot.sleep(3, 3.5)
-        data = bot.state.query("get_altering_works") or {}
-        works = [w for w in (data.get("works") or []) if w.get("DisplayName") in names]
+        works = _alter_works(bot, like) or []
         if works and all(w.get("IsCompleted") for w in works):
             break
         if time.monotonic() > end:
@@ -496,22 +503,89 @@ def alter(bot, ctx, seen):
     return "가공 → 받기"
 
 
-def _alter_count(bot, names) -> int | None:
-    """가공 목록(CLI)에 올라 있는 이 가공품 수 (완료분 포함). 조회 실패면 None."""
+def _recipes():
+    """레시피 표. 앱이 craft.configure 를 안 했으면 None (이 파일의 craft 는 제작 창 처리기라 모듈은 여기서 부른다)."""
+    from .. import craft as craft_data
+    try:
+        return craft_data.data().recipes
+    except RuntimeError:
+        return None
+
+
+def _alter_like(names):
+    """가공품 이름 맞추기 (한 곳). 가공 시설 창 카드·가공 목록(CLI)은 레시피 이름('철괴(철 광석)'), 아르바이트 조건은
+    물품 이름('철괴')일 수 있다 → 띄어쓰기 없이 같거나, 레시피 표에서 그 레시피가 만드는 물품이 원하는 이름이면 같은 것."""
+    want = {ocr.nospace(n) for n in names}
+    table = _recipes()
+
+    def like(name) -> bool:
+        if ocr.nospace(name or "") in want:
+            return True
+        product = table.product_of(name) if table and name else None
+        return bool(product) and ocr.nospace(product) in want
+    return like
+
+
+def _alter_works(bot, like) -> list[dict] | None:
+    """가공 목록(CLI)의 이 가공품 작업들 (완료분 포함). 조회 실패면 None."""
     data = bot.state.query("get_altering_works")
     if not isinstance(data, dict):
         return None
-    return sum(1 for w in data.get("works") or [] if w.get("DisplayName") in names)
+    return [w for w in data.get("works") or [] if like(w.get("DisplayName"))]
 
 
-def _alter_started(bot, names, before: int, timeout: float = 12) -> bool:
+def _alter_count(bot, like) -> int | None:
+    """가공 목록(CLI)에 올라 있는 이 가공품 수 (완료분 포함). 조회 실패면 None."""
+    works = _alter_works(bot, like)
+    return None if works is None else len(works)
+
+
+def _alter_started(bot, like, before: int, timeout: float = 12) -> bool:
     """'가공하기' 뒤 가공 목록에 이 가공품이 늘었나."""
     end = time.monotonic() + timeout
     while time.monotonic() < end:
         bot.sleep(2, 2.5)
-        if (_alter_count(bot, names) or 0) > before:
+        if (_alter_count(bot, like) or 0) > before:
             return True
     return False
+
+
+def _collect_full(bot, ctx, like) -> bool:
+    """가공 칸이 꽉 차 가공이 걸리지 않을 때 그 시설 완료분을 CLI 로 받는다 (complete_altering_work — 시설 하나를 통째로,
+    비용 없음). 한 일에 한 번만. 받았으면 True — 메인 화면에서 '진행하기' 로 가공 시설 창부터 다시 간다.
+    시설은 가공 목록의 같은 가공품 자리, 없으면 레시피 표. 진행 중인 가공으로 꽉 찼으면 받을 게 없어 False."""
+    if ctx.n.get("alter_collect"):
+        return False
+    ctx.n["alter_collect"] = 1
+    data = bot.state.query("get_altering_works")
+    works = (data.get("works") or []) if isinstance(data, dict) else []
+    facility = next((w["FacilityName"] for w in works if like(w.get("DisplayName")) and w.get("FacilityName")), None)
+    if facility is None and (table := _recipes()):
+        facility = next((rows[0].get("facility") for n in ctx.alter if (rows := table.alter_rows(n))), None)
+    done = [w for w in works if facility and w.get("FacilityName") == facility and w.get("IsCompleted")]
+    if not done:
+        bot.log.info(f"가공 칸이 꽉 참 — '{facility or '시설 모름'}' 에 받을 완료분이 없음")
+        return False
+    try:
+        bot.to_main(tries=4)  # 게임 창이 열린 채 부르면 막힌다 (2026-11-02 시설 창 앞에서 부른 완료분 받기가 blocked)
+    except StepTimeout:
+        return False
+    r = bot.state.cli.run("complete_altering_work", {"displayName": done[0].get("DisplayName")}, timeout=COLLECT_TIMEOUT)
+    if not r.ok:
+        bot.log.warning(f"가공 칸이 꽉 참 → '{facility}' 완료분 받기 실패 ({r.error or r.reason}: {r.message})")
+        return False
+    bot.log.info(f"가공 칸이 꽉 참 → '{facility}' 완료분 {len(done)}개 받음 (CLI) → 다시 가공")
+    ctx.note("arb_alter", "가공 칸 비움")
+    return True
+
+
+def _alter_window(frame) -> bool:
+    """제작 창 첫 화면이 가공 시설 창인가 — 왼쪽 위 시설 이름('금속 가공 시설 Lv.6')이나 제목('금속 가공').
+    제목만 보다가 '금속 가공' 을 '?' 로만 읽어 제작 창으로 알고 물품 칸을 거듭 누르다 막혔다 (2026-11-23 09:51).
+    제작 창(무기 제작대 등)엔 시설 이름 자리에 글자가 없다."""
+    if any(ALTER_FACILITY in ocr.nospace(t) for t, _, _ in ocr.find_texts(frame, ALTER_NAME_AREA)):
+        return True
+    return any(t.endswith(ALTER_TITLE) for t, _, _ in ocr.find_texts(frame, CRAFT_TITLE_AREA))
 
 
 def _alter_go(bot, ctx, seen):
@@ -527,8 +601,8 @@ def _alter_go(bot, ctx, seen):
         if not ctx.alter:
             _esc(bot)
             return Finish("alter", f"가공 시설 창 → {_shot(bot, 'arbeit_alter')}")
-    names = {ocr.nospace(n) for n in ctx.alter}
-    hit = next(((x, y) for t, x, y in cards if ocr.nospace(t) in names), None)
+    like = _alter_like(ctx.alter)
+    hit = next(((x, y) for t, x, y in cards if like(t)), None)
     if not hit:
         return Finish("stuck", f"가공 시설 창에서 가공품 카드를 못 찾음 → {_shot(bot, 'arbeit_alter')}")
     bot.click((hit[0], hit[1] - 60))
@@ -573,8 +647,8 @@ def craft_go(bot, ctx, seen):
 
 def craft(bot, ctx, seen):
     """제작 창 첫 화면: 아르바이트가 요구하는 물품 하나만 보인다 → 그 카드. 가공 시설 창('식재료 가공' 등)도 첫 화면이 같아
-    가공 칸이 다 찬 채면 '가공하기' 가 안 떠 헤맸다 (2026-10-26) → 창 제목으로 가공을 알아본다."""
-    if any(t.endswith(ALTER_TITLE) for t, _, _ in ocr.find_texts(seen.frame, CRAFT_TITLE_AREA)):
+    가공 칸이 다 찬 채면 '가공하기' 가 안 떠 헤맸다 (2026-10-26) → 시설 이름·제목으로 가공을 알아본다 (_alter_window)."""
+    if _alter_window(seen.frame):
         if ctx.alter or ctx.alter_ok:
             return _alter_go(bot, ctx, seen)
         _esc(bot)
