@@ -7,12 +7,11 @@
    밀려나면 다시 들어간다 (사용자). 못 깨면 10초마다 같은 속성을 다시 던지니 계속 지킨다 (상한 HOLD).
    먼저 떠나지 않는다 — 몬스터 길막·후딜 큰 스킬로 늦게 닿을 수 있다 (2026-11-03 사용자).
 3. 깨지면 투창병 근처로 돌아간다 (사용자: 돌아가는 건 파훼했을 때). 돌아오면 Space 로 바로 전투로 (사용자 11-19 — 아무 것도 안 하는 상태의 Space 는 지금 '목표' 진행).
-W·D 가 맵에서 어느 쪽인지는 카메라를 고정한 채 (사용자) 주술사가 나온 뒤 한 번 짧게 눌러 재고 저장한다 (속성 버프 3~4초 전).
+W·D 가 맵에서 어느 쪽인지는 맵이 정한다 — 카메라를 캐릭터 뒤로 맞추면 W = +Y, D = +X (CALIB, 11-02 실측).
 키를 떼도 위치 읽기가 늦어 약 1.5칸 더 가므로 지금 속도 × LAG 만큼 앞에서 뗀다 (11-02 실측 초당 5.5칸, 수도사 이속 버프 때 ~7.9).
 게임 키만 누른다 — 패킷은 보내지 않는다.
 """
 import ctypes
-import json
 import math
 import random
 import time
@@ -28,7 +27,11 @@ HOLD = 25.0        # 대상 표시 뒤 이만큼 지나도 못 깨면 포기
 SPEED = 5.5        # 보통 이동 속도 (칸/초). 이동 중엔 실제 속도로
 LAG = 0.22
 GO_LIMIT = 8.0     # 한 번 가는 데 상한 (가장 먼 주술사가 약 24칸)
-CALIB_FILE = "spear_calib.json"
+# W·D 가 가는 맵 방향 (W, D) — 카메라를 캐릭터 뒤로 맞춘 이 맵에선 W = +Y, D = +X (11-02 실측). 맵이 정하는 값이라 누구나
+# 같아 코드에 두고 업데이트로 함께 보낸다 (사용자 11-24). 전엔 PC 마다 처음 한 번 재서 state/spear_calib.json 에 두고 계속
+# 썼다 — 잘못 잰 값(카메라를 맞추기 전·밀리는 중)이 업데이트 뒤에도 남는다 (11-24 테스터 제보: 투창·격류에서 뺑뺑이).
+# 그 파일은 이제 읽지 않는다
+CALIB = ((0.0, 1.0), (1.0, 0.0))
 SOLO = "솔로"        # 맵 이름 끝 '(… 솔로)' — 혼자하기
 CAMERA_WAIT = 2.0  # 맵에 들어오고 적어도 이만큼 뒤, 내 캐릭터가 움직이기 시작하면 카메라를 맞춘다
 CAMERA_LATE = 8.0  # 움직임을 못 봐도 들어오고 이만큼 지나면 맞춘다
@@ -75,6 +78,25 @@ def camera_mode(bot: Bot, frame=None) -> str | None:
     return top
 
 
+class _Trail:
+    """이동하며 본 내 자리 — 처음·지금 자리와 간 길. 못 갔을 때 왜인지(둘레를 돎·막힘) 남기려고."""
+
+    def __init__(self):
+        self.start = self.last = None
+        self.path = 0.0
+
+    def add(self, p) -> None:
+        if self.last is None:
+            self.start = p
+        else:
+            self.path += math.dist(p, self.last)
+        self.last = p
+
+    def text(self, target) -> str:
+        gain = math.dist(target, self.start) - math.dist(target, self.last)
+        return f"남은 {math.dist(target, self.last):.1f}칸 · 간 길 {self.path:.1f}칸 · 가까워진 {gain:.1f}칸"
+
+
 def _per_map(name: str):
     """이 맵에서 한 번 한 일 (맵 진입 시각) — 판 진행을 다시 부를 때마다 SpearDodge 가 새로 생겨도 이어지게
     맵 상태(SpearState)에 둔다. 클리어 뒤 보상 화면에서 판 진행을 다시 불러 보스방 카메라를 또 돌렸다 (11-03 19:26)."""
@@ -83,7 +105,6 @@ def _per_map(name: str):
 
 
 class SpearDodge:
-    calib_tried = _per_map("calib_tried")   # 보정을 해 봤나
     camera_set = _per_map("camera_set")     # 카메라를 맞췄나
     camp_camera = _per_map("camp_camera")   # 보스방 갈 때 카메라를 다시 맞췄나
     quest_spear = _per_map("quest_spear")   # 투창 패턴이 끝나 추적 칸을 눌렀나
@@ -94,34 +115,15 @@ class SpearDodge:
 
     def __init__(self, bot: Bot):
         self.bot = bot
-        self._calib = False     # 처음 쓸 때 파일에서 (흩어진 물길이 아니면 읽지도 않는다)
+        self.calib = CALIB  # W·D 가 가는 맵 방향
         self._cli_pos, self._cli_at = None, -1e9  # pos_loose 가 CLI 로 본 내 자리
-
-    @property
-    def file(self):
-        return self.bot.paths.state / CALIB_FILE
-
-    @property
-    def calib(self):
-        if self._calib is False:
-            try:
-                c = json.loads(self.file.read_text(encoding="utf-8"))
-                self._calib = (tuple(c["w"]), tuple(c["d"]))
-            except (OSError, ValueError, KeyError, TypeError):
-                self._calib = None
-        return self._calib
-
-    @calib.setter
-    def calib(self, v):
-        self._calib = v
 
     @property
     def st(self) -> SpearState:
         return self.bot.packets.spear
 
     def wanted(self) -> bool:
-        """지금 맡을 일이 있나 — 내가 투창 대상이거나 틱택토 O 담당, 비틀린 송곳니 격류가 나옴,
-        또는 주술사가 나왔는데 W·D 방향을 아직 모름."""
+        """지금 맡을 일이 있나 — 내가 투창 대상이거나 틱택토 O 담당, 비틀린 송곳니 격류가 나옴."""
         st = getattr(self.bot.packets, "spear", None)
         if not isinstance(st, SpearState) or not st.active:
             return False
@@ -131,8 +133,7 @@ class SpearDodge:
             return True
         if st.finished:
             return False
-        return st.due() or (self.calib is None and len(st.attr) == 6
-                            and self.calib_tried != self.bot.packets.state.entered_at)
+        return st.due()
 
     def camera_due(self) -> bool:
         """함께하기는 카메라가 캐릭터 반대쪽을 보고 시작한다 (혼자하기는 캐릭터가 보는 쪽 — 2026-11-03 사용자).
@@ -278,31 +279,20 @@ class SpearDodge:
             return
         if st.wave_due():
             w = st.take_wave()
-            if w and self.calib is None:
-                self._with_focus(self.calibrate)
-            if w and self.calib is not None:
+            if w:
                 self.rift(w)  # 움직일 때만 게임 창을 앞으로
             self.resume("격류")
             return
         if st.ttt.due():
             job = st.ttt.take(self.my_pos())  # 크게 차이 나지 않으면 가까운 칸
-            if job and self.calib is None:
-                self._with_focus(self.calibrate)
-            if job and self.calib is not None:
+            if job:
                 self._with_focus(lambda: self.tictactoe(job))
-            return
-        if self.calib is None and not st.due():
-            self.calib_tried = self.bot.packets.state.entered_at
-            self._with_focus(self.calibrate)
             return
         job = st.take()
         if job is None:
             self.bot.log.info("투창 대상이지만 속성이나 그 주술사를 모름 (맵에 들어온 뒤 소환을 못 봄) — 움직이지 않음")
         else:
-            if self.calib is None:  # 주술사 소환 때 못 쟀다 — 지금이라도 (늦게 출발한다)
-                self._with_focus(self.calibrate)
-            if self.calib is not None:
-                self._with_focus(lambda: self.dodge(job))
+            self._with_focus(lambda: self.dodge(job))
         self.resume("투창")
 
     # ── 순서 ──
@@ -514,14 +504,18 @@ class SpearDodge:
         return ks
 
     def go(self, target, tol: float, until: float, done, pattern: bool = True) -> bool:
-        """target 까지 키를 누른 채 다시 보며 간다. 속도 × LAG 앞에서 떼고, 멈춘 자리가 모자라거나 지나쳤으면 짧게 다시."""
+        """target 까지 키를 누른 채 다시 보며 간다. 속도 × LAG 앞에서 떼고, 멈춘 자리가 모자라거나 지나쳤으면 짧게 다시.
+        시간 안에 못 가면 간 길과 가까워진 만큼을 남긴다 — 많이 갔는데 안 가까워졌으면 키 방향이 틀어져 목표 둘레를 돈 것,
+        조금밖에 못 갔으면 막힌 것 (11-24 테스터 제보 '뺑뺑이' — 전엔 투창 이동은 못 가도 아무것도 안 남았다)."""
         inp, fine, hist = self.bot.input, False, []
+        trail, t0 = _Trail(), time.monotonic()
         while time.monotonic() < until and not done() and self.ok(pattern):
             self.bot.check_stop()
             p = self.my_pos()
             if not p:
                 time.sleep(0.05)
                 continue
+            trail.add(p)
             dx, dy = target[0] - p[0], target[1] - p[1]
             dist, now = math.hypot(dx, dy), time.monotonic()
             hist = [h for h in hist if now - h[0] < 0.6] + [(now, p)]
@@ -533,6 +527,7 @@ class SpearDodge:
                 inp.hold(())
                 time.sleep(0.45)
                 p = self.my_pos(fresh=True) or p
+                trail.add(p)
                 dist = math.dist(target, p)
                 if dist <= tol + (0.3 if fine else 0):
                     return True
@@ -541,6 +536,9 @@ class SpearDodge:
             inp.hold(self.keys_toward(dx, dy))
             time.sleep(0.05)
         inp.hold(())
+        if trail.start and time.monotonic() >= until and not done() and self.ok(pattern):
+            self.bot.log.info(f"이동: ({target[0]:.1f}, {target[1]:.1f}) 에 {time.monotonic() - t0:.1f}초 안에 못 감 — "
+                              f"{trail.text(target)}")
         return False
 
     def hold(self, target, until: float, done, pattern: bool = True) -> None:
@@ -562,30 +560,3 @@ class SpearDodge:
             time.sleep(0.06)
             inp.hold(())
             time.sleep(0.25)
-
-    # ── 보정 ──
-    def measure(self, key: str) -> tuple[float, float] | None:
-        a = self.my_pos(fresh=True)
-        self.bot.input.hold((key,))
-        time.sleep(0.3)
-        self.bot.input.hold(())
-        time.sleep(0.3)
-        b = self.my_pos(fresh=True)
-        if not a or not b:
-            return None
-        d = math.dist(a, b)
-        return ((b[0] - a[0]) / d, (b[1] - a[1]) / d) if d > 0.4 else None
-
-    def calibrate(self) -> None:
-        """W·D 를 0.3초씩 눌러 맵 방향을 잰다. 둘이 거의 직각일 때만 믿고 저장한다 (맞아서 밀려나는 중에 재면 틀린 값이 나온다)."""
-        w = self.measure("w")
-        d = self.measure("d")
-        if not w or not d or abs(w[0] * d[0] + w[1] * d[1]) > 0.35:
-            self.bot.log.info(f"투창 패턴: W·D 방향 재기 실패 (W {w} · D {d}) — 다음 기회에")
-            return
-        self.calib = (w, d)
-        try:
-            self.file.write_text(json.dumps({"w": w, "d": d}), encoding="utf-8")
-        except OSError:
-            pass
-        self.bot.log.info(f"투창 패턴: W→({w[0]:.2f}, {w[1]:.2f}) · D→({d[0]:.2f}, {d[1]:.2f}) 저장")

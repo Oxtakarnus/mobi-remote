@@ -1,7 +1,10 @@
 """흩어진 물길 투창병 속성 패턴 — 패킷 상태(spear.SpearState)와 이동 키 고르기."""
 import math
+import re
+import tempfile
 import time
 import unittest
+from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
 
@@ -236,6 +239,16 @@ class KeysTest(unittest.TestCase):
         self.assertEqual(sd.keys_toward(0, -5), ["s"])
         self.assertEqual(sorted(sd.keys_toward(7, -10)), ["d", "s"])
         self.assertEqual(sd.keys_toward(-3, 0.2), ["a"])
+
+    def test_default_calib_is_map_direction(self):
+        """W·D 방향은 맵이 정해 업데이트로 함께 간다 — 예전에 PC 마다 재 둔 값(state/spear_calib.json)은 안 읽는다
+        (11-24 테스터 제보: 잘못 잰 값이 업데이트 뒤에도 남아 투창·격류에서 엉뚱한 쪽으로)."""
+        with tempfile.TemporaryDirectory() as d:
+            (Path(d) / "spear_calib.json").write_text('{"w": [0, -1], "d": [-1, 0]}', encoding="utf-8")
+            sd = SpearDodge(SimpleNamespace(paths=SimpleNamespace(state=Path(d))))
+            self.assertEqual(sd.calib, ((0.0, 1.0), (1.0, 0.0)))
+            self.assertEqual(sd.keys_toward(0, 5), ["w"])
+            self.assertEqual(sd.keys_toward(5, 0), ["d"])
 
     def spear_run(self, job, ok=True):
         from unittest import mock
@@ -546,6 +559,50 @@ class KeysTest(unittest.TestCase):
         m._spear("spear.buff", {"actor": ME, "buff": TARGET_MARK, "caster": SPEAR})
         self.assertTrue(sd.wanted())
 
+
+
+class GoTrailTest(unittest.TestCase):
+    """이동이 시간 안에 못 가면 간 길과 가까워진 만큼을 남긴다 (11-24 테스터 제보 '뺑뺑이')."""
+
+    def go(self, turn, secs=3.0, blocked=False):
+        """turn: 실제 키 방향이 맵 기본값에서 돈 각도(도). 5.5칸/초로 움직이는 가짜 캐릭터 — (0, -6) 에서 (0, 0) 으로."""
+        clock, pos, held = [100.0], [(0.0, -6.0)], [()]
+        bot = mock.MagicMock()
+        bot.input.hold.side_effect = lambda ks: held.__setitem__(0, tuple(ks))
+        cs, sn = math.cos(math.radians(turn)), math.sin(math.radians(turn))
+        base = {"w": (0.0, 1.0), "s": (0.0, -1.0), "d": (1.0, 0.0), "a": (-1.0, 0.0)}
+
+        def sleep(sec):
+            clock[0] += sec
+            vx, vy = sum(base[k][0] for k in held[0]), sum(base[k][1] for k in held[0])
+            n = math.hypot(vx, vy)
+            if n and not blocked:
+                vx, vy = (vx * cs - vy * sn) / n, (vx * sn + vy * cs) / n
+                pos[0] = (pos[0][0] + vx * 5.5 * sec, pos[0][1] + vy * 5.5 * sec)
+
+        sd = SpearDodge(bot)
+        sd.my_pos = lambda fresh=False: pos[0]
+        with (mock.patch.object(SpearDodge, "ok", return_value=True),
+              mock.patch.object(time, "sleep", sleep), mock.patch.object(time, "monotonic", lambda: clock[0])):
+            ok = sd.go((0.0, 0.0), 1.0, clock[0] + secs, lambda: False)
+        return ok, [str(c.args[0]) for c in bot.log.info.call_args_list if "못 감" in str(c.args[0])]
+
+    def test_arrives_without_log(self):
+        self.assertEqual(self.go(0), (True, []))
+
+    def test_turned_keys_circle_and_log(self):
+        ok, lines = self.go(90)
+        self.assertFalse(ok)
+        self.assertEqual(len(lines), 1)
+        m = re.search(r"간 길 ([\d.]+)칸 · 가까워진 (-?[\d.]+)칸", lines[0])
+        path, gain = float(m.group(1)), float(m.group(2))
+        self.assertGreater(path, 10)     # 3초 동안 계속 움직였는데
+        self.assertLess(gain, path / 3)  # 거의 안 가까워짐 — 목표 둘레를 돎
+
+    def test_blocked_logs_short_path(self):
+        ok, lines = self.go(0, blocked=True)
+        self.assertFalse(ok)
+        self.assertIn("간 길 0.0칸", lines[0])
 
 
 class RiftTest(unittest.TestCase):
