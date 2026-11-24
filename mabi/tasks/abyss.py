@@ -747,8 +747,8 @@ class AbyssRepeat(Repeat):
         우리 파티가 끝내 안 돌아오면 done() 이 참 (party.RESTORE_WAIT) — 부르는 쪽이 끝낸다. 돌아왔는데
         GATHER_WAIT 초 안에 다 모이지 않으면 지금 인원으로 (파티원이 빠진 것일 수 있다 — 사용자 11-22 '계속')."""
         w, bot = self.watch, self.bot
-        home = bot.packets.ok and bot.packets.state.channel_type in OPEN_MAPS
-        wait = self.regather or (w is not None and w.away and home)
+        wait = self.regather or (w is not None and w.away and bot.packets.ok
+                                 and bot.packets.state.channel_type in OPEN_MAPS)
         self.regather = False
         if not wait or w is None or not bot.packets.ok:
             return
