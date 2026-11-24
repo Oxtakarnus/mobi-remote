@@ -33,7 +33,8 @@ class FakeApi(QueueApi):
 
     def query(self, name, opts=None):
         if name == "alteringWorks":
-            return {"facilities": [{"facility": f, "completed": [{"name": f + " 물건"}]} for f in self.facilities]}
+            return {"facilities": [f if isinstance(f, dict) else {"facility": f, "completed": [{"name": f + " 물건"}]}
+                                   for f in self.facilities]}
         if name == "activity":
             self.dialogue_left -= 1
             return {"dialogue": self.dialogue_left >= 0}
@@ -116,6 +117,14 @@ class ActionKindTest(unittest.TestCase):
         r = api._q_exec(FakeQ(), "complete_altering_work", {"displayName": "쌀"}, {"label": "수령"}, "시설")
         self.assertFalse(r["ok"])
         self.assertEqual(len(api.calls), 1)
+
+    def test_collect_all_skips_name_still_running(self):
+        # 2026-11-25 06:33: 금속 가공 시설 은합금괴 하나는 완료, 하나는 진행 중 — 그 이름으로 받으면 거절돼 카드가 실패로 남았다
+        metal = {"facility": "금속", "completed": [{"name": "은합금괴"}], "inProgress": [{"name": "은합금괴"}]}
+        api, q = FakeApi([], facilities=["가죽", metal]), FakeQ()
+        self.assertTrue(ActionKind(api).run(q, {"id": 1, "act": "collectAll"}))
+        self.assertEqual([c[1] for c in api.calls], ["가죽 물건"])
+        self.assertEqual(q.notes[-1], "완료 1곳 · 진행 중이라 다음에 1곳")
 
     def test_collect_all_nothing(self):
         api, q = FakeApi([]), FakeQ()

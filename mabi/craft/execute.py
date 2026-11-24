@@ -59,9 +59,10 @@ def step_failure(kind: str, r: dict) -> str | None:
     if is_agent_limit(err, r.get("data")):
         return None  # 연속 사용 제한 — 기다려도 안 풀린다 (확인 창은 부르는 쪽이 눌러 보고 한 번 더 한다)
     if kind == "collect":
-        # 2026-10-30 20:56:54 — 수령이 '완료된 게 없다' 였다가 12초 뒤엔 받았다.
+        # 2026-10-30 20:56:54 — 수령이 '완료된 게 없다' 였다가 12초 뒤엔 받았다. 같은 거절이 지금은 not_completed_yet
+        # 으로 온다 (2026-11-25 — 넘긴 이름의 가공이 아직 남았을 때. 이름은 lists.collect_name 이 고르지만 그 사이 바뀔 수 있다).
         # 화면을 막는 것(blocked — 어비스 결과 연출 등, 2026-11-12 21:32)도 기다리면 풀린다. 수령은 비용이 없어 다시 해도 된다
-        return STEP_RETRY_LATER if err in ("no_completed_work", "blocked") else None
+        return STEP_RETRY_LATER if err in ("no_completed_work", "not_completed_yet", "blocked") else None
     return {"invalid_count": STEP_AGAIN, "insufficient_living_skill_level": STEP_STOP_SKILL,
             "insufficient_transfer_cost": STEP_STOP_TRANSFER}.get(err)
 

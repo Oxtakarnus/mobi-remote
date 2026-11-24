@@ -155,6 +155,30 @@ class PlanStepTest(unittest.TestCase):
         self.assertEqual((st["kind"], st["reason"]), ("blocked", "not_obtainable"))
 
 
+class CollectNameTest(unittest.TestCase):
+    """받기에 넘길 이름 — 커넥터는 넘긴 이름의 가공이 아직 남아 있으면 완료분이 있어도 거절한다 (2026-11-25 은합금괴)."""
+
+    def test_completed_name_not_left(self):
+        from mabi.craft.lists import collect_name
+        fac = {"completed": [{"name": "은합금괴"}, {"name": "강철괴"}], "inProgress": [{"name": "은합금괴"}]}
+        self.assertEqual(collect_name(fac), "강철괴")
+        self.assertEqual(collect_name({"completed": [{"name": "은합금괴"}], "inProgress": []}), "은합금괴")
+
+    def test_same_name_still_running(self):
+        from mabi.craft.lists import collect_name
+        self.assertIsNone(collect_name({"completed": [{"name": "은합금괴"}], "inProgress": [{"name": "은합금괴"}]}))
+        self.assertIsNone(collect_name({"completed": [], "inProgress": [{"name": "백금강괴"}]}))
+
+    def test_full_facility_waits_when_name_running(self):
+        # 칸이 찬 시설의 완료분이 아직 가공 중인 이름뿐이면 받지 않고 기다린다 (보내면 거절된다)
+        s = snap({}, completed=["철괴(광석)"], in_progress=["철괴(광석)"])
+        room = {"facility": "금속 가공 시설", "used": 2, "slots": 2, "free": 0}
+        self.assertEqual(goal._full_facility(s, "금속 가공 시설", "강철괴", room)["kind"], "wait")
+        s = snap({}, completed=["철괴(광석)", "강철괴"], in_progress=["철괴(광석)"])
+        st = goal._full_facility(s, "금속 가공 시설", "강철괴", room)
+        self.assertEqual((st["kind"], st["name"]), ("collect", "강철괴"))
+
+
 class ItemTotalsTest(unittest.TestCase):
     """보유량 합치기는 knowledge.item_totals 하나 — 목표·계획·화면은 bare(태그 벗긴 이름도), 전후 비교는 원문만."""
 

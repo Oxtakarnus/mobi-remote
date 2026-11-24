@@ -965,10 +965,16 @@ class QueueApi:
     def _q_collect_all(self, q: WorkQueue, it: dict) -> bool:
         """가공 완료분 전체 수령 — 완료분이 있는 시설마다 complete_altering_work 한 번.
         수령은 비용이 없고 되돌릴 것도 없어 묻지 않는다. 앞 시설의 보상 창이 남아 있으면 닫히길 기다린다."""
+        from mabi.craft.lists import collect_name
         w = self.query("alteringWorks", {"refresh": True})
-        targets = [f["completed"][0]["name"] for f in (w.get("facilities") or []) if f.get("completed")]
+        facs = [f for f in (w.get("facilities") or []) if f.get("completed")]
+        targets = [n for f in facs if (n := collect_name(f))]
+        # 완료분이 있어도 같은 이름이 아직 가공 중인 시설은 지금 못 받는다 (커넥터 거절) — 실패가 아니라 다음에
+        later = [f["facility"] for f in facs if not collect_name(f)]
+        if later:
+            log.info(f"전체 수령: {', '.join(later)} 은(는) 같은 가공품이 아직 진행 중이라 다음에")
         if not targets:
-            q.note(it, "수령할 작업 없음")
+            q.note(it, "수령할 작업 없음" + (f" · 진행 중이라 다음에 {len(later)}곳" if later else ""))
             self._q_toast("수령할 작업 없음")
             return True
         done = failed = 0
@@ -985,8 +991,9 @@ class QueueApi:
                 done += 1
             else:
                 failed += 1
-        q.note(it, f"완료 {done}곳" + (f" · 실패 {failed}곳" if failed else ""))
-        self._q_toast("전체 수령 종료", f"완료 {done}곳" + (f" · 실패 {failed}곳" if failed else ""), "bad" if failed else "ok")
+        tail = (f" · 실패 {failed}곳" if failed else "") + (f" · 진행 중이라 다음에 {len(later)}곳" if later else "")
+        q.note(it, f"완료 {done}곳" + tail)
+        self._q_toast("전체 수령 종료", f"완료 {done}곳" + tail, "bad" if failed else "ok")
         self._emit("mm:exec-done", {"command": "complete_altering_work", "ok": True, "origin": {"act": "collectAll", "quiet": True}})
         return failed == 0 and not q.stop
 

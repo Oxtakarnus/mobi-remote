@@ -586,15 +586,19 @@ def _collect_full(bot, ctx, like) -> bool:
     facility = next((w["FacilityName"] for w in works if like(w.get("DisplayName")) and w.get("FacilityName")), None)
     if facility is None and (table := _recipes()):
         facility = next((rows[0].get("facility") for n in ctx.alter if (rows := table.alter_rows(n))), None)
-    done = [w for w in works if facility and w.get("FacilityName") == facility and w.get("IsCompleted")]
-    if not done:
-        bot.log.info(f"가공 칸이 꽉 참 — '{facility or '시설 모름'}' 에 받을 완료분이 없음")
+    from ..craft.lists import collect_name
+    mine = [w for w in works if facility and w.get("FacilityName") == facility]
+    done = [w for w in mine if w.get("IsCompleted")]
+    name = collect_name({"completed": [{"name": w.get("DisplayName")} for w in done],
+                         "inProgress": [{"name": w.get("DisplayName")} for w in mine if not w.get("IsCompleted")]})
+    if not name:  # 완료분이 없거나, 있어도 같은 이름이 아직 가공 중이라 받을 수 없다
+        bot.log.info(f"가공 칸이 꽉 참 — '{facility or '시설 모름'}' 에 지금 받을 완료분이 없음")
         return False
     try:
         bot.to_main(tries=4)  # 게임 창이 열린 채 부르면 막힌다 (2026-11-02 시설 창 앞에서 부른 완료분 받기가 blocked)
     except StepTimeout:
         return False
-    r = bot.state.cli.run("complete_altering_work", {"displayName": done[0].get("DisplayName")}, timeout=COLLECT_TIMEOUT)
+    r = bot.state.cli.run("complete_altering_work", {"displayName": name}, timeout=COLLECT_TIMEOUT)
     if not r.ok:
         bot.log.warning(f"가공 칸이 꽉 참 → '{facility}' 완료분 받기 실패 ({r.error or r.reason}: {r.message})")
         return False

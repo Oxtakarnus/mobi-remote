@@ -348,6 +348,7 @@ class StepRulesTest(unittest.TestCase):
     def test_step_failure(self):
         from mabi.craft import execute as ex
         self.assertEqual(ex.step_failure("collect", {"error": "no_completed_work"}), ex.STEP_RETRY_LATER)
+        self.assertEqual(ex.step_failure("collect", {"error": "not_completed_yet"}), ex.STEP_RETRY_LATER)  # 지금 코드
         self.assertIsNone(ex.step_failure("collect", {"error": "invalid_count"}))
         self.assertEqual(ex.step_failure("craft", {"error": "invalid_count"}), ex.STEP_AGAIN)
         self.assertEqual(ex.step_failure("gather", {"error": "insufficient_living_skill_level"}), ex.STEP_STOP_SKILL)

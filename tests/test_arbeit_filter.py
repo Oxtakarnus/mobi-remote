@@ -297,6 +297,18 @@ class AlterCollectTest(unittest.TestCase):
         r, bot = self._run(self.full(), ok=False)
         self.assertEqual(r.result, "alter_full")
 
+    def test_same_name_still_running_not_sent(self):
+        """완료분이 있어도 같은 이름이 아직 가공 중이면 커넥터가 거절한다 → 보내지 않고 건너뜀 (2026-11-25 은합금괴)."""
+        works = self.full()[:6] + [{"DisplayName": "철괴(철 광석)", "FacilityName": self.METAL, "IsCompleted": False}]
+        r, bot = self._run(works)
+        self.assertEqual(r.result, "alter_full")
+        bot.state.cli.run.assert_not_called()
+        # 다른 이름의 완료분이 있으면 그 이름으로 받는다
+        works = works + [{"DisplayName": "강철괴", "FacilityName": self.METAL, "IsCompleted": True}]
+        r, bot = self._run(works)
+        self.assertEqual(r, "가공 칸 비움 → 다시 가공")
+        bot.state.cli.run.assert_called_once_with("complete_altering_work", {"displayName": "강철괴"}, timeout=mock.ANY)
+
     def test_facility_from_recipes(self):
         """가공 목록에 같은 가공품이 없으면 시설은 레시피 표로 — 그 시설의 다른 가공품 완료분을 받는다."""
         works = [{"DisplayName": "강철괴", "FacilityName": self.METAL, "IsCompleted": True}] * 7

@@ -241,20 +241,21 @@ def next_step(snap: dict, name: str, target: int, p: dict | None = None) -> dict
     # 목표에 쓰이는 재료가 완성돼 있으면 먼저 가져온다. 무관한 시설까지 도는 것은 이동 시간만 버린다
     kn = snap["cd"].knowledge
     facs = snap["works"].get("facilities") or []
-    useful = next((f for f in facs if f.get("completed") and
+    # 받을 이름이 없는 시설(같은 이름이 아직 가공 중 — lists.collect_name)은 지금 못 받는다
+    useful = next((f for f in facs if lists.collect_name(f) and
                    any(wanted.get(kn.product_of(w["name"], snap["kn"])) for w in f["completed"])), None)
     if useful:
         return {"goal": name, "target": target, "have": made_now, "kind": "collect", "facility": useful["facility"],
-                "name": useful["completed"][0]["name"], "why": "목표에 쓰이는 재료가 완성돼 있습니다. 먼저 수령합니다 (무료)."}
+                "name": lists.collect_name(useful), "why": "목표에 쓰이는 재료가 완성돼 있습니다. 먼저 수령합니다 (무료)."}
 
     step = plan_step(snap, p) if p.get("ok") else resolve(snap, name, target - made_now, 0, [])
 
     # 어차피 기다려야 한다면 그 시간에 남은 완료분을 거둔다 (공짜)
     if step["kind"] == "wait":
-        any_f = next((f for f in facs if f.get("completed")), None)
+        any_f = next((f for f in facs if lists.collect_name(f)), None)
         if any_f:
             return {"goal": name, "target": target, "have": made_now, "kind": "collect",
-                    "facility": any_f["facility"], "name": any_f["completed"][0]["name"],
+                    "facility": any_f["facility"], "name": lists.collect_name(any_f),
                     "why": "어차피 기다리는 중이라 완료된 가공을 거둡니다 (무료)."}
     return {"goal": name, "target": target, "have": made_now, **step}
 
@@ -262,9 +263,9 @@ def next_step(snap: dict, name: str, target: int, p: dict | None = None) -> dict
 def _full_facility(snap: dict, fac, recipe_name, room) -> dict:
     """시설 칸이 없을 때: 그 시설에 수령할 것이 있으면 수령이 곧 칸을 비운다. 없으면 기다린다."""
     f = next((x for x in snap["works"].get("facilities") or []
-              if x["facility"] == fac and x.get("completed")), None)
+              if x["facility"] == fac and lists.collect_name(x)), None)
     if f:
-        return {"kind": "collect", "facility": fac, "name": f["completed"][0]["name"],
+        return {"kind": "collect", "facility": fac, "name": lists.collect_name(f),
                 "why": f"{fac} 칸이 차 있습니다. 완료분을 수령하면 비워집니다 (무료)."}
     used = f"{room['used']}/{room['slots']}" if room else "?"
     return wait_step(snap, recipe_name, f"가공 칸이 모두 차 있습니다 ({fac} {used}).")

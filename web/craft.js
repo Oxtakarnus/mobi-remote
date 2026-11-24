@@ -498,10 +498,13 @@ function facilitySlotsHtml(w) {
       '<span class="slots">' + cells.join('') + '</span>' +
       (over ? '<span class="sub mark-warn">+' + over + '</span>' : '') +
       // 수령·목표는 세로로 쌓고, 완료분이 없어도 같은 폭을 비워 둔다 (시설마다 줄이 들쭉날쭉하지 않게)
-      '<span class="fac-act">' + (f.completed.length
-        ? '<button class="btn btn-tiny btn-primary" data-collect="' + esc(f.completed[0].name) + '">수령</button>' +
-          '<button class="btn btn-tiny" data-collect-goal="' + esc(f.completed[0].name) + '" title="작업 큐 맨 아래에 담기">목표</button>'
-        : '') + '</span>' +
+      // 받기에 넘길 이름은 앱이 고른다 (f.collect) — 같은 이름이 아직 가공 중이면 게임이 거절해서 그땐 못 누르게 둔다
+      '<span class="fac-act">' + (f.completed.length && f.collect
+        ? '<button class="btn btn-tiny btn-primary" data-collect="' + esc(f.collect) + '">수령</button>' +
+          '<button class="btn btn-tiny" data-collect-goal="' + esc(f.collect) + '" title="작업 큐 맨 아래에 담기">목표</button>'
+        : f.completed.length
+          ? '<button class="btn btn-tiny" disabled title="같은 가공품이 아직 진행 중이라 다 끝나야 받을 수 있습니다">수령</button>'
+          : '') + '</span>' +
       '</div>';
   }).join('') + '</div>';
 }
