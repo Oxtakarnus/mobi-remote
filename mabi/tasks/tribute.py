@@ -7,19 +7,19 @@
 """
 import time
 
-import numpy as np
-
 from .. import gamedata as gd, observed, situation
 from ..bot import Bot
 from ..exceptions import CannotProceed, NotSeen, StepTimeout
 from .arrival import travel
 from .dungeon import enter_from_dungeon_window
-from .questwin import open_tab, questwin_buttons, QUESTWIN_TAB_BAR_Y
-from .steps import with_retries
+from . import ui_text
+from .questwin import open_tab, questwin_buttons
+from .steps import list_views, with_retries
 
 QUEST_TITLE = gd.text("tribute_quest")
 CARD_H = 450  # 퀘스트 카드 하나의 높이 (1920 기준, 제목 → '진행하기' 약 400px)
-LIST_X0, LIST_Y0 = 1220, 220  # 퀘스트 창 오른쪽 카드 목록의 왼쪽 위 (탭 줄 위까지가 목록)
+QUEST_SCROLL, QUEST_SCROLLS = 3, 8  # 퀘스트 창 목록을 한 번에 내리는 휠 칸 수 · 최대 몇 번 내려가며 볼지
+TITLE_HALF = 15  # 글자로 찾은 제목(가운데 y) → 제목 그림 위쪽 y 로 맞추는 값
 OPENED = ("tr_open", "travel", "dungeon_enter", "in_dungeon", "dungeon_reward")  # 퀘스트의 '진행하기' 를 누른 뒤 단계
 
 
@@ -58,33 +58,34 @@ def _wait_until(bot: Bot, c: dict) -> float:
     return max(end, login_at + c["quest_login_wait"]) if login_at else end
 
 
+def _card_y(bot: Bot, c: dict, area) -> int | None:
+    """지금 화면에서 고난도 카드 제목의 위쪽 y (없으면 None). 그림이 안 맞으면 제목 글자로 한 번 더 — 테스터 PC 에선 다시
+    해도 같은 말로 실패했다 (그림이 없어 까닭 모름). 카드가 골라져 펼쳐지는 등 제목 그림이 달라 보일 수 있다."""
+    card = bot.find(c["quest_card"])
+    if card:
+        return card.y
+    hit = ui_text.match(ui_text.find_texts(bot.frame(), area), QUEST_TITLE, exact=False)
+    return hit[2] - TITLE_HALF if hit else None
+
+
 def open_quest(bot: Bot, c: dict) -> None:
     """퀘스트 창 메인 탭에서 고난도 퀘스트 카드의 '진행하기'를 누른다."""
     if not open_tab(bot, "main", timeout=10):
         raise NotSeen(f"퀘스트 창의 메인 탭을 찾지 못함 → {bot.snapshot('questwin').name}")
-    # 창은 지난번 스크롤 자리를 기억할 수 있다. 아래로만 내리면 위쪽 카드를 못 본다
-    # (2026-10-26 월요일 — 주간 목표·전리품 카드가 생긴 뒤 목록 끝만 보다 실패) → 맨 위로 올리고 내려가며 찾는다
-    bot.scroll(*c["list_scroll_at"], 15)
-    bot.sleep(1, 1.3)
-    last = None
-    for _ in range(8):
-        card = bot.find(c["quest_card"])
+    # 맨 위부터 내려가며 찾는다 (list_views). 창은 지난번 스크롤 자리를 기억하고 (2026-10-26 월요일 — 주간 목표·전리품 카드가
+    # 생긴 뒤 목록 끝만 보다 실패), 막 갱신된 카드 쪽으로 목록을 늦게 옮기기도 한다 (은동전 숙제 바로 뒤 — list_views).
+    # 다른 퀘스트(주간 목표 등)가 위에 있으면 카드나 버튼이 화면 아래로 밀려나 목록을 내려 가며 본다
+    area = gd.region("questwin_list")
+    for _ in list_views(bot, area, tuple(c["list_scroll_at"]), QUEST_SCROLL, QUEST_SCROLLS):
+        y = _card_y(bot, c, area)
         # 같은 카드의 '진행하기' = 제목 아래 카드 안(CARD_H 이내)에서 가장 가까운 주황색 버튼.
         # 주말에는 '주말에는 어비스!' 같은 이벤트 카드도 주황 '진행하기' 라, 고난도 카드 버튼이 화면 밖이면
         # 아래 카드 버튼을 눌러 이벤트 탭이 열렸다 (2026-10-24 16:37 — 7분 동안 던전 입구를 기다림).
         # 버튼이 아래 탭 줄에 걸쳐 반쯤 보이면 누르지 않고 (questwin_buttons) 내린다
-        go = [b for b in questwin_buttons(bot, c["quest_go"]) if card and 0 < b.y - card.y < CARD_H]
+        go = [b for b in questwin_buttons(bot, c["quest_go"]) if y is not None and 0 < b.y - y < CARD_H]
         if go:
             bot.click(go[0])
             return
-        # 다른 퀘스트(주간 목표 등)가 위에 있으면 카드나 버튼이 화면 아래로 밀려난다 → 목록을 내린다
-        # 내려도 목록이 그대로면 끝까지 본 것
-        view = bot.frame()[LIST_Y0:QUESTWIN_TAB_BAR_Y, LIST_X0:].astype(np.int16)
-        if last is not None and float(np.abs(view - last).mean()) < 2:
-            break
-        last = view
-        bot.scroll(*c["list_scroll_at"], -3)
-        bot.sleep(1, 1.3)
     raise RuntimeError(f"고난도 퀘스트의 '진행하기' 버튼을 찾지 못함 → {bot.snapshot('tribute_go').name}")
 
 
