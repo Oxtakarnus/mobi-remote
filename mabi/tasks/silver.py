@@ -42,12 +42,17 @@ def plan(coins: int, s: dict) -> tuple[int, int]:
     return field, dungeon
 
 
-def dungeon_once(bot: Bot, c: dict, again: bool = False, more: bool = False) -> str:
+def dungeon_once(bot: Bot, c: dict, again: bool = False, more=False) -> str:
     """지도로 던전 입구까지 이동 → 난이도/층/구역 선택 → 입장 → 클리어. 반환 'clear' | 'fail' | 'again'.
     again: 직전 보상 화면에서 '다시 하기'를 눌러 같은 구역의 임무 화면이 이미 열려 있음 (이동·구역 선택 생략).
-    more: 이번 뒤에 던전을 더 돌 예정 → 보상 화면에서 '다시 하기'로 바로 이어간다."""
+    more: 이번 뒤에 던전을 더 돌 예정 → 보상 화면에서 '다시 하기'로 바로 이어간다. 함수면 보상 화면에서 물어 정한다
+    (계획한 마지막 판 — 도는 사이 은동전이 차서 한 판 더 할 만큼 남았나)."""
     ui = bot.ui
-    retry_btn = ui["dungeon_retry"] if more else None
+    if callable(more):
+        def retry_btn():
+            return ui["dungeon_retry"] if more() else None
+    else:
+        retry_btn = ui["dungeon_retry"] if more else None
     if again:
         # 임무 화면이 안 열렸을 때만 지도로 간다. 입장 뒤의 시간 초과까지 여기서 잡으면 지도로 가서 한 판 더 들어간다
         try:
@@ -199,12 +204,23 @@ def _run_round(bot: Bot, cfg: dict) -> tuple[str, int | None]:
         return f"은동전 {coins}개, 진행 없음", coins
 
     notes, blocked, cleared = [], [], 0
+
+    def one_more() -> bool:
+        """보상 화면에서: 계획한 던전을 다 돌았는데 도는 사이 은동전이 차서 한 판 더 할 만큼 남았나 — 그러면 나가서
+        지도로 같은 던전을 다시 찾아가지 않고 '다시 하기' 로 한 판 더 (사용자 11-24: 같은 던전을 또 돌 땐 재입장)."""
+        left = bot.state.currency(gd.currency("silver"))
+        if left is None or left < c["dungeon_cost"]:
+            return False
+        bot.log.info(f"계획한 던전을 다 돌았는데 은동전 {left}개 남음 → 다시 하기로 한 판 더")
+        return True
+
     for label, runs, once in (("사냥터", field_runs, field_once), ("던전", dungeon_runs, dungeon_once)):
         if not runs:
             continue
         results = []
         again = False
-        for i in range(runs):
+        i = 0
+        while i < runs:
             try:
                 before = bot.state.currency(gd.currency("silver"))
                 kind = "field" if once is field_once else "dungeon"
@@ -227,13 +243,16 @@ def _run_round(bot: Bot, cfg: dict) -> tuple[str, int | None]:
                             bot.daily.set(slot, "silver_fields", fields_done + 1)
                         bot.daily.set(slot, "silver_pending", None)
                 bot.on_clear = on_clear
+                more = i < runs - 1 or (one_more if once is dungeon_once else False)
                 try:
-                    r = once(bot, c, again=again, more=i < runs - 1)
+                    r = once(bot, c, again=again, more=more)
                 finally:
                     bot.on_clear = None
                 if bot.daily and slot:
                     bot.daily.set(slot, "silver_pending", None)
                 again = r == "again"
+                if again and i == runs - 1:
+                    runs += 1  # 계획한 마지막 판 뒤 은동전이 남아 다시 하기를 눌렀다 — 그 판까지 돈다
                 # 화면(가격 OCR·버튼 템플릿)으로 판단한 입장을 CLI 은동전 변화로 한 번 더 확인한다.
                 # 은동전은 일정 시간마다 1씩 저절로 차므로 한 판 사이에 1~2 덜 줄어드는 건 정상이다
                 after = bot.state.currency(gd.currency("silver"))
@@ -250,6 +269,7 @@ def _run_round(bot: Bot, cfg: dict) -> tuple[str, int | None]:
                 blocked.append(f"{label}: {e}")
                 bot.to_main()
                 break
+            i += 1
         notes.append(f"{label} 클리어 {results.count('clear')}/{runs}")
         cleared += results.count("clear")
 

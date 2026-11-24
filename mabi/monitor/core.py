@@ -32,6 +32,7 @@ class Ctx:
     finish_on: 이 상황이면 이 일은 끝 {상황: 결과}. decide: 태스크만 아는 판단 {상황: fn(bot, ctx, seen) -> 끝낼 이유(글자)·Finish|None}.
     note: (단계 키, 설명) — 태스크의 단계 기록 (이어 하기용).
     reward: 보상 화면을 다룬다 (던전·사냥터를 끝내는 중) — extra_loot 추가 루팅 횟수, again 이 보이면 누르고 끝.
+    again 은 버튼 그림 이름, 또는 보상 화면에서 그 이름(누르지 않으면 None)을 돌려주는 함수.
     revive: 쓰러지면 '여기서 부활' (못 하면 끝 'dead'). 끄면 쓰러짐은 태스크 몫.
     choose: NPC 선택지 중 이 낱말이 든 것을 누른다 (요일 던전 임무 게시판 · 대장간 '수리' — 원하는 게 없으면 누르지 않고 기다린다).
       choose_region 은 선택지 버튼 줄 (gamedata 영역 이름).
@@ -42,7 +43,7 @@ class Ctx:
 
     def __init__(self, task: str, what: str = "", job: bool = False, menus: bool | None = None, talk: bool = True,
                  finish_on=None, decide=None, note=None, keep_dungeon_window: bool = False,
-                 reward: bool = False, extra_loot: int = 0, again: str | None = None, revive: bool = False,
+                 reward: bool = False, extra_loot: int = 0, again=None, revive: bool = False,
                  choose: str | None = None, choose_region: str = "board_choices", leave: bool = False,
                  alter=(), alter_ok=None, alter_need=None):
         self.task, self.what, self.job, self.talk = task, what, job, talk

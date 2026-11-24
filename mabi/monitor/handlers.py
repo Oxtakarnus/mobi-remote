@@ -357,6 +357,16 @@ def event_popup(bot, ctx, seen):
 
 # ---------------------------------------------------------------- 던전·사냥터 끝 (ctx.reward)
 
+def _again_text(bot, again: str):
+    """보상 화면 버튼 줄에서 반복 버튼(그림 이름 again)의 글자 자리 — ui.json 글자 'btn_<그림 이름>', 없으면 None."""
+    try:
+        want = gd.text(f"btn_{again}")
+    except KeyError:
+        return None
+    from ..tasks import ui_text
+    return ui_text.find(bot, want, gd.region("reward_buttons"), exact=False)
+
+
 def reward(bot, ctx, seen):
     """보상 화면: (추가 루팅) → again 버튼이 있으면 누르고 끝 (반복 플레이), 아니면 나가기(ESC).
     보상 연출이 길면 버튼이 늦게 뜬다 — 한 번만 보고 나가면 다음 판을 지도에서 다시 찾아간다."""
@@ -366,11 +376,18 @@ def reward(bot, ctx, seen):
         do_extra_loot(bot, ctx.extra_loot)
         ctx.n["loot"] = 1
         return "추가 루팅"
-    if ctx.again:
+    again = ctx.again() if callable(ctx.again) else ctx.again  # 함수면 보상 화면에서 정한다 (은동전이 남았나 등)
+    if again:
         try:
-            bot.click(bot.wait(ctx.again, timeout=6, interval=0.5))
+            bot.click(bot.wait(again, timeout=6, interval=0.5))
             return Finish("again", "보상 화면에서 다시 하기")
         except StepTimeout:
+            # 그림은 버튼 자리(roi)에서만 찾는다 — 버튼 줄이 달라 자리가 옮겨졌을 수 있어 버튼 줄의 글자로 한 번 더
+            # (사용자 11-24 제보: 같은 던전을 다시 하기 대신 나가서 지도로 다시 찾아감)
+            hit = _again_text(bot, again)
+            if hit:
+                bot.click(hit)
+                return Finish("again", "보상 화면에서 다시 하기 (글자로 찾음)")
             bot.log.warning(f"보상 화면에 '다시 하기' 가 안 보임 → 나가서 지도로 ({_shot(bot, 'dungeon_no_retry')})")
             ctx.again = None
     elif not ctx.n.get("reward_wait"):

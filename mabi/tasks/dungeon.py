@@ -81,7 +81,8 @@ def enter_from_dungeon_window(bot: Bot, clear_timeout: float, extra_loot: int = 
     """던전 창(단계 선택)이 열린 상태에서 선택된 단계로 입장해 끝까지 진행. 반환 'clear' | 'fail' | 'again'.
     expect_cost 가 있으면 임무 화면의 입장 버튼 가격(예: 은동전 20 = 소탕 10 + 더블 루팅 10)을 확인한다.
     retry: 직전 보상 화면에서 '다시 하기'를 눌러 이미 임무 화면이 열려 있음 (단계 '진입' 생략).
-    again: 보상 화면에서 누를 반복 버튼('다시 하기'). 누르면 'again' 을 반환한다."""
+    again: 보상 화면에서 누를 반복 버튼('다시 하기'), 또는 보상 화면에서 그 버튼(누르지 않으면 None)을 돌려주는 함수.
+    누르면 'again' 을 반환한다."""
     ui = bot.ui
     missions = [ui["dungeon_mission_enter"], ui["dungeon_mission_enter_deep"], ui["dungeon_mission_enter_silver"],
                 ui["dungeon_retry_enter"]]
