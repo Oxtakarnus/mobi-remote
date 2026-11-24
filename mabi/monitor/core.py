@@ -29,7 +29,7 @@ UNKNOWN_RETRY = 600  # 모르는 화면에서 메인으로 돌려 본 뒤 이만
 class Ctx:
     """지금 하는 일. task 는 숙제 id, what 은 그 안의 일 (아르바이트 제목 등 — 로그용).
     menus: NPC 메뉴(수락·결과 보고)·전달 창·던전 창까지 다룬다. job: 채집·제작·가공 창까지 (menus 포함). talk: NPC 대화를 넘긴다.
-    finish_on: 이 상황이면 이 일은 끝 {상황: 결과}. decide: 태스크만 아는 판단 {상황: fn(bot, ctx, seen) -> 끝낼 이유|None}.
+    finish_on: 이 상황이면 이 일은 끝 {상황: 결과}. decide: 태스크만 아는 판단 {상황: fn(bot, ctx, seen) -> 끝낼 이유(글자)·Finish|None}.
     note: (단계 키, 설명) — 태스크의 단계 기록 (이어 하기용).
     reward: 보상 화면을 다룬다 (던전·사냥터를 끝내는 중) — extra_loot 추가 루팅 횟수, again 이 보이면 누르고 끝.
     revive: 쓰러지면 '여기서 부활' (못 하면 끝 'dead'). 끄면 쓰러짐은 태스크 몫.

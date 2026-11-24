@@ -100,6 +100,11 @@ class HowtoRowTest(unittest.TestCase):
     def test_facility_only(self):
         self.assertEqual(self.pick([("약품 가공 시설", 1390, 369)]), (1390, 369))
 
+    def test_guild_shop_row_not_gather(self):
+        """'길드 상점' 줄은 카트 아이콘이 아니어도 상점 — 채집하러 고르지 않는다 (2026-11-24 말린 찻잎)."""
+        rows = [("구하는 방법", 1290, 160), ("식재료 가공 시설", 1390, 275), ("길드 상점", 1350, 369)]
+        self.assertEqual(self.pick(rows), (1390, 275))
+
 
 class HowtoShopTest(unittest.TestCase):
     """상점 줄(카트 아이콘)은 고르지 않는다 — 실제 화면으로 (2026-11-06 '갑작스런 주문' 밀가루)."""
@@ -408,3 +413,130 @@ class WaitAcceptTest(unittest.TestCase):
     def test_after_other_confirm_short(self):
         t = self._run(confirm_at=3)
         self.assertLess(t, 3 + arbeit.AFTER_CONFIRM_GRACE + 3)
+
+
+class PopupItemsTest(unittest.TestCase):
+    """CLI 가 조건을 주지 않을 때 '필요한 아이템이 없습니다' 창의 물품 이름을 읽는다 (2026-11-24 '말린 찻잎')."""
+
+    def setUp(self):
+        import tomllib
+        craft.configure(ROOT / "state", ROOT / "data", None)
+        conf = tomllib.loads((ROOT / "config.default.toml").read_text(encoding="utf-8"))
+        self.rows = conf["arbeit"]["item_rows_from_title"]
+
+    def _bot(self):
+        bot = mock.MagicMock()
+        bot.cfg = {"arbeit": {"item_rows_from_title": self.rows}}
+        return bot
+
+    def test_reads_item_rows_on_screen(self):
+        import cv2
+        from types import SimpleNamespace
+        from mabi.vision import Vision
+        vision = Vision(ROOT / "templates")
+        with mock.patch.object(arbeit, "gatherable", return_value={"우유", "찻잎"}):
+            for png, want in (("howto_alter_or_shop.png", ["밀가루"]), ("howto_gather.png", ["우유"])):
+                frame = cv2.imread(str(ROOT / "tests" / "fixtures" / png))
+                hit = vision.find(frame, "item_missing")  # 점검자가 이 창을 알아본 자리
+                self.assertEqual(arbeit.popup_items(self._bot(), SimpleNamespace(frame=frame, hit=hit)), want, png)
+
+    def test_unknown_text_dropped(self):
+        """띄어쓰기만 다르면 표 이름으로, 표·채집 목록에 없는 글자(잘못 읽음·버튼)는 뺀다."""
+        from types import SimpleNamespace
+        texts = [("말린찻잎", 800, 775), ("0 / 3", 1170, 775), ("모르는 물건", 800, 865), ("ESC 취소", 960, 930)]
+        with mock.patch.object(arbeit, "gatherable", return_value=None), \
+                mock.patch.object(arbeit.ocr, "find_texts", return_value=texts):
+            seen = SimpleNamespace(frame=None, hit=SimpleNamespace(x=0, y=0))
+            self.assertEqual(arbeit.popup_items(self._bot(), seen), ["말린 찻잎"])
+
+
+class ShortOfTest(unittest.TestCase):
+    """모자란 물품으로 정하기 — 진행 전 가름(alter_or_skip)과 같은 규칙."""
+
+    def setUp(self):
+        craft.configure(ROOT / "state", ROOT / "data", None)
+
+    def _run(self, names, can, alter=()):
+        from mabi import monitor
+        bot = mock.MagicMock()
+        bot.cfg = {"arbeit": {"alter_max_sec": 120}}
+        ctx = monitor.Ctx("arbeit", "일", job=True, alter=alter)
+        with mock.patch.object(arbeit, "gatherable", return_value=can):
+            return arbeit.short_of(bot, ctx, names), ctx
+
+    def test_long_alter_skips(self):
+        r, ctx = self._run(["말린 찻잎"], {"찻잎"})  # 1시간 가공
+        self.assertEqual(r.result, "alter")
+        self.assertIn("말린 찻잎", r.why)
+        self.assertEqual(ctx.alter, ())
+
+    def test_quick_alter_goes_to_facility(self):
+        r, ctx = self._run(["옷감"], {"찻잎"})  # 45초 가공
+        self.assertIsNone(r)
+        self.assertEqual(ctx.alter, ("옷감",))
+
+    def test_already_quick_alter(self):
+        self.assertIsNone(self._run(["옷감"], {"찻잎"}, alter=("옷감",))[0])
+
+    def test_crafted_item_short(self):
+        r, _ = self._run(["두꺼운 가죽 갑옷 상의"], {"찻잎"})
+        self.assertIn("채집으로 못 구하는 물품 부족", r)
+
+    def test_gatherable_goes(self):
+        self.assertIsNone(self._run(["찻잎"], {"찻잎"})[0])
+
+    def test_unknown_gatherable_decides_alter_only(self):
+        self.assertEqual(self._run(["말린 찻잎"], None)[0].result, "alter")
+        self.assertIsNone(self._run(["두꺼운 가죽 갑옷 상의"], None)[0])
+
+
+class ItemMissingDecideTest(unittest.TestCase):
+    """아르바이트 한 건의 '필요한 아이템이 없습니다' 판단: CLI 조건이 먼저, 없으면 창 글자로."""
+
+    def setUp(self):
+        craft.configure(ROOT / "state", ROOT / "data", None)
+
+    def _decide(self, quests, popup):
+        from types import SimpleNamespace
+        from mabi.monitor import detect as d
+        bot = mock.MagicMock()
+        bot.cfg = {"arbeit": {"alter_max_sec": 120}}
+        ctx = arbeit._job_ctx(bot, "일생일대의 위기")
+        with mock.patch.object(arbeit, "accepted", return_value=quests), \
+                mock.patch.object(arbeit, "gatherable", return_value={"찻잎"}), \
+                mock.patch.object(arbeit, "popup_items", side_effect=popup) as pi:
+            return ctx.decide[d.ITEM_MISSING](bot, ctx, SimpleNamespace(frame=None)), pi
+
+    def test_no_cli_conditions_reads_popup(self):
+        """2026-11-24: 지원 직후·창이 떠 있는 동안 CLI 가 빈 목록 → 예전엔 판단 없이 '구하는 방법' 맨 위(길드 상점)로."""
+        r, pi = self._decide([], lambda bot, seen: ["말린 찻잎"])
+        pi.assert_called_once()
+        self.assertEqual(r.result, "alter")
+
+    def test_cli_conditions_first(self):
+        job = {"title": "일생일대의 위기",
+               "objectives": [{"Description": f"말린 찻잎 {arbeit.HAVE} 0/3", "IsCompleted": False}]}
+        r, pi = self._decide([job], AssertionError("창을 읽음"))
+        pi.assert_not_called()
+        self.assertEqual(r.result, "alter")
+
+    def test_nothing_read_goes_on(self):
+        r, _ = self._decide([], lambda bot, seen: [])
+        self.assertIsNone(r)
+
+
+class ItemMissingHandlerTest(unittest.TestCase):
+    def test_finish_from_decide_kept(self):
+        """판단이 돌려준 끝(가공 필요)은 그대로, 이유 글자면 예전처럼 '전달 물품 부족'."""
+        from types import SimpleNamespace
+        from mabi import monitor
+        from mabi.monitor import detect as d, handlers
+        bot = mock.MagicMock()
+        ctx = monitor.Ctx("arbeit", "x", job=True, decide={d.ITEM_MISSING: lambda *a: monitor.Finish("alter", "가공")})
+        with mock.patch.object(handlers, "_esc") as esc:
+            r = handlers.item_missing(bot, ctx, SimpleNamespace(frame=None))
+        self.assertEqual((r.result, r.why), ("alter", "가공"))
+        esc.assert_called_once()
+        ctx.decide[d.ITEM_MISSING] = lambda *a: "부족"
+        with mock.patch.object(handlers, "_esc"):
+            self.assertEqual(handlers.item_missing(bot, ctx, SimpleNamespace(frame=None)).result, "short")

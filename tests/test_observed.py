@@ -198,7 +198,8 @@ class GatherableTest(unittest.TestCase):
         b.character = {"slot": 1}
         b.state.query.return_value = None
         self.assertIsNone(arbeit.gatherable(b))
-        self.assertEqual(arbeit.ungatherable(b, {"objectives": [{"Description": "새록 버섯 포자 보유 3/10"}]}), [])
+        from mabi import monitor
+        self.assertIsNone(arbeit.short_of(b, monitor.Ctx("arbeit", "x", job=True), ["찻잎"]))  # 목록을 모르면 채집품은 해 본다
         b.state.query.return_value = {"items": [{"DisplayName": "새록 버섯 포자", "ToolOk": True}]}
         self.assertEqual(arbeit.gatherable(b), {"새록 버섯 포자"})
         b.state.query.return_value = {"items": [{"DisplayName": "새록 버섯 포자", "ToolOk": False}]}

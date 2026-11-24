@@ -17,7 +17,7 @@ from dataclasses import dataclass, field
 
 from .. import craft, gamedata as gd, monitor, ocr, richtext
 from ..bot import Bot
-from ..monitor import Ctx, detect as d
+from ..monitor import Ctx, Finish, detect as d
 from ..exceptions import CannotProceed, Stuck
 from ..progress import Progress
 from . import ui_text
@@ -26,6 +26,7 @@ from .questwin import open_arbeit_tab, questwin_text_ok
 
 PROGRESS, APPLY = gd.text("arbeit_progress"), gd.text("arbeit_apply")  # 카드 버튼 '진행하기' · '지원하기'
 HAVE = gd.text("arbeit_have_item")  # CLI 조건 '… 보유 3/10'
+_COUNT = re.compile(r"\d+\s*/\s*\d+")  # 물품 줄의 개수 '0/3'
 
 
 def accepted(bot: Bot, raw: bool = False) -> list[dict]:
@@ -84,14 +85,42 @@ def gatherable(bot: Bot) -> set[str] | None:
     return memo[1]
 
 
-def ungatherable(bot: Bot, job: dict) -> list[str]:
-    """모자란 물품 중 채집으로 못 구하는 것 (가공품 등). CLI 채집 가능 목록(조회)과 대조한다.
-    사용자 규칙: 모자란 게 채집품뿐이면 채집해서 완료, 가공품이 하나라도 모자라면 포기.
-    채집 가능 목록을 모르면 [] — 건너뛰지 않고 해 본다."""
+def short_of(bot: Bot, ctx, names: list[str]):
+    """'필요한 아이템이 없습니다' 에서 모자란 물품(names)으로 정한다 — 진행 전 가름(alter_or_skip)과 같은 규칙.
+    가공으로만 만드는 것: 짧은 가공이면 ctx.alter 에 넣고 계속 ('구하는 방법' 에서 가공 시설로), 아니면 '가공 필요' 로 끝.
+    채집으로 못 구하는 그 밖의 것(제작품 등)은 '전달 물품 부족' 으로 끝 (사용자 규칙: 모자란 게 채집품뿐이면 채집해서 완료).
+    채집 목록을 모르면 가공품만 가르고 나머지는 해 본다. 끝낼 때 Finish·이유 글자, 계속이면 None."""
     can = gatherable(bot)
-    if can is None:
-        return []
-    return [n for n in (_item_name(d) for d in missing_items(job)) if n not in can]
+    alter = [n for n in alter_only(names, can or frozenset()) if n not in ctx.alter]
+    if alter:
+        if quick_alter(bot, alter):
+            ctx.alter = (*ctx.alter, *alter)
+            bot.log.info(f"아르바이트 '{ctx.what}': 짧은 가공 ({', '.join(alter)}) → 가공 시설로")
+            return None
+        return Finish("alter", f"가공이 필요한 일 ({', '.join(alter)})")
+    if can is not None and (bad := [n for n in names if n not in can and n not in ctx.alter]):
+        return f"채집으로 못 구하는 물품 부족 ({', '.join(bad)})"
+    return None
+
+
+def popup_items(bot: Bot, seen) -> list[str]:
+    """'퀘스트를 위해 필요한 아이템이 없습니다' 창에 뜬 모자란 물품 이름 (화면 글자 → 레시피 표·채집 목록의 이름, 띄어쓰기만
+    달라도 같은 것). 지원 직후나 이 창이 떠 있는 동안엔 CLI 가 조건을 주지 않을 때가 있다 (get_quests 가 빈 목록 — 2026-11-24
+    '말린 찻잎': 1시간 가공품인데 조건을 몰라 '구하는 방법' 맨 위 길드 상점으로 가 3분 서 있다가 채집이 멈춤으로 끝남).
+    표·목록에 없는 글자(잘못 읽음)는 뺀다 — 모르는 것을 정하지 않는다."""
+    dx, dy, w, h = bot.cfg["arbeit"]["item_rows_from_title"]
+    names = set(gatherable(bot) or ())
+    try:
+        names |= {r.get("product") or r["name"] for r in craft.data().recipes.load()}
+    except RuntimeError:
+        pass
+    known = {ocr.nospace(n): n for n in names}
+    out = []
+    for t, _, _ in ocr.find_texts(seen.frame, (seen.hit.x + dx, seen.hit.y + dy, w, h)):
+        n = known.get(ocr.nospace(_COUNT.sub("", t)))
+        if n and n not in out:
+            out.append(n)
+    return out
 
 
 def alter_missing(job: dict, can_gather=frozenset()) -> list[str]:
@@ -99,12 +128,17 @@ def alter_missing(job: dict, can_gather=frozenset()) -> list[str]:
     (사용자 규칙) 진행하기를 누르기 전에 CLI 조건과 레시피 표로 미리 가른다 (2026-10-26 사용자 제안).
     레시피 표가 없으면 [] — 예전처럼 가공 시설 창을 보고 건너뛴다.
     가공품이어도 채집으로 구할 수 있으면(can_gather — 깔끔 버섯 포자 등) 채집하러 간다 (사용자 규칙 2026-10-30)."""
+    return alter_only([_item_name(d) for d in missing_items(job)], can_gather)
+
+
+def alter_only(names, can_gather=frozenset()) -> list[str]:
+    """물품 이름 중 가공으로만 만드는 것 (레시피 표 via=alter). 채집으로도 구할 수 있으면(can_gather) 뺀다. 표가 없으면 []."""
     try:
         table = craft.data().recipes
     except RuntimeError:
         return []
     out = []
-    for name in (_item_name(d) for d in missing_items(job)):
+    for name in names:
         if name in can_gather:
             continue
         makers = table.makers(name)
@@ -322,9 +356,11 @@ def _job_ctx(bot: Bot, title: str, alter=()) -> Ctx:
         return next((j for j in accepted(bot) if _same(j["title"], title)), None)
 
     def missing(bot, ctx, seen):
-        if (j := job()) and (bad := [n for n in ungatherable(bot, j) if n not in ctx.alter]):
-            return f"채집으로 못 구하는 물품 부족 ({', '.join(bad)})"
-        return None
+        names = [_item_name(x) for x in missing_items(j)] if (j := job()) else []
+        if not names:  # CLI 가 조건을 주지 않음 (지원 직후·이 창이 떠 있는 동안) → 창에 뜬 물품 이름으로
+            names = popup_items(bot, seen)
+            bot.log.info(f"아르바이트 '{title}': CLI 조건이 없어 창에서 모자란 물품을 읽음 → {', '.join(names) or '못 읽음'}")
+        return short_of(bot, ctx, names) if names else None
 
     def alter_need():
         # 가공 목록 화면에 조건을 모르고 왔을 때 — 지금 CLI 조건으로 (진행 전 alter_or_skip 과 같은 판정)

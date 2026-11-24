@@ -429,7 +429,7 @@ def howto(bot, ctx, seen):
 def item_missing(bot, ctx, seen):
     if (why := ctx.decide.get(d.ITEM_MISSING, lambda *_: None)(bot, ctx, seen)):
         _esc(bot)
-        return Finish("short", why)
+        return why if isinstance(why, Finish) else Finish("short", why)
     ox, oy = bot.cfg["arbeit"]["item_row_from_title"]
     bot.click((seen.hit.x + ox, seen.hit.y + oy))
     bot.sleep(1.2, 1.5)
