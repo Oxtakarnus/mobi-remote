@@ -540,3 +540,41 @@ class ItemMissingHandlerTest(unittest.TestCase):
         ctx.decide[d.ITEM_MISSING] = lambda *a: "부족"
         with mock.patch.object(handlers, "_esc"):
             self.assertEqual(handlers.item_missing(bot, ctx, SimpleNamespace(frame=None)).result, "short")
+
+
+class CraftCardTest(unittest.TestCase):
+    """제작 창 첫 화면의 물품 카드 — 한 번 누르고 창을 기다린다, 이미 뜬 창 위는 누르지 않는다 (2026-11-24 '회복 물약을 구해요')."""
+
+    def _run(self, waits, calls=1):
+        from types import SimpleNamespace
+        from mabi.exceptions import StepTimeout
+        from mabi.monitor import handlers
+        bot = mock.MagicMock()
+        bot.cfg = {"arbeit": {"craft_go": "craft_go", "craft_make": "craft_make",
+                              "craft_item_from_list": [76, 237], "craft_popup_wait": 4}}
+        bot.wait_any.side_effect = [object() if w else StepTimeout("안 뜸") for w in waits]
+        ctx = SimpleNamespace(n={})
+        seen = SimpleNamespace(frame=None, hit=SimpleNamespace(x=596, y=238))
+        with mock.patch.object(handlers, "_alter_window", return_value=False),                 mock.patch.object(handlers, "_shot", return_value="그림.png"):
+            out = [handlers.craft(bot, ctx, seen) for _ in range(calls)]
+        return out, bot
+
+    def test_popup_already_up_not_clicked(self):
+        """가공 시설 판정 글자를 읽는 사이 앞서 누른 카드의 창이 떴다 — 또 누르면 닫힌다."""
+        out, bot = self._run([True])
+        self.assertEqual(out, ["제작 창이 이미 뜸"])
+        bot.click.assert_not_called()
+
+    def test_click_once_and_wait(self):
+        out, bot = self._run([False, True])
+        self.assertEqual(out, ["제작 물품 고름"])
+        bot.click.assert_called_once_with((672, 475))
+        self.assertEqual([c.kwargs["timeout"] for c in bot.wait_any.call_args_list], [0, 4])
+
+    def test_stuck_after_four_clicks(self):
+        """네 번 눌러도 안 뜨면 넷째 누름 뒤 화면을 남기고 막힘 (예전엔 다섯째 처리에서 — 그새 창이 닫힌 그림이 남았다)."""
+        out, bot = self._run([False] * 8, calls=4)
+        self.assertEqual(out[:3], ["제작 물품 고름 (창이 아직 안 뜸)"] * 3)
+        self.assertEqual(out[3].result, "stuck")
+        self.assertIn("그림.png", out[3].why)
+        self.assertEqual(bot.click.call_count, 4)

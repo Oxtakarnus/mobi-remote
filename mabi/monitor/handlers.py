@@ -644,7 +644,7 @@ def craft_go(bot, ctx, seen):
     except StepTimeout:
         pass
     # 한 번에 1개씩 만든다 — 5개가 필요한 일(두꺼운 가죽 갑옷 상의)은 구하는 방법 → 제작을 거듭하므로, 만들 때마다
-    # 창·구하는 방법 횟수를 새로 센다 (아니면 세 번째쯤 '제작 창 버튼을 알아보지 못함' 으로 끝난다, 2026-11-01)
+    # 창·구하는 방법 횟수를 새로 센다 (아니면 세 번째쯤 제작 창에서 막힘으로 끝난다, 2026-11-01)
     ctx.n["craft"] = ctx.n["howto"] = 0
     ctx.event("crafted")
     bot.sleep(0.5, 1)
@@ -652,21 +652,38 @@ def craft_go(bot, ctx, seen):
     return "제작"
 
 
+def _craft_popup(bot, timeout: float) -> bool:
+    """물품 카드를 누르면 뜨는 창('제작하러 가기', 설비 앞이면 '제작하기')이 보이나. timeout 초까지 기다린다 (0 이면 지금 한 번)."""
+    a = bot.cfg["arbeit"]
+    try:
+        bot.wait_any([a["craft_go"], a["craft_make"]], timeout=timeout, interval=0.3)
+        return True
+    except StepTimeout:
+        return False
+
+
 def craft(bot, ctx, seen):
     """제작 창 첫 화면: 아르바이트가 요구하는 물품 하나만 보인다 → 그 카드. 가공 시설 창('식재료 가공' 등)도 첫 화면이 같아
-    가공 칸이 다 찬 채면 '가공하기' 가 안 떠 헤맸다 (2026-10-26) → 시설 이름·제목으로 가공을 알아본다 (_alter_window)."""
+    가공 칸이 다 찬 채면 '가공하기' 가 안 떠 헤맸다 (2026-10-26) → 시설 이름·제목으로 가공을 알아본다 (_alter_window).
+    카드를 누른 뒤 창이 늦게 뜨면 점검자가 못 보고 이 처리로 다시 온다. 그러면 가공 시설 판정 글자를 읽는 몇 초 사이 떠 버린
+    창 위로 카드 자리를 또 눌러 창을 닫은 것으로 보인다 — 열고 닫기만 거듭하다 막힘 (2026-11-24 '회복 물약을 구해요': 네 번
+    누르고 남은 그림엔 창이 없음. 다른 날도 세 번째 누름에야 넘어가곤 했다) → 누르기 전에 창이 이미 떴는지 새 화면으로 보고,
+    누른 뒤엔 창이 뜨길 기다린다 (craft_popup_wait). 네 번 눌러도 안 뜨면 그때 화면을 남기고 막힘."""
     if _alter_window(seen.frame):
         if ctx.alter or ctx.alter_ok:
             return _alter_go(bot, ctx, seen)
         _esc(bot)
         return Finish("alter", f"가공 시설 창 → {_shot(bot, 'arbeit_alter')}")
-    ctx.n["craft"] = ctx.n.get("craft", 0) + 1
-    if ctx.n["craft"] > 4:
-        return Finish("stuck", f"제작 창 버튼을 알아보지 못함 → {_shot(bot, 'arbeit_craft')}")
+    if _craft_popup(bot, 0):
+        return "제작 창이 이미 뜸"  # 다음 점검에서 '제작하러 가기'
+    n = ctx.n["craft"] = ctx.n.get("craft", 0) + 1
     ox, oy = bot.cfg["arbeit"]["craft_item_from_list"]
     bot.click((seen.hit.x + ox, seen.hit.y + oy))
-    bot.sleep(1.2, 1.5)
-    return "제작 물품 고름"
+    if _craft_popup(bot, bot.cfg["arbeit"]["craft_popup_wait"]):
+        return "제작 물품 고름"
+    if n >= 4:
+        return Finish("stuck", f"물품 카드를 눌러도 제작 창이 뜨지 않음 → {_shot(bot, 'arbeit_craft')}")
+    return "제작 물품 고름 (창이 아직 안 뜸)"
 
 
 def fast_travel(bot) -> bool:
