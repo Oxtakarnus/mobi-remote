@@ -23,7 +23,7 @@ from .. import gamedata as gd, judge
 from ..bot import Bot
 from ..exceptions import CannotProceed, LootPending, NotSeen, StepTimeout
 from ..game_state import Activity
-from ..place import ABYSS, place
+from ..place import ABYSS, OPEN_MAPS, place
 from .. import monitor
 from ..monitor import detect as d, handlers
 from . import entry, press, ui_text
@@ -326,9 +326,6 @@ def open_entry(bot: Bot, dungeon: str, difficulty: str = "", _moved: int = 0, at
 
 RETRY_LOOK = 5   # 보상 화면에서 '다시 하기' 버튼이 그려지길 기다리는 초
 AGAIN_PRESSES = 3  # '다시 하기' 를 누르는 횟수 (처음 Space + 안 받았을 때 다시) — 다 안 받으면 입장 화면부터
-# 우연한 만남 판 뒤 파티가 바뀌었을 때 고정 파티원이 보상 화면에서 나가기 전에 기다리는 초 — 파티장이 먼저 나가 파티를
-# 되살리게 (되살리기 결과에 '만들기 실패'·'들어가기 실패' 가 따로 있어 먼저 온 사람이 만드는 것으로 짐작 — 로그로 확인할 것)
-MEMBER_DELAY = (8.0, 12.0)
 ENTER_TRIES = 3  # 입장하기를 눌러도 매칭·입장이 시작되지 않으면 창을 다시 맞춰 누르는 횟수
 ENTER_TOOK = 8   # 입장하기 뒤 매칭·맵 로딩 신호를 기다리는 초
 
@@ -687,19 +684,26 @@ class AbyssRepeat(Repeat):
     match_at = 0.0  # 입장·다시 하기를 누른 때 — 그 뒤에 새로 들어간 맵만 이번 판 (entered_since)
     watch = None  # 고정 파티 지켜보기 (party.Watch) — 반복을 시작할 때 만든다
     chance_round = False  # 이번 판을 고정 파티 우연한 만남으로 들어갔나 — 판이 끝나면 다시 하기 대신 다른 던전 가기
-    regather = False  # 판 뒤 우리 파티가 아니어서 나왔다 — 파티장은 다음 입장 전에 파티가 다시 모이길 기다린다 (wait_gathered)
+    regather = False  # 우연한 만남 판 뒤 우리 파티가 아닌 채 나왔다(수리·비켜 주기·다른 던전 가기가 안 됨) — 파티장은 다음 입장
+                      # 전에 파티가 다시 모이길 기다린다 (wait_gathered)
 
     def party_chance(self, say: bool = False) -> bool:
         """고정 파티장인데 파티가 가득 차지 않았나 (party.FULL 명 미만, 패킷) — 그러면 우연한 만남을 켜고 들어가 빈자리를
         채우고 (준비 UI 없음), 판이 끝나면 다시 하기 대신 다른 던전 가기로 목록에서 다시 들어간다 (사용자 11-22).
         가득 찼으면 예전처럼 우연한 만남을 끄고 준비 UI 로. 인원을 모르면 (리모콘을 켠 뒤 파티 정보가 아직 안 옴) 예전처럼
-        — 어비스에 들어가면 파티 정보가 와서 그 판이 끝난 뒤부터 맞는다. say: 고른 것을 로그에 남긴다."""
+        — 어비스에 들어가면 파티 정보가 와서 그 판이 끝난 뒤부터 맞는다. say: 고른 것을 로그에 남긴다.
+        우연한 만남 판 뒤 우리 파티가 아직 안 돌아왔으면 (다른 던전 가기로 어비스 안에 남음 — 지금 파티는 그 판의 파티라
+        모르는 사람까지 셀 수 있다) 지금 인원 대신 그 판 전 우리 파티 인원으로 정한다 (party.Watch.round_size)."""
         if self.party_role != "leader":
             return False
-        n = party_mod.size(self.bot.packets)
+        w = self.watch
+        if w is not None and w.away and w.round_size is not None:
+            n, who = w.round_size, "우연한 만남 판 전 고정 파티"
+        else:
+            n, who = party_mod.size(self.bot.packets), "고정 파티"
         chance = n is not None and n < party_mod.FULL
         if say:
-            self.bot.log.info(f"고정 파티 {n}명 → " + ("우연한 만남으로 빈자리를 채움" if chance else "파티끼리 (준비 UI)")
+            self.bot.log.info(f"{who} {n}명 → " + ("우연한 만남으로 빈자리를 채움" if chance else "파티끼리 (준비 UI)")
                               if n is not None else "고정 파티 인원을 아직 모름 (파티 정보가 안 옴) → 파티끼리 (준비 UI)")
         return chance
 
@@ -718,9 +722,9 @@ class AbyssRepeat(Repeat):
 
     def party_replaced(self) -> bool:
         """보상 화면에서: 지금 파티가 판 전 우리 파티가 아닌가 (party.Watch.replaced) — 우연한 만남 판에 게임이 파티를
-        풀었다 다시 만들면 그렇다 (사용자 11-23 테스터 제보). 그러면 다른 던전 가기·다시 하기·파티장 기다리기 대신 나가서
-        파티가 돌아오길 기다린다. 우리 파티 그대로면 예전 흐름 (사용자 11-22). 고른 길을 로그에 남긴다 — 게임이 파티를
-        어떤 순서로 바꾸는지 아직 로그로 못 봤다."""
+        풀었다 다시 만들면 그렇다 (사용자 11-23 테스터 제보). 그래도 나가서 기다리지 않는다 — 파티장은 다른 던전 가기로
+        바로 다음 판에, 파티원은 보상 화면에서 파티장의 다음 입장을 기다린다 (사용자 11-24 테스터 제보: 나가서 기다렸다
+        메뉴로 들어가면 늦다). 파티 모양을 로그에 남긴다 — 게임이 파티를 어떤 순서로 바꾸는지 아직 로그로 못 봤다."""
         w, p = self.watch, self.bot.packets
         if w is None or not p.ok:
             return False
@@ -731,17 +735,20 @@ class AbyssRepeat(Repeat):
             if chance:
                 self.bot.log.info(f"우연한 만남 판 뒤 우리 파티 그대로 ({w.describe(s)})")
             return False
-        self.bot.log.info(f"{'우연한 만남 ' if chance else ''}판 뒤 우리 파티가 아님 ({w.describe(s)}) → 나가서 파티가 "
-                          "돌아오길 기다림")
+        self.bot.log.info(f"{'우연한 만남 ' if chance else ''}판 뒤 우리 파티가 아님 ({w.describe(s)}) → 나가지 않고 "
+                          + ("다른 던전 가기로 다음 판" if self.party_role == "leader" else "보상 화면에서 파티장의 다음 입장을 기다림"))
         return True
 
     def wait_gathered(self) -> None:
-        """고정 파티장: 다음 입장 전에 우리 파티가 돌아와 판 전 인원만큼 모이길 기다린다 — 우연한 만남 판 뒤 파티가 바뀌어
-        나왔거나 (regather), 아직 돌아오지 않았으면 (쓰러져 먼저 나옴 등). 안 기다리면 파티가 돌아오기 전에 매칭을 걸어
-        파티원을 두고 간다. 우리 파티가 끝내 안 돌아오면 done() 이 참 (party.RESTORE_WAIT) — 부르는 쪽이 끝낸다. 돌아왔는데
+        """고정 파티장: 다음 입장 전에 우리 파티가 돌아와 판 전 인원만큼 모이길 기다린다 — 우연한 만남 판 뒤 파티가 바뀐 채
+        나왔거나 (regather — 수리·비켜 주기, 다른 던전 가기가 안 돼 나옴), 어비스 밖에서 아직 돌아오지 않았으면 (쓰러져
+        먼저 나옴 등). 안 기다리면 파티가 돌아오기 전에 매칭을 걸어 파티원을 두고 간다. 어비스 안(다른 던전 가기 뒤 목록)
+        에선 기다리지 않는다 — 다시 만든 파티는 밖으로 나와야 보이고, 판 사이엔 나가지 않고 바로 들어간다 (사용자 11-24).
+        우리 파티가 끝내 안 돌아오면 done() 이 참 (party.RESTORE_WAIT) — 부르는 쪽이 끝낸다. 돌아왔는데
         GATHER_WAIT 초 안에 다 모이지 않으면 지금 인원으로 (파티원이 빠진 것일 수 있다 — 사용자 11-22 '계속')."""
         w, bot = self.watch, self.bot
-        wait = self.regather or (w is not None and w.away)
+        home = bot.packets.ok and bot.packets.state.channel_type in OPEN_MAPS
+        wait = self.regather or (w is not None and w.away and home)
         self.regather = False
         if not wait or w is None or not bot.packets.ok:
             return
@@ -885,20 +892,14 @@ class AbyssRepeat(Repeat):
                 if self.done():
                     exit_reward(bot)
                     break
-                # 고정 파티: 지금 파티가 판 전 우리 파티가 아님 (우연한 만남 판에 게임이 파티를 풀었다 다시 만듦) → 다른 던전
-                # 가기·다시 하기·파티장 기다리기 대신 나가서 파티가 돌아오길 기다린다. 파티장은 다시 모이면 메뉴에서 들어가고
-                # (wait_gathered), 파티원은 파티장이 먼저 나가 파티를 되살리게 조금 있다가 나가서 돌아온 파티로 파티장의 다음
-                # 입장을 기다린다. 어비스 밖에서 RESTORE_WAIT 초 안에 안 돌아오면 party.Watch 가 끝낸다
+                # 고정 파티: 우연한 만남 판 뒤엔 게임이 파티를 풀었다 다시 만드는 것으로 보여 (11-23) 지금 파티가 판 전 우리
+                # 파티가 아닐 수 있다. 그래도 나가서 파티를 기다리지 않는다 — 파티장은 다른 던전 가기로 바로 다음 판에, 파티원은
+                # 보상 화면에서 파티장의 다음 입장을 기다린다 (사용자 11-24 테스터 제보: 나가서 기다렸다 메뉴로 들어가면 늦다).
+                # 파티 모양은 로그로만 남긴다
                 away = self.party_replaced()
-                self.regather = away and self.party_role == "leader"
                 if self.yield_between(lambda: exit_reward(bot)) or self.repair_between(lambda: exit_reward(bot)):
+                    self.regather = away and self.party_role == "leader"  # 나왔다 — 다음 입장 전에 파티가 다시 모이길
                     stage = "entry"
-                    continue
-                if away:
-                    if self.party_role == "member":
-                        bot.sleep(*MEMBER_DELAY)
-                    exit_reward(bot)
-                    at, stage = "", "entry"
                     continue
                 if self.party_role == "member":
                     # 클리어 화면 '파티장 선택 대기' — 파티장이 다시 하기를 누르면 준비 UI. 파티장이 우연한 만남으로 돌면
@@ -906,10 +907,12 @@ class AbyssRepeat(Repeat):
                     if not self.wait_party("reward"):
                         exit_reward(bot)
                         break
-                elif self.chance_round or self.party_chance(say=True):
+                elif self.chance_round or away or self.party_chance(say=True):
                     # 가득 차지 않은 고정 파티 — 다시 하기 대신 다른 던전 가기 → 목록에서 같은 어비스 → 우연한 만남 → 입장
-                    # (사용자 11-22). 이번 판을 파티끼리 했어도 (인원을 몰랐음) 지금 모자란 걸 알면 이쪽으로
+                    # (사용자 11-22). 이번 판을 파티끼리 했어도 (인원을 몰랐음) 지금 모자란 걸 알면 이쪽으로. 지금 파티가 우리
+                    # 파티가 아니어도 (우연한 만남 판의 파티) 같다 — 나가서 기다리지 않는다 (사용자 11-24)
                     at, stage = other_dungeon(bot, a["dungeon"]), "entry"
+                    self.regather = away and not at  # 다른 던전 가기가 안 돼 나옴 — 다음 입장 전에 파티가 다시 모이길
                     continue
                 elif not self._again():
                     bot.log.warning("'다시 하기' 를 눌러도 매칭이 시작되지 않음 (월요일 주간 초기화 뒤 전리품 정산 등) → 나가서 "
