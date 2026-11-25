@@ -377,22 +377,18 @@ def _leave(bot: Bot, ctx: Ctx | None = None) -> None:
 
 
 def quick_alter(bot: Bot, names) -> bool:
-    """모두 짧은 가공인가 — 레시피 표의 가공 1회 시간(sec, 실제 걸린 시간)이 [arbeit] alter_max_sec 이하. 게임 안 가공 시설
-    창으로 가공하는 길(가공 동작 조건·개수를 모르는 물품)의 가름 — CLI 로 만들 땐 시설에 걸린 가공까지 센다 (craft.quick).
+    """모두 짧은 가공인가 — 게임 안 가공 시설 창으로 가공하는 길(가공 동작 조건·개수를 모르는 물품·조건을 모르는 일의 카드)의
+    가름. CLI 로 만드는 길(make_or_skip)과 같은 기준 (cli_make.check_alter → craft.quick): 가공품마다 레시피 1회 시간 + 그
+    시설에 걸린 가공의 남은 시간이 [arbeit] alter_max_sec 이하. 레시피 시간만 보면 금속 가공 시설에 9시간 줄이 있어도 60초
+    철괴를 걸고 alter_wait 만큼 기다리다 막힘으로 끝난다 (2026-11-25 사용자: 줄이 길어 5분 안에 못 받으면 두 길 모두 포기).
     사용자 규칙 (2026-10-30, 2026-11-25 에 5분 이하로): 가공품인데 채집도 되면 채집, 짧은 가공이면 가공, 그 밖엔 포기."""
-    limit = bot.cfg["arbeit"]["alter_max_sec"]
     try:
-        table = craft.data().recipes
-    except RuntimeError:
+        c = cli_make.check_alter(bot, names)
+    except RuntimeError:  # 레시피 표가 없음 (craft.configure 전)
         return False
-    for name in names:
-        # 가공 시설 창 카드는 레시피 이름('철괴(철 광석)') — 물품 이름으로만 찾으면 카드로 정하는 일(조건을 모르는 일)이
-        # '가공 필요' 로 건너뛰어진다 (2026-11-23 철괴)
-        makers = table.alter_rows(name)
-        sec = makers[0].get("sec") if makers else None
-        if sec is None or sec > limit:
-            return False
-    return True
+    if c.kind == quick.LONG:  # 표에 없는 이름(카드 둘레 글자)은 조용히 뺀다
+        bot.log.info(f"가공 시설 창 길: {c.why} → 가공 안 함")
+    return c.ok
 
 
 def _job_ctx(bot: Bot, title: str, alter=()) -> Ctx:

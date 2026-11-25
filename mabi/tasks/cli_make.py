@@ -6,6 +6,7 @@
 - 어림한 시간에 여유를 더한 만큼만 돈다. 넘으면 그만 (걸어 둔 가공은 시설에서 계속돼 다음 실행에 받는다).
 - 멈춤(F12)·숙제 시간 상한을 걸음 사이·기다림·명령 중에 본다. 숙제의 CLI 연결(bot.state.cli)은 리모콘 화면의 F12 가
   끊지 못해(화면의 연결만 끊는다) 명령을 따로 돌리며 지켜보다 멈추면 끊는다 (Connector.cancel).
+게임 안 가공 시설 창 길의 가름도 같은 조회·같은 기준으로 한다 (check_alter — 시설에 걸린 가공까지 센다).
 """
 import threading
 import time
@@ -53,6 +54,22 @@ def check(bot: Bot, items: dict[str, int]) -> Made:
     """items {물품: 새로 만들 개수} 를 모두 알아서 만들어도 되나 (조회만 — 무료)."""
     cd, _, qc = _tools(bot)
     return _check_all(bot, _snapshot(cd, qc), items)[0]
+
+
+def check_alter(bot: Bot, names) -> quick.Check:
+    """게임 안 가공 시설 창에서 가공하는 길의 가름 (quick.alter_check — CLI 로 만드는 길과 같은 기준, 조회만 — 무료).
+    레시피 시간만으로 안 되거나 표에 없는 이름이면 조회하지 않는다 (가공 시설 창 카드 둘레 글자마다 묻는다 — handlers._alter_go).
+    조회가 안 되면 시설 줄을 몰라 레시피 시간만 본다 (그 길은 alter_wait 만큼만 기다린다)."""
+    cd, _, qc = _tools(bot)
+    limit = bot.cfg["arbeit"]["alter_max_sec"]
+    c = quick.alter_check({"cd": cd, "kn": None, "works": {}}, names, limit)
+    if not c.ok:
+        return c
+    snap = _snapshot(cd, qc)
+    if snap.get("error") or snap.get("stale"):
+        bot.log.info(f"가공 시설 줄을 못 봄 ({snap.get('message') or '조회가 안 됨'}) → 레시피 시간만 봄")
+        return c
+    return quick.alter_check(snap, names, limit)
 
 
 def make(bot: Bot, items: dict[str, int]) -> Made:

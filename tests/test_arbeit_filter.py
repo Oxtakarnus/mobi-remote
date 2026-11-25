@@ -7,6 +7,17 @@ from mabi.bot import Marks
 from mabi.tasks import arbeit
 
 ROOT = Path(__file__).resolve().parent.parent
+# 시설 줄 조회(cli_make._snapshot)는 빈 줄로 — 이 파일은 레시피 시간 규칙만 본다 (줄까지 보는 시험은 test_arbeit_make).
+# 시험이 진짜 CLI·조회 캐시에 닿지 않게
+_NO_QUEUE = mock.patch.object(arbeit.cli_make, "_snapshot", new=lambda cd, qc: {"cd": cd, "kn": None, "works": {}})
+
+
+def setUpModule():
+    _NO_QUEUE.start()
+
+
+def tearDownModule():
+    _NO_QUEUE.stop()
 
 
 def quest(title, *objectives):

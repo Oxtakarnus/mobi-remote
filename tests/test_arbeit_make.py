@@ -24,7 +24,7 @@ def qsnap(owned=None, busy=(), done=()):
     if busy or done:
         s["works"]["facilities"] = [{"facility": METAL, "completed": [{"name": n} for n in done],
                                      "inProgress": [{"name": n, "remainingSec": sec} for n, sec in busy]}]
-    s["cd"] = SimpleNamespace(knowledge=SimpleNamespace(product_of=lambda n, k=None: t.product_of(n) or n))
+    s["cd"] = SimpleNamespace(recipes=t, knowledge=SimpleNamespace(product_of=lambda n, k=None: t.product_of(n) or n))
     s["kn"] = {}
     return s
 
@@ -72,6 +72,94 @@ class QuickCheckTest(unittest.TestCase):
 
     def test_not_in_table(self):
         self.assertEqual(self._check("없는 물건", 1, qsnap()).kind, quick.UNKNOWN)
+
+
+class AlterCheckTest(unittest.TestCase):
+    """게임 안 가공 시설 창 길도 CLI 길과 같은 기준 — 레시피 1회 시간 + 그 시설에 걸린 가공 (사용자 2026-11-25: 두 길 모두)."""
+
+    def test_short_recipe_ok(self):
+        c = quick.alter_check(qsnap(), ["철괴"], 300)
+        self.assertEqual((c.ok, c.sec), (True, 60))
+
+    def test_queue_counts(self):
+        """60초 철괴라도 금속 가공 시설에 9시간 줄이 있으면 포기 — 물품 이름·카드(레시피 이름) 둘 다."""
+        s = qsnap(busy=[("백금강괴", 9 * 3600)])
+        for name in ("철괴", "철괴(광석)"):
+            c = quick.alter_check(s, [name], 300)
+            self.assertEqual((c.ok, c.kind), (False, quick.LONG), name)
+            self.assertIn("9시간", c.why)
+
+    def test_other_facility_queue_not_counted(self):
+        s = qsnap(busy=[("백금강괴", 9 * 3600)])
+        s["works"]["facilities"][0]["facility"] = "목재 가공 시설"
+        self.assertTrue(quick.alter_check(s, ["철괴"], 300).ok)
+
+    def test_long_recipe_and_unknown(self):
+        self.assertEqual(quick.alter_check(qsnap(), ["강철괴"], 299).kind, quick.LONG)
+        self.assertEqual(quick.alter_check(qsnap(), ["카드 둘레 글자"], 300).kind, quick.UNKNOWN)
+
+    def test_same_answer_as_cli_path(self):
+        """같은 시설 줄이면 두 길의 답이 같다 — 철괴 3개 (1회분 60초)."""
+        for busy in ((), [("강철괴", 200)], [("강철괴", 250)], [("백금강괴", 9 * 3600)]):
+            s = qsnap(busy=busy)
+            cli = quick.check(s, "철괴", 3, 300, 10, plan("철괴", 3, owned={"광석": 20}))
+            self.assertEqual(quick.alter_check(s, ["철괴"], 300).ok, cli.ok, busy)
+
+
+class CheckAlterTest(unittest.TestCase):
+    """가공 시설 창 길의 가름 (cli_make.check_alter) — 레시피 시간으로 안 되면 조회하지 않고, 되면 시설 줄을 조회해 다시 본다."""
+
+    def setUp(self):
+        craft.configure(ROOT / "state", ROOT / "data", None)
+        self.bot = mock.MagicMock()
+        self.bot.cfg = {"arbeit": {"alter_max_sec": 300}}
+
+    def _check(self, names, snap):
+        with mock.patch.object(cli_make, "_snapshot", return_value=snap) as sn:
+            return cli_make.check_alter(self.bot, names), sn
+
+    @staticmethod
+    def queue(name, sec):
+        fac = craft.data().recipes.alter_rows(name)[0]["facility"]
+        return {"cd": craft.data(), "kn": None, "works": {"facilities": [
+            {"facility": fac, "completed": [], "inProgress": [{"name": "백금강괴", "remainingSec": sec}]}]}}
+
+    def test_no_query_when_recipe_decides(self):
+        for names in (["깔끔 버섯 포자"], ["카드 둘레 글자"]):  # 1500초 · 표에 없음
+            c, sn = self._check(names, None)
+            self.assertFalse(c.ok)
+            sn.assert_not_called()
+
+    def test_queue_from_query(self):
+        c, sn = self._check(["옷감"], self.queue("옷감", 9 * 3600))
+        sn.assert_called_once()
+        self.assertEqual((c.ok, c.kind), (False, quick.LONG))
+        self.assertTrue(self._check(["옷감"], self.queue("옷감", 60))[0].ok)  # 45초 + 줄 60초
+
+    def test_query_failed_recipe_only(self):
+        c, _ = self._check(["옷감"], {"error": "disconnected"})
+        self.assertTrue(c.ok)  # 줄을 모르면 예전처럼 레시피 시간만 (그 길은 alter_wait 만큼만 기다린다)
+        self.bot.log.info.assert_called_once()
+
+    def test_quick_alter_logs_only_long(self):
+        with mock.patch.object(cli_make, "_snapshot", return_value=self.queue("옷감", 9 * 3600)):
+            self.assertFalse(arbeit.quick_alter(self.bot, ["옷감"]))
+            self.bot.log.info.assert_called_once()
+            self.bot.log.reset_mock()
+            self.assertFalse(arbeit.quick_alter(self.bot, ["카드 둘레 글자"]))  # 표에 없는 글자는 조용히
+            self.bot.log.info.assert_not_called()
+
+    def test_facility_window_card_skipped_on_long_queue(self):
+        """가공 시설 창 카드('철괴(철 광석)', 60초)도 금속 가공 시설 줄이 9시간이면 가공하러 가지 않는다."""
+        from mabi.monitor import handlers
+        from test_arbeit_filter import _fixture
+        ctx = mock.MagicMock(n={}, alter=(), alter_ok=lambda names: arbeit.quick_alter(self.bot, names))
+        with mock.patch.object(cli_make, "_snapshot", return_value=self.queue("철괴(철 광석)", 9 * 3600)), \
+                mock.patch.object(handlers, "_short_toast", return_value=False), mock.patch.object(handlers, "fast_travel"):
+            r = handlers.craft(self.bot, ctx, SimpleNamespace(frame=_fixture("alter_window_metal.png"), hit=None))
+        self.assertEqual(r.result, "alter")
+        self.assertEqual(ctx.alter, ())
+        self.bot.click.assert_not_called()
 
 
 class StepKeyTest(unittest.TestCase):
