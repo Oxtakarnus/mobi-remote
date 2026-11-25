@@ -13,6 +13,7 @@
 """
 from __future__ import annotations
 
+import logging
 import math
 import threading
 import time
@@ -25,6 +26,8 @@ from . import detect as D
 from . import fit as FT
 from . import pairs as PR
 
+log = logging.getLogger("mabi")
+
 ROT_R = 340 / 749          # 회전 원 반지름 ÷ 팔레트 폭
 DRAG_MAX = 300 / 749       # 한 번에 끄는 거리 ÷ 팔레트 폭
 START_POSE = ((0.0, 0.0), 0.0, 1.0, 0, 1.0)   # 시작 자세 (pos, rot, scale, 근거, 일치)
@@ -32,6 +35,25 @@ START_POSE = ((0.0, 0.0), 0.0, 1.0, 0, 1.0)   # 시작 자세 (pos, rot, scale, 
 
 def wrap(d: float) -> float:
     return (d + 180) % 360 - 180
+
+
+def pose_txt(m) -> str:
+    """잰 상태 한 줄 (디버그 기록) — m: (pos, rot, scale, 근거[, 일치])."""
+    hit = f" 일치 {m[4]:.2f}" if len(m) > 4 else ""
+    return f"회전 {m[1]:.2f} 배율 {m[2]:.4f} 위치 ({m[0][0]:.4f},{m[0][1]:.4f}){hit}"
+
+
+def goal_txt(g) -> str:
+    """목표 한 줄 (디버그 기록) — g: (rot, scale, pos)."""
+    return f"회전 {g[0]:.2f} 배율 {g[1]:.4f} 위치 ({g[2][0]:.4f},{g[2][1]:.4f})"
+
+
+def nums_txt(xs) -> str:
+    return " ".join(f"{float(x):.2f}" for x in xs)
+
+
+def bgr_hex(p) -> str:
+    return D.rgb_to_hex(int(p[2]), int(p[1]), int(p[0]))
 
 
 class Session:
@@ -93,6 +115,8 @@ class Session:
         self.tb = {i: np.array(targets[i].rgb[::-1], np.int16) for i in want}
         self.tol = {i: float(targets[i].tol_or_default) for i in want}
         rot0, s0 = (m[1], m[2]) if m is not None else (0.0, 1.0)
+        log.debug("염색 해 찾기 목표 %s · 지금 회전 %.2f 배율 %.4f",
+                  ", ".join(f"{i + 1}번 {self.targets[i].hex}±{self.tol[i]:g}" for i in want), rot0, s0)
         t0 = time.monotonic()
         t_end = t0 + budget
         sets = [want] + ([list(c) for c in combinations(want, 2)] if len(want) == 3 else [])
@@ -102,8 +126,12 @@ class Session:
                 break
             # 세 색 찾기가 시간을 다 쓰지 않게 — 두 색 짝들이 쓸 시간을 남긴다
             dl = t0 + budget * 0.6 if k == 0 and len(sets) > 1 else t_end
+            ts = time.monotonic()
             found = PR.solve_pairs(self.pal, self.drops_of(use), [self.tb[i] for i in use],
                                    [self.tol[i] for i in use], rot_ref=rot0, scale_ref=s0, limit=8, deadline=dl)
+            log.debug("염색 해 찾기 칸 %s: %s (%.2fs)", [i + 1 for i in use],
+                      f"{len(found)}곳 · 가장 좋은 {goal_txt(found[0][:3])} 점수 {PR.score_of(found[0]):.1f}"
+                      if found else "없음", time.monotonic() - ts)
             if found and (best is None or PR.score_of(found[0]) < PR.score_of(best[1])):
                 best = (use, found[0])
         if best is None:
@@ -111,6 +139,9 @@ class Session:
         self.use = best[0]
         self.goal = best[1][:3]
         self.left_out = [i for i in want if i not in self.use]
+        g = self.goal
+        log.debug("염색 해 찾기 고름 칸 %s · 그 자리에서 스포이드마다 예측 색 %s", [i + 1 for i in self.use],
+                  " ".join(bgr_hex(p) for p in FT.predicted(self.pal, self.drops, g[2], g[0], g[1])))
         return True
 
     def resolve_at(self, m) -> bool:
@@ -120,6 +151,7 @@ class Session:
         found = PR.solve_pairs(self.pal, self.drops_of(), [self.tb[i] for i in self.use],
                                [self.tol[i] for i in self.use], scales=[m[2]], rot_ref=m[1], scale_ref=m[2],
                                rot_win=abs(wrap(g[0] - m[1])) + 6, limit=5)
+        log.debug("염색 배율 %.4f 에서 다시 풀기: %s", m[2], goal_txt(found[0][:3]) if found else "없음 — 목표 그대로")
         if found:
             self.goal = found[0][:3]
             return True
@@ -390,19 +422,24 @@ class AutoDriver:
             last = m
         if last is not None:
             self.s.last = last
+        log.debug("염색 자동: %d번 재도 멈춘 화면을 못 잼 — %s", tries, pose_txt(last) if last else "못 잼")
         return last
 
     def run(self, rounds=14):
-        """맞으면 (True, m), 못 맞추면 (False, m)."""
+        """맞으면 (True, m), 못 맞추면 (False, m). 바퀴마다 잰 상태·목표·한 일을 디버그 기록에 남긴다."""
         s = self.s
         m = self.now()
         if m is None:
+            log.debug("염색 자동: 처음 상태를 재지 못함")
             return False, None
         fine, fine_all = 0, 0
-        for _ in range(rounds):
+        for k in range(rounds):
             g = s.goal
-            if s.ok(m) or max(FT.miss_texels(m, g, s.drops_of())) <= 0.3:
+            miss = FT.miss_texels(m, g, s.drops_of())
+            if s.ok(m) or max(miss) <= 0.3:
+                log.debug("염색 자동 %d: 맞음 — %s · 남은 텍셀 %s", k + 1, pose_txt(m), nums_txt(miss))
                 return True, m
+            log.debug("염색 자동 %d: 잼 %s · 목표 %s · 남은 텍셀 %s", k + 1, pose_txt(m), goal_txt(g), nums_txt(miss))
             d_rot = wrap(g[0] - m[1])
             # 1) 회전 — 미세 회전은 연달아 두 번까지, 모두 다섯 번까지 (측정이 흔들려 끝없이 돌지 않게)
             if abs(d_rot) > 0.03 and (abs(d_rot) > 3 or (fine < 2 and fine_all < 5 and (fine == 0 or abs(d_rot) > 0.08))):
@@ -421,6 +458,8 @@ class AutoDriver:
                     self.rot_sign *= d_rot / got if abs(d_rot / got) < 3 else 1
                     self.rot_sign = max(-1.3, min(1.3, self.rot_sign)) if abs(self.rot_sign) > 0.7 else \
                         math.copysign(1, self.rot_sign)
+                log.debug("염색 자동 회전: 명령 %+.2f° → 돈 %+.2f° (방향 %.2f · 덜 먹힘 %.2f°)",
+                          cmd, got, self.rot_sign, self.rot_dead)
                 continue
             # 2) 배율 — 휠 반 칸보다 차이가 클 때만
             d_ls = math.log(g[1] / m[2])
@@ -435,6 +474,8 @@ class AutoDriver:
                 got = math.log(m[2] / before[2])
                 if abs(n) >= 3 and abs(got) > 0.005:
                     self.wheel_k = got / n
+                log.debug("염색 자동 휠: %+d칸 → 배율 %.4f → %.4f (칸당 ×%.5f)", n, before[2], m[2],
+                          math.exp(self.wheel_k))
                 if abs(m[2] / g[1] - 1) > 1e-4:      # 칸 단위라 배율이 조금 다르면 그 배율에서 해를 다시
                     s.resolve_at(m)
                 continue
@@ -445,10 +486,17 @@ class AutoDriver:
             if L > 0.3:
                 f = min(1.0, DRAG_MAX * s.S / L)
                 x1, y1 = self.cx - dx * f / 2, self.cy - dy * f / 2
+                before = m
                 self.on_step(m, f"끌기 {L:.0f}px")
                 self.mouse.drag(x1, y1, x1 + dx * f, y1 + dy * f)
                 m = self.now() or m
+                log.debug("염색 자동 끌기: (%+.1f, %+.1f)px → 움직인 (%+.1f, %+.1f)px", dx * f, dy * f,
+                          (m[0][0] - before[0][0]) * s.S, -(m[0][1] - before[0][1]) * s.S)
                 fine = 0
                 continue
+            log.debug("염색 자동: 끌 거리 %.2fpx 뿐 — 더 할 일 없음", L)
             break
-        return s.ok(m), m
+        ok = s.ok(m)
+        log.debug("염색 자동 끝 (%s): %s · 남은 텍셀 %s", "맞음" if ok else "못 맞춤", pose_txt(m),
+                  nums_txt(FT.miss_texels(m, s.goal, s.drops_of())))
+        return ok, m

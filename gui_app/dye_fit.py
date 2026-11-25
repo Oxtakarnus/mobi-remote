@@ -352,6 +352,11 @@ class FitAssist:
                 if self.st is not None and sess.caught(self.st.rings):
                     caught = True
                     break
+            if self.st is not None:
+                rs = sorted(self.st.rings, key=lambda r: r.x)
+                log.info("염색 자동 끝 스포이드 색 %s · 목표 %s", " ".join(r.hex or "?" for r in rs), " ".join(
+                    "-" if i not in sess.targets else sess.targets[i].hex if i in sess.use else "뺌"
+                    for i in range(len(rs))))
             gd = sess.guide(m, caught)
             done = gd["done"]
             if done:
