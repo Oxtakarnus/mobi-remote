@@ -67,6 +67,15 @@ def step_failure(kind: str, r: dict) -> str | None:
             "insufficient_transfer_cost": STEP_STOP_TRANSFER}.get(err)
 
 
+def step_key(st: dict, have) -> str:
+    """같은 걸음이 거푸 나오는지 볼 열쇠 (작업 큐 목표 카드·아르바이트 CLI 만들기 — 기다림은 원래 거푸 나와 부르는 쪽이 뺀다).
+    가공은 한 번에 1건이라 같은 등록이 거푸 나오는 게 정상 — 남은 건수(wanted)·시설에 건 수(queued)가 바뀌면 진전이다.
+    제작도 한 번에 묶는 상한(10회)이 있어 같은 묶음이 거푸 나온다 — 보유량(have)·남은 횟수(runs)·필요량(need)이 바뀌면 진전
+    (2026-11-06 여행자 간식 100개: 10회씩 잘 만들며 46개까지 왔는데 '5회 반복' 으로 섰다)."""
+    return (f"{st.get('kind')}:{st.get('name') or ''}:{st.get('batch') or ''}:{st.get('runs') or ''}:{st.get('need') or ''}"
+            f":{st.get('wanted') or ''}:{st.get('queued') or ''}:{have}")
+
+
 def recipe_learn_kind(command: str, body) -> str | None:
     """레시피를 배울 수 있는 명령인가. 제작은 1회일 때만, 가공은 큐에 올리는 순간 재료가 빠진다."""
     if command == "execute_crafting":

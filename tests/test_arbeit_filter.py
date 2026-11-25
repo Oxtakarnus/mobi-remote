@@ -49,12 +49,13 @@ class AlterMissingTest(unittest.TestCase):
         r = arbeit._Round.__new__(arbeit._Round)
         r.bot, r.skipped, r.save = mock.MagicMock(), {}, mock.MagicMock()
         with (mock.patch.object(arbeit, "gatherable", return_value=None),
-              mock.patch.object(arbeit, "quick_alter", return_value=True)):
-            self.assertEqual(r.alter_or_skip(job), ["두유"])
+              mock.patch.object(arbeit.cli_make, "make", return_value=arbeit.cli_make.Made(True)) as mk):
+            self.assertTrue(r.make_or_skip(job))
+        mk.assert_called_once_with(r.bot, {"두유": 3})
 
 
 class QuickAlterTest(unittest.TestCase):
-    """가공이 2분(alter_max_sec) 미만인 가공품만 아르바이트에서 가공한다 (사용자 규칙 2026-10-30)."""
+    """가공 1회가 alter_max_sec 이하인 가공품만 아르바이트에서 가공한다 (사용자 규칙 2026-10-30, 11-25 에 5분 이하로)."""
 
     def test_limit(self):
         craft.configure(ROOT / "state", ROOT / "data", None)
@@ -65,6 +66,15 @@ class QuickAlterTest(unittest.TestCase):
         self.assertTrue(arbeit.quick_alter(bot, ["철괴"]))            # 물품 이름
         self.assertFalse(arbeit.quick_alter(bot, ["깔끔 버섯 포자"]))  # 1500초
         self.assertFalse(arbeit.quick_alter(bot, ["옷감", "깔끔 버섯 포자"]))
+
+    def test_limit_inclusive(self):
+        """'5분 이하' — 딱 300초인 가공도 한다 (튼튼 버섯 진액 300초)."""
+        craft.configure(ROOT / "state", ROOT / "data", None)
+        bot = mock.MagicMock()
+        bot.cfg = {"arbeit": {"alter_max_sec": 300}}
+        self.assertTrue(arbeit.quick_alter(bot, ["튼튼 버섯 진액"]))
+        bot.cfg = {"arbeit": {"alter_max_sec": 299}}
+        self.assertFalse(arbeit.quick_alter(bot, ["튼튼 버섯 진액"]))
 
 
 class HowtoRowTest(unittest.TestCase):
@@ -450,7 +460,8 @@ class PopupItemsTest(unittest.TestCase):
             for png, want in (("howto_alter_or_shop.png", ["밀가루"]), ("howto_gather.png", ["우유"])):
                 frame = cv2.imread(str(ROOT / "tests" / "fixtures" / png))
                 hit = vision.find(frame, "item_missing")  # 점검자가 이 창을 알아본 자리
-                self.assertEqual(arbeit.popup_items(self._bot(), SimpleNamespace(frame=frame, hit=hit)), want, png)
+                rows = arbeit.popup_rows(self._bot(), SimpleNamespace(frame=frame, hit=hit))
+                self.assertEqual([n for n, _ in rows], want, png)
 
     def test_unknown_text_dropped(self):
         """띄어쓰기만 다르면 표 이름으로, 표·채집 목록에 없는 글자(잘못 읽음·버튼)는 뺀다."""
@@ -459,11 +470,21 @@ class PopupItemsTest(unittest.TestCase):
         with mock.patch.object(arbeit, "gatherable", return_value=None), \
                 mock.patch.object(arbeit.ocr, "find_texts", return_value=texts):
             seen = SimpleNamespace(frame=None, hit=SimpleNamespace(x=0, y=0))
-            self.assertEqual(arbeit.popup_items(self._bot(), seen), ["말린 찻잎"])
+            self.assertEqual(arbeit.popup_rows(self._bot(), seen), [("말린 찻잎", 3)])  # 같은 줄 '0 / 3' → 3개 모자람
+
+    def test_count_unread(self):
+        """개수 글자가 없거나(다른 창에 가림) 다 모였으면 None — 개수를 모르는 물품은 만들지 않는다."""
+        from types import SimpleNamespace
+        seen = SimpleNamespace(frame=None, hit=SimpleNamespace(x=0, y=0))
+        for texts in ([("말린찻잎", 800, 775)], [("말린찻잎", 800, 775), ("3 / 3", 1170, 776)],
+                      [("말린찻잎", 800, 775), ("0 / 3", 1170, 865)]):  # 아랫줄 개수는 이 줄 것이 아니다
+            with mock.patch.object(arbeit, "gatherable", return_value=None), \
+                    mock.patch.object(arbeit.ocr, "find_texts", return_value=texts):
+                self.assertEqual(arbeit.popup_rows(self._bot(), seen), [("말린 찻잎", None)], texts)
 
 
 class ShortOfTest(unittest.TestCase):
-    """모자란 물품으로 정하기 — 진행 전 가름(alter_or_skip)과 같은 규칙."""
+    """모자란 물품으로 정하기 — 진행 전 가름(make_or_skip)과 같은 규칙. 개수를 모를 때 (아래) 는 예전 규칙."""
 
     def setUp(self):
         craft.configure(ROOT / "state", ROOT / "data", None)
@@ -516,21 +537,23 @@ class ItemMissingDecideTest(unittest.TestCase):
         ctx = arbeit._job_ctx(bot, "일생일대의 위기")
         with mock.patch.object(arbeit, "accepted", return_value=quests), \
                 mock.patch.object(arbeit, "gatherable", return_value={"찻잎"}), \
-                mock.patch.object(arbeit, "popup_items", side_effect=popup) as pi:
+                mock.patch.object(arbeit, "popup_rows", side_effect=popup) as pi:
             return ctx.decide[d.ITEM_MISSING](bot, ctx, SimpleNamespace(frame=None)), pi
 
     def test_no_cli_conditions_reads_popup(self):
         """2026-11-24: 지원 직후·창이 떠 있는 동안 CLI 가 빈 목록 → 예전엔 판단 없이 '구하는 방법' 맨 위(길드 상점)로."""
-        r, pi = self._decide([], lambda bot, seen: ["말린 찻잎"])
+        r, pi = self._decide([], lambda bot, seen: [("말린 찻잎", None)])  # 개수를 못 읽음 → 예전 규칙
         pi.assert_called_once()
         self.assertEqual(r.result, "alter")
+        r, _ = self._decide([], lambda bot, seen: [("말린 찻잎", 3)])  # 개수를 읽음 → CLI 로 만들러 (가름은 거기서)
+        self.assertEqual(r.result, "make")
 
     def test_cli_conditions_first(self):
         job = {"title": "일생일대의 위기",
                "objectives": [{"Description": f"말린 찻잎 {arbeit.HAVE} 0/3", "IsCompleted": False}]}
         r, pi = self._decide([job], AssertionError("창을 읽음"))
         pi.assert_not_called()
-        self.assertEqual(r.result, "alter")
+        self.assertEqual(r.result, "make")  # CLI 조건에 개수가 있다 → CLI 로 만들러
 
     def test_nothing_read_goes_on(self):
         r, _ = self._decide([], lambda bot, seen: [])

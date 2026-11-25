@@ -17,16 +17,18 @@ from dataclasses import dataclass, field
 
 from .. import craft, gamedata as gd, monitor, ocr, richtext
 from ..bot import Bot
+from ..craft import quick
 from ..monitor import Ctx, Finish, detect as d
 from ..exceptions import CannotProceed, Stuck
 from ..progress import Progress
-from . import ui_text
+from . import cli_make, ui_text
 from .arrival import Stopped
 from .questwin import open_arbeit_tab, questwin_text_ok
 
 PROGRESS, APPLY = gd.text("arbeit_progress"), gd.text("arbeit_apply")  # 카드 버튼 '진행하기' · '지원하기'
 HAVE = gd.text("arbeit_have_item")  # CLI 조건 '… 보유 3/10'
-_COUNT = re.compile(r"\d+\s*/\s*\d+")  # 물품 줄의 개수 '0/3'
+_COUNT = re.compile(r"(\d+)\s*/\s*(\d+)")  # 개수 '보유/필요' — CLI 조건 '보유 3/10', 물품 줄 '0 / 3'
+ROW_DY = 20  # 물품 줄의 이름 글자와 개수 글자를 같은 줄로 볼 높이 차 (px)
 
 
 def accepted(bot: Bot, raw: bool = False) -> list[dict]:
@@ -69,6 +71,16 @@ def _item_name(desc: str) -> str:
     return re.sub(rf"\s*{HAVE}.*$", "", desc).strip()
 
 
+def short_counts(job: dict) -> dict[str, int]:
+    """채우지 못한 '보유' 조건의 모자란 개수 {물품: 필요 − 보유} ('옷감 보유 2/6' → 4). 개수를 못 읽은 조건은 뺀다."""
+    out = {}
+    for desc in missing_items(job):
+        m = _COUNT.search(desc.split(HAVE, 1)[-1])
+        if m and int(m.group(2)) > int(m.group(1)):
+            out[_item_name(desc)] = int(m.group(2)) - int(m.group(1))
+    return out
+
+
 def gatherable(bot: Bot) -> set[str] | None:
     """채집으로 구할 수 있는 물품 이름 (CLI get_gatherable_items, 도구가 맞는 것). 캐릭터마다 한 번 묻고 기억한다 —
     도구는 캐릭터마다 다르다. 조회가 안 되면 None (모름 — 기억하지 않는다. 예전엔 빈 목록을 실행 내내 기억해 모자란
@@ -85,12 +97,18 @@ def gatherable(bot: Bot) -> set[str] | None:
     return memo[1]
 
 
-def short_of(bot: Bot, ctx, names: list[str]):
-    """'필요한 아이템이 없습니다' 에서 모자란 물품(names)으로 정한다 — 진행 전 가름(alter_or_skip)과 같은 규칙.
-    가공으로만 만드는 것: 짧은 가공이면 ctx.alter 에 넣고 계속 ('구하는 방법' 에서 가공 시설로), 아니면 '가공 필요' 로 끝.
-    채집으로 못 구하는 그 밖의 것(제작품 등)은 '전달 물품 부족' 으로 끝 (사용자 규칙: 모자란 게 채집품뿐이면 채집해서 완료).
+def short_of(bot: Bot, ctx, names: list[str], counts: dict | None = None):
+    """'필요한 아이템이 없습니다' 에서 모자란 물품(names, 모자란 개수 counts)으로 정한다 — 진행 전 가름(make_or_skip)과 같은 규칙.
+    만들어야 하는 것(레시피 표에 있고 채집으로 못 구함 — made_only)은 개수를 알면 'make' 로 끝 → _Round.work 가 CLI 로 만들고
+    다시 진행한다 (만들 것은 bot.marks.arb_make, 만들어도 되는지는 거기서 가른다). 개수를 모르면 예전 규칙: 가공으로만 만드는 것이
+    짧은 가공이면 ctx.alter 에 넣고 계속 ('구하는 방법' 에서 가공 시설로), 아니면 '가공 필요' 로 끝.
+    채집으로 못 구하는 그 밖의 것(레시피 표에 없는 것 등)은 '전달 물품 부족' 으로 끝 (사용자 규칙: 모자란 게 채집품뿐이면 채집해서 완료).
     채집 목록을 모르면 가공품만 가르고 나머지는 해 본다. 끝낼 때 Finish·이유 글자, 계속이면 None."""
     can = gatherable(bot)
+    made = [n for n in made_only(names, can or frozenset()) if n not in ctx.alter]
+    if made and counts and all(counts.get(n) for n in made):
+        bot.marks.arb_make = {n: counts[n] for n in made}
+        return Finish("make", "CLI 로 만들 물품 (" + ", ".join(f"{n} {counts[n]}개" for n in made) + ")")
     alter = [n for n in alter_only(names, can or frozenset()) if n not in ctx.alter]
     if alter:
         if quick_alter(bot, alter):
@@ -103,10 +121,11 @@ def short_of(bot: Bot, ctx, names: list[str]):
     return None
 
 
-def popup_items(bot: Bot, seen) -> list[str]:
-    """'퀘스트를 위해 필요한 아이템이 없습니다' 창에 뜬 모자란 물품 이름 (화면 글자 → 레시피 표·채집 목록의 이름, 띄어쓰기만
-    달라도 같은 것). 지원 직후나 이 창이 떠 있는 동안엔 CLI 가 조건을 주지 않을 때가 있다 (get_quests 가 빈 목록 — 2026-11-24
-    '말린 찻잎': 1시간 가공품인데 조건을 몰라 '구하는 방법' 맨 위 길드 상점으로 가 3분 서 있다가 채집이 멈춤으로 끝남).
+def popup_rows(bot: Bot, seen) -> list[tuple[str, int | None]]:
+    """'퀘스트를 위해 필요한 아이템이 없습니다' 창에 뜬 모자란 물품 [(이름, 모자란 개수 — 못 읽으면 None)]. 이름은 화면 글자 →
+    레시피 표·채집 목록의 이름 (띄어쓰기만 달라도 같은 것), 개수는 같은 줄의 '보유 / 필요' 글자 ('0 / 6').
+    지원 직후나 이 창이 떠 있는 동안엔 CLI 가 조건을 주지 않을 때가 있다 (get_quests 가 빈 목록 — 2026-11-24 '말린 찻잎': 1시간
+    가공품인데 조건을 몰라 '구하는 방법' 맨 위 길드 상점으로 가 3분 서 있다가 채집이 멈춤으로 끝남).
     표·목록에 없는 글자(잘못 읽음)는 뺀다 — 모르는 것을 정하지 않는다."""
     dx, dy, w, h = bot.cfg["arbeit"]["item_rows_from_title"]
     names = set(gatherable(bot) or ())
@@ -115,12 +134,22 @@ def popup_items(bot: Bot, seen) -> list[str]:
     except RuntimeError:
         pass
     known = {ocr.nospace(n): n for n in names}
-    out = []
-    for t, _, _ in ocr.find_texts(seen.frame, (seen.hit.x + dx, seen.hit.y + dy, w, h)):
+    texts = ocr.find_texts(seen.frame, (seen.hit.x + dx, seen.hit.y + dy, w, h))
+    out: dict[str, int | None] = {}
+    for t, _, y in texts:
         n = known.get(ocr.nospace(_COUNT.sub("", t)))
         if n and n not in out:
-            out.append(n)
-    return out
+            out[n] = _row_short([t, *(u for u, _, uy in texts if abs(uy - y) <= ROW_DY)])
+    return list(out.items())
+
+
+def _row_short(texts) -> int | None:
+    """물품 줄 글자들(이름 글자 먼저) 중 첫 '보유 / 필요' 의 모자란 개수. 없거나 모자라지 않으면 None."""
+    for t in texts:
+        if m := _COUNT.search(t):
+            have, need = int(m.group(1)), int(m.group(2))
+            return need - have if need > have else None
+    return None
 
 
 def alter_missing(job: dict, can_gather=frozenset()) -> list[str]:
@@ -145,6 +174,22 @@ def alter_only(names, can_gather=frozenset()) -> list[str]:
         if makers and all(r.get("via") == "alter" for r in makers):
             out.append(name)
     return out
+
+
+def made_only(names, can_gather=frozenset()) -> list[str]:
+    """물품 이름 중 만들어야 하는 것 — 레시피 표에 있고(가공·제작) 채집으로 못 구하는 것 (CLI 로 만든다 — cli_make).
+    채집으로도 구할 수 있으면 게임 안 채집(무료)으로 간다 (사용자 규칙 2026-10-30). 표가 없으면 []."""
+    try:
+        table = craft.data().recipes
+    except RuntimeError:
+        return []
+    return [n for n in names if n not in can_gather and table.makers(n)]
+
+
+def made_missing(job: dict, can_gather=frozenset()) -> dict[str, int]:
+    """모자란 물품 중 만들어야 하는 것과 모자란 개수 {물품: 개수} (CLI 조건 '보유 a/b' 와 레시피 표 — made_only)."""
+    short = short_counts(job)
+    return {n: short[n] for n in made_only(list(short), can_gather)}
 
 
 _is = ui_text.is_word  # 버튼 글자 word 인가 (한 글자쯤 틀려도)
@@ -332,8 +377,9 @@ def _leave(bot: Bot, ctx: Ctx | None = None) -> None:
 
 
 def quick_alter(bot: Bot, names) -> bool:
-    """모두 짧은 가공인가 — 레시피 표의 가공 1회 시간(sec, 실제 걸린 시간)이 [arbeit] alter_max_sec 미만.
-    사용자 규칙 (2026-10-30): 가공품인데 채집도 되면 채집, 가공이 2분 미만이면 가공, 그 밖엔 포기."""
+    """모두 짧은 가공인가 — 레시피 표의 가공 1회 시간(sec, 실제 걸린 시간)이 [arbeit] alter_max_sec 이하. 게임 안 가공 시설
+    창으로 가공하는 길(가공 동작 조건·개수를 모르는 물품)의 가름 — CLI 로 만들 땐 시설에 걸린 가공까지 센다 (craft.quick).
+    사용자 규칙 (2026-10-30, 2026-11-25 에 5분 이하로): 가공품인데 채집도 되면 채집, 짧은 가공이면 가공, 그 밖엔 포기."""
     limit = bot.cfg["arbeit"]["alter_max_sec"]
     try:
         table = craft.data().recipes
@@ -344,7 +390,7 @@ def quick_alter(bot: Bot, names) -> bool:
         # '가공 필요' 로 건너뛰어진다 (2026-11-23 철괴)
         makers = table.alter_rows(name)
         sec = makers[0].get("sec") if makers else None
-        if sec is None or sec >= limit:
+        if sec is None or sec > limit:
             return False
     return True
 
@@ -357,13 +403,16 @@ def _job_ctx(bot: Bot, title: str, alter=()) -> Ctx:
 
     def missing(bot, ctx, seen):
         names = [_item_name(x) for x in missing_items(j)] if (j := job()) else []
-        if not names:  # CLI 가 조건을 주지 않음 (지원 직후·이 창이 떠 있는 동안) → 창에 뜬 물품 이름으로
-            names = popup_items(bot, seen)
-            bot.log.info(f"아르바이트 '{title}': CLI 조건이 없어 창에서 모자란 물품을 읽음 → {', '.join(names) or '못 읽음'}")
-        return short_of(bot, ctx, names) if names else None
+        counts = short_counts(j) if j else {}
+        if not names:  # CLI 가 조건을 주지 않음 (지원 직후·이 창이 떠 있는 동안) → 창에 뜬 물품 이름·개수로
+            rows = popup_rows(bot, seen)
+            names, counts = [n for n, _ in rows], {n: k for n, k in rows if k}
+            read = ", ".join(n + (f" {counts[n]}개" if n in counts else "") for n in names)
+            bot.log.info(f"아르바이트 '{title}': CLI 조건이 없어 창에서 모자란 물품을 읽음 → {read or '못 읽음'}")
+        return short_of(bot, ctx, names, counts) if names else None
 
     def alter_need():
-        # 가공 목록 화면에 조건을 모르고 왔을 때 — 지금 CLI 조건으로 (진행 전 alter_or_skip 과 같은 판정)
+        # 가공 목록 화면에 조건을 모르고 왔을 때 — 지금 CLI 조건의 모자란 가공품 (가공 시설 창 길, quick_alter 로 가른다)
         return alter_missing(j, gatherable(bot) or frozenset()) if (j := job()) else []
     return Ctx("arbeit", title, job=True, finish_on={d.DUNGEON_WINDOW: "dungeon"}, decide={d.ITEM_MISSING: missing},
                note=lambda key, stage: _note(bot, title, key, stage), alter=alter,
@@ -696,16 +745,22 @@ def _task(bot: Bot, cfg: dict) -> str:
 
 # 한 일의 결과 → 건너뛴 까닭 (장부 skipped). 여기 없는 결과(stuck · gather_stall)는 막힘 — 다음 실행 때 다시 해 본다
 SKIP_WHY = {"short": "전달 물품 부족", "alter": "가공 필요", "alter_short": "가공 재료 부족", "alter_full": "가공 칸 꽉 참",
-            "dungeon": "던전 클리어 필요"}
+            "dungeon": "던전 클리어 필요", "make_long": "가공이 오래 걸림", "make_short": "만들 재료 부족"}
 # 한 일의 결과 → 단계 기록 글자
 RESULT_STAGE = {"done": "완료", "short": "건너뜀", "alter": "건너뜀(가공)", "alter_short": "건너뜀(가공 재료 부족)",
-                "alter_full": "건너뜀(가공 칸 꽉 참)", "dungeon": "건너뜀(던전)", "gather_stall": "막힘(채집이 멈춤)"}
+                "alter_full": "건너뜀(가공 칸 꽉 참)", "dungeon": "건너뜀(던전)", "gather_stall": "막힘(채집이 멈춤)",
+                "make_long": "건너뜀(가공이 오래 걸림)", "make_short": "건너뜀(만들 재료 부족)"}
+# CLI 로 만들기(cli_make)를 시작 전에 가른 까닭 → 한 일의 결과. 하다가 막힌 것(cli_make.FAILED)은 막힘 — 다음 실행 때 다시 해 본다
+# (걸어 둔 가공은 그사이 끝나 받기만 하면 된다)
+MAKE_RESULT = {quick.LONG: "make_long", quick.SHORT: "make_short", quick.CALLS: "make_short", quick.UNKNOWN: "short"}
+# 같은 날 다시 돌릴 때 다시 가름해 볼 건너뜀 — 그사이 시설에 걸린 가공이 끝났거나 재료가 생겼을 수 있다
+MAKE_SKIPS = (SKIP_WHY["alter"], SKIP_WHY["make_long"], SKIP_WHY["make_short"])
 
 
 class _Round:
     """아르바이트 숙제 한 번 — 수락한 일부터, 없으면 새 일에 지원하며 max_jobs 개까지. 단계:
     준비(prepare: 카드 제목 읽기·오늘 장부 이어 받기) → [할 일 고르기(pick) → 없으면 지원(apply_new)
-    → 가공 확인(alter_or_skip) → 진행하기 → _work → 결과 적기(record)] → 마무리(finish).
+    → 만들 물품 확인(make_or_skip — 모자라면 CLI 로 만듦) → 진행하기 → 일(work) → 결과 적기(record)] → 마무리(finish).
     완료·건너뜀·막힘 장부(done·skipped·stuck)를 단계끼리 같이 쓴다. 고르다 연 목록에 '지원하기' 가 보이면
     그 창을 연 채로 지원한다 (panel)."""
 
@@ -733,15 +788,14 @@ class _Round:
                 if not self.apply_new():
                     break
                 continue
-            alter = self.alter_or_skip(job)
-            if alter is None:
+            if not self.make_or_skip(job):
                 continue
             bot.log.info(f"아르바이트 진행: {job['title']}")
             self.save(job["title"])
             if not pressed and not _press_progress(bot, job["title"]):
                 self.stuck.append(job["title"])
                 continue
-            self.record(job["title"], _work(bot, job["title"], tuple(alter)))
+            self.record(job["title"], self.work(job["title"]))
         return self.finish()
 
     def prepare(self) -> None:
@@ -757,7 +811,7 @@ class _Round:
 
     def restore_skipped(self) -> None:
         """오늘 앞 실행에서 물품 부족으로 건너뛴 일은 다시 가 보지 않는다 (사람 몫). 막혔던 일은 다시 해 본다.
-        다만 그 사이 할 수 있게 된 일(물품이 다 모임·채집이나 짧은 가공으로 됨)과 조건을 모르는 '가공 필요' 일은 다시 본다."""
+        다만 그 사이 할 수 있게 된 일(물품이 다 모임·CLI 로 만들 수 있게 됨)과 조건을 모르는 '가공 필요' 일은 다시 본다."""
         bot, skipped = self.bot, self.skipped
         skipped.update(self.book.get("skipped") or {})
         # 다만 그 사이 물품이 다 모였으면 (채집을 시간으로 끊었는데 게임이 마저 캔 경우) 다시 해 본다
@@ -767,9 +821,9 @@ class _Round:
                 if not missing_items(j):
                     bot.log.info(f"아르바이트 '{t}': 건너뛴 일인데 물품이 다 모임 → 다시 진행")
                     skipped.pop(t)
-                elif skipped[t] == "가공 필요" and (not (al := alter_missing(j, gatherable(bot) or frozenset())) or quick_alter(bot, al)):
-                    # 가공 규칙이 바뀐 뒤(채집 가능·짧은 가공은 진행) 같은 날 다시 돌리면 앞서 건너뛴 일도 다시 본다
-                    bot.log.info(f"아르바이트 '{t}': 가공 필요로 건너뛴 일인데 채집·짧은 가공으로 할 수 있음 → 다시 진행")
+                elif skipped[t] in MAKE_SKIPS and self.can_make(j):
+                    # 만들 물품 때문에 건너뛴 일 — 그사이 시설에 걸린 가공이 끝났거나 재료가 생겼을 수 있다 (규칙이 바뀐 뒤도)
+                    bot.log.info(f"아르바이트 '{t}': '{skipped[t]}' 로 건너뛴 일인데 지금은 할 수 있음 → 다시 진행")
                     skipped.pop(t)
         # 추적 칸에 없는 '가공 필요' 일은 조건을 몰라 여기서 못 가른다 → 다시 가서 가공 창 카드로 정한다 (_alter_go)
         for t in [t for t, w in skipped.items() if w == "가공 필요" and not any(_same(t, j["title"]) for j in tracked)]:
@@ -855,19 +909,63 @@ class _Round:
                 return False
         return True
 
-    def alter_or_skip(self, job: dict) -> list | None:
-        """모자란 가공품 (CLI 조건과 레시피 표로 미리 가름). 짧은 가공이면 그 목록을 들고 진행,
-        그 밖의 가공품이 모자라면 가지 않고 건너뛰고 None."""
+    def make_or_skip(self, job: dict) -> bool:
+        """진행하기 전에 모자란 물품을 가른다 (CLI 조건 '보유 a/b' 와 레시피 표). 만들어야 하는 것(레시피 표에 있고 채집으로 못
+        구함)은 CLI 로 바로 만들고 진행한다 (make — 가공 5분 이하만, 사용자 규칙 2026-11-25). 못 만들면 가지 않고 결과를 적고
+        False. 조건을 모르면(이어 하는 일·지원 직후) 그대로 진행 — '필요한 아이템이 없습니다' 창에서 같은 규칙으로 정한다 (short_of).
+        가공 '동작' 조건('옷감 가공 0/2')은 게임이 가공 시설 창으로 보내 거기서 정한다 (quick_alter)."""
+        if "objectives" not in job:
+            return True
+        items = made_missing(job, gatherable(self.bot) or frozenset())
+        if not items:
+            return True
+        r = self.make(job["title"], items)
+        if r is None:
+            return True
+        self.record(job["title"], r)
+        return False
+
+    def make(self, title: str, items: dict) -> str | None:
+        """items {물품: 모자란 개수} 를 CLI 로 만든다 (cli_make). 다 만들었으면 None, 아니면 이 일의 결과 — 시작 전에 가른
+        까닭이면 건너뜀 (MAKE_RESULT), 하다가 막혔으면 막힘 (다음 실행 때 다시 해 본다)."""
         bot = self.bot
-        alter = alter_missing(job, gatherable(bot) or frozenset()) if "objectives" in job else []
-        if alter and quick_alter(bot, alter):
-            bot.log.info(f"아르바이트 '{job['title']}': 짧은 가공 ({', '.join(alter)}) → 가공해서 진행")
-        elif alter:
-            bot.log.info(f"아르바이트 '{job['title']}': 가공품이 모자람 ({', '.join(alter)}) → 가지 않고 건너뜀")
-            self.skipped[job["title"]] = "가공 필요"
-            self.save(None, "arb_result", f"건너뜀(가공): {job['title']}")
+        what = ", ".join(f"{n} {k}개" for n, k in items.items())
+        self.save(title, "arb_make", f"CLI 로 만들기 ({what})")
+        m = cli_make.make(bot, items)
+        if m.ok:
+            bot.log.info(f"아르바이트 '{title}': CLI 로 만듦 ({what}, 날개 {m.wings}) → 진행")
             return None
-        return alter
+        r = MAKE_RESULT.get(m.kind, "stuck")
+        bot.log.info(f"아르바이트 '{title}': CLI 로 못 만듦 ({what}) — {m.why} → {SKIP_WHY.get(r, '막힘')}"
+                     + (f" (날개 {m.wings})" if m.wings else ""))
+        return r
+
+    def work(self, title: str) -> str:
+        """진행하기를 누른 일을 끝까지 (_work). '필요한 아이템이 없습니다' 창에서 만들 것을 정했으면(make — short_of) CLI 로
+        만들고 한 번만 더 진행한다. 만들고도 또 모자라면 더 하지 않는다 (전달 물품 부족)."""
+        bot = self.bot
+        r = _work(bot, title)
+        if r != "make":
+            return r
+        items, bot.marks.arb_make = bot.marks.arb_make, None
+        if not items:
+            return "short"
+        if (made := self.make(title, items)) is not None:
+            return made
+        if not _press_progress(bot, title):
+            return "stuck"
+        r = _work(bot, title)
+        if r == "make":
+            bot.marks.arb_make = None
+            bot.log.warning(f"아르바이트 '{title}': CLI 로 만들었는데 또 모자람 → 그만")
+            return "short"
+        return r
+
+    def can_make(self, job: dict) -> bool:
+        """만들 물품 때문에 건너뛴 일을 지금은 할 수 있나 — 만들 물품이 안 모자라거나(가공 시설 창에서 건너뛴 일 포함) CLI 로
+        만들 수 있으면 (조회만, cli_make.check)."""
+        items = made_missing(job, gatherable(self.bot) or frozenset())
+        return not items or cli_make.check(self.bot, items).ok
 
     def record(self, title: str, r: str) -> None:
         """한 일의 결과를 장부에 적는다 — 완료 · 건너뜀(까닭) · 막힘."""

@@ -46,6 +46,7 @@ class Marks:
     arb_read: list[list[str]] = field(default_factory=list)  # 카드 버튼을 못 찾았을 때 쪽마다 읽은 글자
     arb_scrolled: int = 0             # 아르바이트 목록을 내린 쪽 수
     arb_closed: bool = False          # 구인 마감이고 수락한 일도 없음
+    arb_make: dict[str, int] | None = None  # '필요한 아이템이 없습니다' 창에서 정한 CLI 로 만들 물품 {이름: 모자란 개수} (short_of → _Round.work)
     # 접속 (tasks.login)
     auth_fails: int = 0               # 접속 오류(계정 인증 실패) 창을 본 횟수 — 두 번째면 AuthBlocked
 
