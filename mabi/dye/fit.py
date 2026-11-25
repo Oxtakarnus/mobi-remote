@@ -16,6 +16,10 @@
 색 오차는 화면 판정과 같게 RGB 칸마다 차이 중 가장 큰 것 (detect.rgb_diff).
 조작 실측 (2026-10-31): 휠 한 칸 = 정확히 ×1.01, 배율 0.5~3 에서 잘림. 회전 축 = 오른쪽 누른 점,
 화면 시계 방향으로 그리면 rot 이 준다. 작은 회전은 처음 ~1° 가 먹힌다.
+
+스포이드 색은 텍셀 하나가 아니라 게임이 이웃 텍셀과 섞어 본 색이다 — 쌍선형인데 텍셀 가운데
+둘레만 그 텍셀 색 그대로이고 나머지는 이웃과 섞인다 (sample). 2026-11-25 실기 10판: 노린 텍셀 가운데에서
+조금만 벗어나도 말풍선이 이웃과 섞인 색이었다 → 맞았나 판정·해 찾기는 섞인 색으로 본다 (Palette.fine).
 """
 from __future__ import annotations
 
@@ -34,6 +38,11 @@ MATS = ("Cloth", "Leather", "Metal", "Wood")
 # 2026-11-25 1080p 표본 — 시작 화면 3장은 0.12% 만 다르고, 움직인 화면 6장(모두 30° 넘게 돌림)을 시작으로 잘못 잡으면
 # 1.2~2.4% 가 다르다. 실제 팔레트로 그려 보면 10° 넘는 회전은 걸러지지만 10px 안쪽 끌기·휠 몇 칸은 못 거른다
 START_OK = 0.995
+# 칸 경계에서 섞이는 폭 (텍셀). 판마다 서버가 정해 주는데 응답이 암호화라
+# 화면으로 어림했다 — 2026-11-25 시작 화면(텍셀 가운데에서 0.1 넘게 벗어나면 섞임)·말풍선 표본 맞춤 0.7~0.85.
+# 넓게 잡을수록 '맞는 자리'를 좁게 보아 안전하다
+BLEND = 0.8
+FINE = 5                            # 섞인 색을 보는 잔 격자 — 텍셀당 칸 수 (홀수: 가운데 칸 = 텍셀 가운데)
 
 
 # ---------------------------------------------------------------- 양보
@@ -122,6 +131,25 @@ def diff(bgr, t) -> np.ndarray:
     return np.abs(np.asarray(bgr).astype(np.int16) - np.asarray(t, np.int16)).max(-1)
 
 
+def blend_axis(p, w=BLEND):
+    """한 축 텍셀 좌표 p (텍셀 단위) → (앞 텍셀 번호, 뒤 텍셀 무게). 텍셀 가운데 ±(1−w)/2 는 무게 0·1 그대로."""
+    i0 = np.floor(np.asarray(p, float) - 0.5).astype(np.int64)
+    if w <= 1e-6:
+        return i0, (np.asarray(p) - (i0 + 0.5) >= 0.5).astype(float)
+    return i0, np.clip((np.asarray(p) - (i0 + 0.5) - (1 - w) / 2) / w, 0.0, 1.0)
+
+
+def sample(img, u, v, w=BLEND):
+    """스포이드가 집는 색 — img (TEX×TEX×3, 행 아래부터) 를 (u, v) 에서 섞어 본 색 (반올림한 int16), w = 섞이는 폭."""
+    x0, tx = blend_axis((np.asarray(u) % 1) * TEX, w)
+    y0, ty = blend_axis((np.asarray(v) % 1) * TEX, w)
+    tx, ty = np.asarray(tx)[..., None], np.asarray(ty)[..., None]
+    xa, xb, ya, yb = x0 % TEX, (x0 + 1) % TEX, y0 % TEX, (y0 + 1) % TEX
+    P = img.astype(np.float32)
+    c = (P[ya, xa] * (1 - tx) + P[ya, xb] * tx) * (1 - ty) + (P[yb, xa] * (1 - tx) + P[yb, xb] * tx) * ty
+    return np.rint(c).astype(np.int16)
+
+
 # ---------------------------------------------------------------- 복원
 class Palette:
     """시작 화면 팔레트 안쪽(S×S BGR)에서 복원한 팔레트 (행 아래부터 = v 증가) + 화면 RGB → 텍스처 좌표 표.
@@ -166,16 +194,43 @@ class Palette:
         self.kknown = [self.known] * self.n
         self.map_sure = None
         self._stack = None
+        self._fine = {}
 
     # 스포이드 k 는 화면 칸 k 에 있다 → 그 칸 재질 팔레트
     def strip(self, a):
         return np.floor(np.asarray(a) * self.n).astype(int).clip(0, self.n - 1)
 
     def color_at(self, u, v, a=None):
+        """(u, v) 가 든 텍셀의 색 — 화면 무늬 맞추기용 (스포이드가 집는 색은 sampled)."""
         iy, ix = _tex(u, v)
         if a is None or self._stack is None:
             return self.bgr[iy, ix]
         return self._stack[self.strip(a), iy, ix]
+
+    def sampled(self, u, v, a):
+        """스포이드(화면 가로 a)가 (u, v) 에서 집는 색 — 그 칸 재질 팔레트를 섞어 본 것."""
+        return sample(self.kbgr[int(self.strip(a))], u, v)
+
+    def mat_key(self, k) -> int:
+        """칸 k 가 쓰는 팔레트 번호 — 한 재질이면 모든 칸이 같은 팔레트(0)."""
+        return int(k) if self._stack is not None else 0
+
+    def fine(self, k):
+        """칸 k 재질 팔레트를 잔 격자(텍셀당 FINE 칸, 칸 가운데)에서 섞어 본 색과, 섞인 텍셀을 다 봤나.
+        (색 int16 (T·F)×(T·F)×3, 봤나 bool) — 처음 부를 때 만든다 (해 찾기·맞았나 판정이 같이 쓴다)."""
+        key = self.mat_key(k)
+        if key not in self._fine:
+            n = TEX * FINE
+            i0, t = blend_axis((np.arange(n) + 0.5) / FINE)
+            a, b = i0 % TEX, (i0 + 1) % TEX
+            P, K = self.kbgr[k].astype(np.float32), self.kknown[k]
+            tc = t[:, None, None]
+            rows = P[a] * (1 - tc) + P[b] * tc                       # 행 방향만 섞음: n × TEX × 3
+            rk = (K[a] | (t >= 1)[:, None]) & (K[b] | (t <= 0)[:, None])
+            col = rows[:, a] * (1 - t)[None, :, None] + rows[:, b] * t[None, :, None]
+            kk = (rk[:, a] | (t >= 1)[None, :]) & (rk[:, b] | (t <= 0)[None, :])
+            self._fine[key] = (np.rint(col).astype(np.int16), kk)
+        return self._fine[key]
 
     def known_at(self, u, v, a):
         iy, ix = _tex(u, v)
@@ -208,6 +263,7 @@ class Palette:
                 self.kknown.append(own | ok)
             self._stack = np.stack(self.kbgr)
             self._kstack = np.stack(self.kknown)
+            self._fine = {}
             # 측정 색 표: 그 색을 시작 화면 어느 재질 칸에서 봤나 — 화면 칸 재질과 같은 것만 대응점으로
             self.mat_idx = np.array([MATS.index(m) for m in mats])
             ky, kx = _tex(self.ku, self.kv)
@@ -485,22 +541,8 @@ OFFS = [(0, 0), (1, 0), (-1, 0), (0, 1), (0, -1), (0.7, 0.7), (-0.7, 0.7), (0.7,
 
 
 def predicted(pal, drops, pos, rot, scale):
-    return [pal.color_at(*uv_of(np.array(a), np.array(b), pos, rot, scale), np.array(a)) for a, b in drops]
-
-
-def colors_ok(pal, m, drops, targets, tols, margin_px=1.0):
-    """지금 상태에서 스포이드마다 둘레 margin_px 까지 집을 색이 모두 목표 오차 안이고 아는 텍셀인가.
-    targets: 목표 색 BGR, tols: 색마다 오차."""
-    S = pal.S
-    for (a, b), t, tol in zip(drops, targets, tols):
-        for ex, ey in OFFS:
-            aa, bb = np.array(a + ex * margin_px / S), np.array(b + ey * margin_px / S)
-            u, v = uv_of(aa, bb, m[0], m[1], m[2])
-            if not pal.known_at(u, v, np.array(a)):
-                return False
-            if diff(pal.color_at(u, v, np.array(a)), t) > tol:
-                return False
-    return True
+    """그 자세에서 스포이드마다 집을 색 (섞인 색, BGR)."""
+    return [pal.sampled(*uv_of(np.array(a), np.array(b), pos, rot, scale), a) for a, b in drops]
 
 
 def best_pos(drops, goal, m):

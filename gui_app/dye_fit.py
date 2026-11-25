@@ -344,10 +344,11 @@ class FitAssist:
                     ok, m = drv.run()
             finally:
                 hands.close()
-            log.info("염색 자동 맞추기 %s", "맞춤" if ok else "못 맞춤")
-            # 마지막 판정은 게임이 띄운 색으로 (tracker 가 멈춘 화면을 다시 읽을 때까지 잠깐)
-            caught = False
-            for _ in range(6):
+            log.info("염색 자동 맞추기 %s (%s)", "맞춤" if ok else "못 맞춤", "말풍선" if drv.by_label else "계산")
+            # 마지막 판정은 게임이 띄운 색으로 — 자동이 말풍선으로 확인했으면 그대로, 아니면 tracker 가 멈춘
+            # 화면을 다시 읽을 때까지 잠깐
+            caught = ok and drv.by_label
+            for _ in range(0 if caught else 6):
                 time.sleep(0.25)
                 if self.st is not None and sess.caught(self.st.rings):
                     caught = True

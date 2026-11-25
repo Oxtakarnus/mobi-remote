@@ -44,15 +44,24 @@ def hex_of(c):
 
 
 def bgr_targets(pal, drops, pos, rot, scale):
-    return [np.asarray(c, np.int16) for c in FT.predicted(pal, drops, pos, rot, scale)]
+    """그 자세에서 스포이드마다 든 텍셀 색 (BGR) — 목표 색은 텍셀 색으로 잡는다."""
+    return [np.asarray(pal.color_at(*FT.uv_of(np.array(a), np.array(b), pos, rot, scale), np.array(a)), np.int16)
+            for a, b in drops]
+
+
+def colors_ok(pal, m, drops, targets, tols, margin_px):
+    """계산으로 자세 m 에서 스포이드마다 둘레 margin_px 까지 섞인 색이 목표 오차 안인가."""
+    return PR.regions_ok(PR.regions_of(pal, drops, targets, tols), pal.S, drops, m, margin_px)
 
 
 class FakeGame:
     """자동 맞추기 상대 — 입력을 받아 상태를 바꾸고 그 상태의 화면을 그린다.
-    실기처럼 회전은 처음 1° 가 먹히고, 화면 시계 방향이 rot 를 줄이며, 휠 한 칸은 ×1.01."""
+    실기처럼 회전은 처음 1° 가 먹히고, 화면 시계 방향이 rot 를 줄이며, 휠 한 칸은 ×1.01.
+    끌기는 커서가 정수 픽셀이라 정수 px 만 먹는다. 스포이드 색(말풍선)은 섞인 색 (FT.sample, 폭 blend —
+    계산 쪽 FT.BLEND 와 일부러 다르게), shift: 스포이드가 실제로 집는 자리가 고리 가운데에서 어긋난 만큼 (px)."""
 
-    def __init__(self, tex, S):
-        self.tex, self.S = tex, S
+    def __init__(self, tex, S, blend=0.7, shift=(0.0, 0.0), drops=DROPS):
+        self.tex, self.S, self.blend, self.shift, self.drops = tex, S, blend, shift, drops
         self.pos, self.rot, self.scale = (0.0, 0.0), 0.0, 1.0
 
     def frame(self):
@@ -71,7 +80,18 @@ class FakeGame:
         self.pos = (self.pos[0] * k, self.pos[1] * k)
 
     def drag(self, x1, y1, x2, y2):
-        self.pos = (self.pos[0] + (x2 - x1) / self.S, self.pos[1] - (y2 - y1) / self.S)
+        dx, dy = round(x2) - round(x1), round(y2) - round(y1)
+        self.pos = (self.pos[0] + dx / self.S, self.pos[1] - dy / self.S)
+
+    def color(self, a, b):
+        """스포이드 (a, b) 가 지금 집는 색 (BGR)."""
+        u, v = FT.uv_of(np.array(a + self.shift[0] / self.S), np.array(b - self.shift[1] / self.S),
+                        self.pos, self.rot, self.scale)
+        return FT.sample(self.tex, u, v, self.blend)
+
+    def labels(self, frame=None):
+        """말풍선 색 — 왼쪽 스포이드부터."""
+        return [hex_of(self.color(a, b)) for a, b in sorted(self.drops)]
 
 
 def rings_of(S, drops=DROPS):
@@ -111,6 +131,31 @@ class FitTest(unittest.TestCase):
             self.assertLess(FT.Palette(render(tex, S, *pose)).start_score, FT.START_OK, pose)
 
 
+class SampleTest(unittest.TestCase):
+    """스포이드가 집는 섞인 색 (FT.sample) 과 해 찾기가 쓰는 잔 격자 (Palette.fine)."""
+
+    def test_sample_center_and_edge(self):
+        img = np.zeros((FT.TEX, FT.TEX, 3), np.uint8)
+        img[10, 20] = (200, 100, 50)
+        uv = lambda x, y: ((x + 0.5) / FT.TEX, (y + 0.5) / FT.TEX)   # noqa: E731  텍셀 (x, y) 가운데
+        self.assertEqual(FT.sample(img, *uv(20, 10)).tolist(), [200, 100, 50])
+        # 가운데에서 (1 − w)/2 안쪽은 그대로, 경계(반 텍셀)에서는 이웃과 반반
+        u, v = uv(20, 10)
+        self.assertEqual(FT.sample(img, u + 0.09 / FT.TEX, v, 0.8).tolist(), [200, 100, 50])
+        self.assertEqual(FT.sample(img, u + 0.5 / FT.TEX, v, 0.8).tolist(), [100, 50, 25])
+        self.assertEqual(FT.sample(img, u + 0.51 / FT.TEX, v, 0.0).tolist(), [0, 0, 0])   # 폭 0 = 가장 가까운 텍셀
+
+    def test_fine_grid_matches_sample(self):
+        tex = texture(2, block=3)
+        pal = FT.Palette(render(tex, 320, (0, 0), 0, 1))
+        col, known = pal.fine(0)
+        n = FT.TEX * FT.FINE
+        rng = np.random.default_rng(0)
+        ys, xs = rng.integers(0, n, 200), rng.integers(0, n, 200)
+        got = FT.sample(pal.bgr, (xs + 0.5) / n, (ys + 0.5) / n)
+        self.assertTrue((np.abs(got - col[ys, xs]) <= 1).all())
+
+
 # ---------------------------------------------------------------- 두 점 짝 해 찾기
 class PairsTest(unittest.TestCase):
     @classmethod
@@ -122,7 +167,7 @@ class PairsTest(unittest.TestCase):
     def check(self, found, drops, tl, tols):
         self.assertTrue(found)
         for rot, scale, pos, tier, cost in found:
-            self.assertTrue(FT.colors_ok(self.pal, (pos, rot, scale), drops, tl, tols, margin_px=PR.TIERS[tier]))
+            self.assertTrue(colors_ok(self.pal, (pos, rot, scale), drops, tl, tols, margin_px=PR.TIERS[tier]))
             n = math.log(scale) / PR.LN_W            # 배율은 휠 칸
             self.assertAlmostEqual(n, round(n), 6)
             self.assertTrue(FT.SCALE_MIN <= scale <= FT.SCALE_MAX)
@@ -157,7 +202,7 @@ class PairsTest(unittest.TestCase):
         for rot, scale, pos, tier, cost in found:
             self.assertAlmostEqual(scale, s0, 9)
             self.assertLessEqual(abs(AF.wrap(rot - 10.0)), 8.0 + 1e-9)
-            self.assertTrue(FT.colors_ok(self.pal, (pos, rot, scale), drops, tl, [3, 3, 3], margin_px=PR.TIERS[tier]))
+            self.assertTrue(colors_ok(self.pal, (pos, rot, scale), drops, tl, [3, 3, 3], margin_px=PR.TIERS[tier]))
 
     def test_single_drop_drags_only(self):
         drops = [(0.4, 0.55)]
@@ -166,7 +211,26 @@ class PairsTest(unittest.TestCase):
         self.assertTrue(found)
         rot, scale, pos, tier, cost = found[0]
         self.assertEqual((rot, scale), (0.0, 1.0))
-        self.assertTrue(FT.colors_ok(self.pal, (pos, rot, scale), drops, tl, [3], margin_px=PR.TIERS[tier]))
+        self.assertTrue(colors_ok(self.pal, (pos, rot, scale), drops, tl, [3], margin_px=PR.TIERS[tier]))
+
+    def test_isolated_texel_has_no_margin(self):
+        # 같은 색이 외딴 텍셀 하나와 6×6 덩어리에 있으면 덩어리를 고른다 — 외딴 텍셀은 스포이드가 이웃과 섞인 색을 집는다
+        tex = texture(4)
+        c = np.array([17, 203, 99], np.uint8)
+        tex[100, 100] = c
+        tex[40:46, 160:166] = c
+        pal = FT.Palette(render(tex, self.S, (0, 0), 0, 1))
+        drops = [(0.4, 0.55)]
+        found = PR.solve_pairs(pal, drops, [c.astype(np.int16)], [3], limit=200)
+        self.assertTrue(found)
+        where = []
+        for rot, scale, pos, tier, cost in found:
+            iy, ix = FT._tex(*FT.uv_of(np.array(drops[0][0]), np.array(drops[0][1]), pos, rot, scale))
+            where.append(((int(iy), int(ix)), tier))
+        (iy, ix), tier = where[0]
+        self.assertTrue(40 <= iy < 46 and 160 <= ix < 166, where[0])
+        self.assertLessEqual(tier, 1)
+        self.assertTrue(all(t == len(PR.TIERS) - 1 for p, t in where if p == (100, 100)))
 
     def test_missing_color(self):
         drops = [(0.2, 0.35), (0.8, 0.6)]
@@ -281,22 +345,67 @@ class AutoDriverTest(unittest.TestCase):
         p.start()
         self.addCleanup(p.stop)
 
-    def run_case(self, seed, pose):
-        tex, S = texture(seed), 320
-        game = FakeGame(tex, S)
-        sess = AF.Session(game.frame(), D.Palette(0, 0, S, S), rings_of(S), [])
+    def run_case(self, seed, pose, tex=None, spoil=None, **kw):
+        """seed 그림에서 pose 자리 세 색을 목표로 자동 맞추기. spoil(game, sess): 해를 찾은 뒤 게임만 바꾼다."""
+        tex, S = (texture(seed) if tex is None else tex), 320
         tg = [D.target(hex_of(texel(tex, a, b, *pose)), 3) for a, b in DROPS]
+        game = FakeGame(tex.copy(), S, **kw)
+        sess = AF.Session(game.frame(), D.Palette(0, 0, S, S), rings_of(S), [])
         self.assertTrue(sess.solve(tg, AF.START_POSE))
+        if spoil:
+            spoil(game, sess)
         sess.last = AF.START_POSE
-        ok, m = AF.AutoDriver(sess, game.frame, game, threading.Event()).run()
-        self.assertTrue(ok, f"자세 {m and (round(m[1], 2), round(m[2], 4))} 목표 {sess.goal[:2]}")
-        self.assertTrue(sess.ok(m))
+        drv = AF.AutoDriver(sess, game.frame, game, threading.Event(), read=game.labels)
+        ok, m = drv.run()
+        self.assertTrue(ok, f"자세 {m and (round(m[1], 2), round(m[2], 4))} 목표 {sess.goal[:2]} 말풍선 {game.labels()}")
+        self.assertTrue(drv.by_label)
+        self.assertTrue(sess.caught_hex(game.labels()))           # 게임이 띄운 색으로 맞았다
+        return drv, sess
 
     def test_reaches_goal(self):
         self.run_case(3, ((0.1, 0.05), 37.0, 1.0))
 
     def test_reaches_zoomed_goal(self):
         self.run_case(5, ((-0.12, 0.2), -24.0, FT.WHEEL ** 14))
+
+    def test_feels_around_when_dropper_is_off(self):
+        # 스포이드가 실제로 집는 자리가 고리 가운데에서 1.4px 어긋나 계산 자리에선 안 맞는다 → 말풍선을 보며 둘레를 끈다
+        drv, _ = self.run_case(3, ((0.1, 0.05), 37.0, 1.0), shift=(1.4, -1.1))
+        self.assertGreater(drv.probes, 0)
+
+    def test_locate_finds_dropper_offset(self):
+        # 말풍선 세 색으로 스포이드가 실제로 집는 자리 (고리 가운데에서 어긋난 만큼)를 역으로 찾는다
+        tex, S = texture(8, block=1), 749
+        drops = [(round(a * S) / S, 1 - round((1 - b) * S) / S) for a, b in DROPS]   # 고리 자리 = 정수 px
+        game = FakeGame(tex, S, shift=(1.5, -0.75), drops=drops)
+        sess = AF.Session(game.frame(), D.Palette(0, 0, S, S), rings_of(S, drops), [])
+        drv = AF.AutoDriver(sess, game.frame, game, threading.Event(), read=game.labels)
+        d = drv.locate(AF.START_POSE, game.labels())
+        self.assertIsNotNone(d)
+        self.assertLess(math.hypot(d[0] - 1.5, d[1] + 0.75), 0.3, d)
+        self.assertIsNone(drv.locate(AF.START_POSE, [None, game.labels()[1], None]))   # 하나로는 못 찾는다
+
+    def test_bans_wrong_color_and_finds_another(self):
+        # 계산이 고른 자리의 1번 색이 게임에선 다르다 (복원 색이 틀린 셈). 같은 세 색을 다른 자리에도 심어 두면
+        # 둘레를 끌어 봐도 안 될 때 그 무리를 빼고 다시 찾아 그 자리로 간다
+        pose, other = ((0.1, 0.05), 37.0, 1.0), ((-0.3, -0.2), -12.0, 1.0)
+        tex = texture(3)
+        for a, b in DROPS:
+            iy, ix = (int(x) for x in FT._tex(*FT.uv_of(np.array(a), np.array(b), *other)))
+            tex[iy - 2:iy + 3, ix - 2:ix + 3] = texel(tex, a, b, *pose)
+
+        def spoil(game, sess):
+            g = sess.goal
+            a, b = sess.drops[0]
+            iy, ix = (int(x) for x in FT._tex(*FT.uv_of(np.array(a), np.array(b), g[2], g[0], g[1])))
+            sl = (slice(iy - 6, iy + 7), slice(ix - 6, ix + 7))
+            c = tex[iy, ix]
+            game.tex[sl] = np.where((game.tex[sl] == c).all(-1)[..., None], ((c.astype(int) + 90) % 256).astype(np.uint8),
+                                    game.tex[sl])
+
+        drv, sess = self.run_case(3, pose, tex=tex, spoil=spoil)
+        self.assertGreaterEqual(drv.resolves, 1)
+        self.assertEqual(sess.use, [0, 1, 2])
 
     def test_stops(self):
         tex, S = texture(3), 320
@@ -312,7 +421,7 @@ class AutoDriverTest(unittest.TestCase):
 
 # ---------------------------------------------------------------- 단축키 흐름 (gui_app/dye_fit.FitAssist)
 class _Ring:
-    """스포이드 — hex 는 게임이 지금 띄우는 색 (지금 자세에서 스포이드 자리 텍셀)."""
+    """스포이드 — hex 는 게임이 지금 띄우는 색 (지금 자세에서 스포이드 자리 섞인 색)."""
 
     def __init__(self, game, a, b):
         self.game, self.a, self.b = game, a, b
@@ -320,8 +429,7 @@ class _Ring:
 
     @property
     def hex(self):
-        g = self.game
-        return hex_of(texel(g.tex, self.a, self.b, g.pos, g.rot, g.scale))
+        return hex_of(self.game.color(self.a, self.b))
 
 
 class _NoHands:
