@@ -899,6 +899,15 @@ tr.sec .muted { font-weight: 400; letter-spacing: 0; margin-left: 4px; }
 }
 .dye-no:hover { outline: 2px solid var(--accent); outline-offset: 1px; }
 
+/* 줄 왼쪽 손잡이 — 끌어서 칸 순서를 바꾼다 (번호 = 왼쪽부터 몇 번째 스포이드) */
+.dye-grip {
+  flex: none; width: 12px; text-align: center; font-size: 15px; line-height: 1;
+  color: var(--fg-mute); cursor: grab; user-select: none; touch-action: none;
+}
+.dye-grip:hover { color: var(--fg-dim); }
+.dye-row.dragging { opacity: .55; }
+#dye-slots.sorting, #dye-slots.sorting .dye-grip { cursor: grabbing; user-select: none; }
+
 /* 사슬 끝까지 세운 가공 차례 */
 .plan-steps { margin: 6px 0 0; padding-left: 20px; }
 .plan-steps li { font-size: 12px; line-height: 1.8; }
@@ -1073,7 +1082,7 @@ input[type="number"].num-in { min-width: 0; width: 72px; }
 select.q-who-pick { width: 100%; padding: 6px 8px; margin: 6px 0; }
 
 /* 재질별로 집을 수 있나 (색 칸 아래 한 줄) — 넉넉·보통 초록, 좁음·경계뿐 노랑, 없음 흐리게 */
-.dye-reach { display: flex; flex-wrap: wrap; gap: 4px; margin: -4px 0 8px 32px; min-height: 0; }
+.dye-reach { display: flex; flex-wrap: wrap; gap: 4px; margin: -4px 0 8px 52px; min-height: 0; }
 .dye-reach:empty { display: none; }
 .dye-reach-tag { font-size: 11px; padding: 0 6px; border-radius: 9px; border: 1px solid var(--line-2); color: var(--fg-mute); cursor: default; }
 .dye-reach-tag.lv-wide, .dye-reach-tag.lv-some { color: var(--ok); border-color: var(--ok-line); background: var(--ok-bg); }

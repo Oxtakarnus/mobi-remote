@@ -51,7 +51,9 @@ function paintDyeSlots() {
   $('#dye-slots').innerHTML = colors.map((c, i) => {
     const ok = /^#[0-9a-f]{6}$/i.test(c);
     const slot = dyeUI.marks[i] || '#888';
-    return '<div class="dye-slot">' +
+    return '<div class="dye-row" data-dye-row="' + i + '">' +
+      '<div class="dye-slot">' +
+      '<span class="dye-grip" data-dye-grip="' + i + '" title="끌어서 순서 바꾸기">≡</span>' +
       '<button class="dye-no ' + bgClass(slot) + '" data-dye-mark="' + i + '"' +
       ' title="눌러서 표시 색 바꾸기 — 게임 위 점·스포이드 테 색">' + (i + 1) + '</button>' +
       // 네모를 누르면 색 편집이 열린다. 버튼을 따로 두면 줄만 길어지고, 누를 곳이 색 옆에
@@ -66,7 +68,8 @@ function paintDyeSlots() {
       '</span>' +
       '<button class="q-btn" data-dye-clear="' + i + '" title="비우기">✕</button>' +
       '</div>' +
-      '<div class="dye-reach" data-dye-reach="' + i + '"></div>';
+      '<div class="dye-reach" data-dye-reach="' + i + '"></div>' +
+      '</div>';
   }).join('');
   // 색 미리보기는 CSP 때문에 인라인 style 을 못 쓴다 — 클래스로 만들어 붙인다.
   // className 을 통째로 갈아엎으면 테두리색까지 날아가므로 더하기만 한다.
@@ -650,6 +653,71 @@ async function setDyeColor(slot, hex) {
   colors[slot] = hex;
   dyeUI.prefs = await mm.dye.update(cur.id, { colors: colors });
   paintDyeSlots();
+}
+
+/** 찾을 색 칸을 order(옛 칸 번호를 새 순서대로) 대로 옮겨 저장한다. 번호·표시 색은 자리에 남는다. */
+async function moveDyeSlots(order) {
+  const cur = dyeCurrent();
+  try {
+    if (!cur) return;
+    const colors = cur.colors || ['', '', ''], tols = cur.tol || [5, 5, 5];
+    dyeUI.prefs = await mm.dye.update(cur.id, {
+      colors: order.map((i) => colors[i] || ''),
+      tol: order.map((i) => (tols[i] == null ? 5 : tols[i])),
+    });
+  } catch (err) {
+    toast('순서를 바꾸지 못했습니다', err.message, 'bad');
+  } finally {
+    paintDyeSlots();
+  }
+}
+
+/**
+ * 찾을 색 순서 바꾸기 — 줄 왼쪽 손잡이를 끌어 옮기고 놓으면 저장한다. 처음 한 번만 부른다.
+ * 번호 = 왼쪽부터 몇 번째 스포이드 (자리 찾기가 이 순서로 짝짓는다) — 옷마다 순서를 맞출 수 있게.
+ * 끄는 중 줄을 DOM 에서 옮기면 포인터 캡처가 풀리므로 움직임·놓기는 문서에서 받는다.
+ */
+function wireDyeReorder() {
+  const list = $('#dye-slots');
+  let drag = null;
+  list.addEventListener('pointerdown', (e) => {
+    const grip = e.target instanceof Element ? e.target.closest('[data-dye-grip]') : null;
+    if (!grip || e.button !== 0) return;
+    e.preventDefault();
+    const act = document.activeElement;   // 치던 hex 칸은 먼저 저장되게 (change 는 blur 때 난다)
+    if (act instanceof HTMLElement && list.contains(act)) act.blur();
+    drag = grip.closest('.dye-row');
+    if (!drag) return;
+    drag.classList.add('dragging');
+    list.classList.add('sorting');
+  });
+  // 끄는 사이 칸이 새로 그려지면(저장·프리셋 바뀜) 잡은 줄이 떨어져 나간다 — 그때는 그만둔다
+  const stop = () => {
+    if (drag) drag.classList.remove('dragging');
+    list.classList.remove('sorting');
+    drag = null;
+  };
+  document.addEventListener('pointermove', (e) => {
+    if (!drag) return;
+    if (!list.contains(drag)) return void stop();
+    // 끄는 줄을 뺀 줄 중 가운데가 포인터보다 아래인 첫 줄 앞으로 (없으면 맨 끝)
+    const next = Array.from(list.querySelectorAll('.dye-row')).find((r) => {
+      if (r === drag) return false;
+      const b = r.getBoundingClientRect();
+      return e.clientY < b.top + b.height / 2;
+    }) || null;
+    if (next !== drag.nextElementSibling) list.insertBefore(drag, next);
+  });
+  const end = () => {
+    if (!drag) return;
+    const live = list.contains(drag);
+    stop();
+    if (!live) return;
+    const order = Array.from(list.querySelectorAll('.dye-row')).map((r) => +r.dataset.dyeRow);
+    if (order.some((v, k) => v !== k)) moveDyeSlots(order);
+  };
+  document.addEventListener('pointerup', end);
+  document.addEventListener('pointercancel', end);
 }
 
 async function pickDyeMark(slot) {

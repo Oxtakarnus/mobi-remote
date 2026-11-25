@@ -131,6 +131,7 @@ function wire() {
   });
 
   wireColorPicker();
+  wireDyeReorder();
 
   /*
    * 화살표 키로 커서 1px.
