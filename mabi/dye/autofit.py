@@ -12,6 +12,9 @@
 
 조작 실측 (2026-10-31): 화면 시계 방향으로 그리면 rot 이 준다. 작은 회전은 처음 ~1° 가 먹힌다.
 휠 한 칸 = 정확히 ×1.01. 회전 반지름은 1080p(팔레트 749px)에서 340px 로 시험했다 → 팔레트 크기에 비례.
+2026-11-25 로그의 회전들: 먹힌 각도는 원의 첫 칸이었다 — 두 칸으로 그린 작은 회전은 안 먹히거나 반 또는 전부,
+세 칸은 ⅓, 큰 회전은 1° (나머지 칸은 그대로). 시작점으로 옮기자마자 원을 그려 게임이 시작점을 늦게 잡은 것으로
+보고 시작점에서 잠깐 멈춘다. 먹히는 각도(rot_dead)는 회전마다 다시 잰다.
 """
 from __future__ import annotations
 
@@ -32,6 +35,7 @@ from . import pairs as PR
 log = logging.getLogger("mabi")
 
 ROT_R = 340 / 749          # 회전 원 반지름 ÷ 팔레트 폭
+ROT_HOLD = 0.15            # 회전 시작점에서 원을 그리기 전에 멈추는 시간 (초) — 0.03 이면 첫 칸이 자주 먹혔다
 DRAG_MAX = 300 / 749       # 한 번에 끄는 거리 ÷ 팔레트 폭
 START_POSE = ((0.0, 0.0), 0.0, 1.0, 0, 1.0)   # 시작 자세 (pos, rot, scale, 근거, 일치)
 
@@ -365,7 +369,7 @@ class Mouse:
             I.mouse_event(I.MOUSEEVENTF_RIGHTDOWN)
             time.sleep(0.08)
             self.move(cx + sx, cy + sy)            # 축에서 시작점으로 한 번에 (첫 움직임의 각도 = 시작 각도)
-            time.sleep(0.03)
+            time.sleep(ROT_HOLD)
             n = max(2, int(abs(deg)))
             for i in range(1, n):
                 self._check(I.MOUSEEVENTF_RIGHTUP)
@@ -449,12 +453,14 @@ class AutoDriver:
     RETRIES = 2               # 목표 텍셀을 빼고 다시 찾는 횟수
     NEAR_PX = 2               # 둘레 격자 반지름 (px)
     LOC_OK = 6.0              # 역으로 찾은 자리를 믿는 스포이드 평균 색 차이 (칸별 최대)
+    ROT_FINE = 0.15           # 이보다 작은 회전 차이는 미세 회전을 안 한다 — 스포이드가 0.5px 도 안 움직이고
+                              # 회전 결과가 ±0.08° 씩 흔들려 (2026-11-25 0.04° 를 맞추려 1° 를 넣어 왔다 갔다 했다)
 
     def __init__(self, sess: Session, snap, mouse: Mouse, stop: threading.Event, on_step=None, read=None):
         self.s, self.snap, self.mouse, self.stop = sess, snap, mouse, stop
         self.on_step = on_step or (lambda m, t: None)
         self.read = read or sess.labels
-        self.rot_dead = 1.0       # 작은 회전에서 먹히는 각도 (매번 다시 잰다)
+        self.rot_dead = 0.0       # 그린 원에서 먹히는 각도 — 첫 회전(보통 큰 회전)부터 회전마다 다시 잰다
         self.rot_sign = -1.0      # 화면에서 그린 각도(시계 +) → rot 는 반대로
         self.wheel_k = math.log(FT.WHEEL)
         self.cx, self.cy = sess.to_frame(0.5, 0.5)
@@ -635,25 +641,22 @@ class AutoDriver:
                       "" if step is None else f" · 끌 자리 {step}px 여유 " +
                       ("?" if tier is None else f"{PR.TIERS[tier]:g}px" if tier < len(PR.TIERS) else "없음"))
             # 1) 회전 — 3° 넘으면 바로. 그 아래는 지금 회전으로 갈 px 격자의 여유가 1px 에 못 미칠 때만
-            #    (작은 회전은 처음 ~1° 가 먹혀 잘 안 된다 — 미세 회전은 연달아 두 번까지, 모두 다섯 번까지)
-            if abs(d_rot) > 3 or (tier is not None and tier > 1 and abs(d_rot) > 0.03 and fine < 2 and fine_all < 5
-                                  and (fine == 0 or abs(d_rot) > 0.08)):
+            #    (미세 회전은 연달아 두 번까지, 모두 다섯 번까지)
+            if abs(d_rot) > 3 or (tier is not None and tier > 1 and abs(d_rot) >= self.ROT_FINE and fine < 2
+                                  and fine_all < 5):
                 fine += abs(d_rot) <= 3
                 fine_all += abs(d_rot) <= 3
                 before = m
-                cmd = d_rot + math.copysign(self.rot_dead, d_rot) if abs(d_rot) <= 3 else d_rot
+                cmd = d_rot + math.copysign(self.rot_dead, d_rot)
                 self.on_step(m, f"회전 {d_rot:+.1f}°")
                 self.mouse.rotate(self.cx, self.cy, cmd * self.rot_sign, self.R)
                 m = self.now() or m
                 got = wrap(m[1] - before[1])
-                if abs(cmd) <= 4:
-                    lost = abs(cmd) - abs(got) if got * cmd >= 0 else abs(cmd)
-                    self.rot_dead = max(0.0, min(2.5, lost))
-                if abs(d_rot) > 3 and abs(got) > 1:
-                    self.rot_sign *= d_rot / got if abs(d_rot / got) < 3 else 1
-                    self.rot_sign = max(-1.3, min(1.3, self.rot_sign)) if abs(self.rot_sign) > 0.7 else \
-                        math.copysign(1, self.rot_sign)
-                log.debug("염색 자동 회전: 명령 %+.2f° → 돈 %+.2f° (방향 %.2f · 덜 먹힘 %.2f°)",
+                if abs(cmd) > 3 and abs(got) > 1 and got * cmd < 0:
+                    self.rot_sign = -self.rot_sign       # 반대로 돌았다
+                elif got * cmd >= 0 and abs(cmd) - abs(got) <= 2.5:   # 안 돈 큰 회전(창이 가려짐 등)은 빼고
+                    self.rot_dead = max(0.0, abs(cmd) - abs(got))
+                log.debug("염색 자동 회전: 명령 %+.2f° → 돈 %+.2f° (방향 %+.0f · 덜 먹힘 %.2f°)",
                           cmd, got, self.rot_sign, self.rot_dead)
                 continue
             # 2) 배율 — 휠 반 칸보다 차이가 클 때만
@@ -679,9 +682,14 @@ class AutoDriver:
             before = m
             self.on_step(m, f"끌기 {math.hypot(*step):.0f}px")
             self.drag_px(*step)
-            m = self.now() or m
-            log.debug("염색 자동 끌기: (%+d, %+d)px → 움직인 (%+.1f, %+.1f)px", step[0], step[1],
-                      (m[0][0] - before[0][0]) * s.S, -(m[0][1] - before[0][1]) * s.S)
+            if max(abs(step[0]), abs(step[1])) <= 1:
+                # 1px 끌기는 그대로 먹는다 — 다시 재면 0.1~0.3px 씩 달라 1px 을 왔다 갔다 했다 (2026-11-25)
+                m = self.shifted(before, *step)
+                log.debug("염색 자동 끌기: (%+d, %+d)px — 다시 재지 않음", step[0], step[1])
+            else:
+                m = self.now() or m
+                log.debug("염색 자동 끌기: (%+d, %+d)px → 움직인 (%+.1f, %+.1f)px", step[0], step[1],
+                          (m[0][0] - before[0][0]) * s.S, -(m[0][1] - before[0][1]) * s.S)
             fine = 0
         return m
 

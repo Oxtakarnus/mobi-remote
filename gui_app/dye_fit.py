@@ -99,7 +99,7 @@ class FitAssist:
             self.fresh = fresh
             self.opened = 0.0
             self.still = 0
-            self.start = None        # (화면, box, rings, skip, mats) — 메모리에만
+            self.start = None        # (화면, box, rings, skip, mats, 칸 재질이 갈렸나) — 메모리에만
             self.moved = False       # 시작 화면을 잡은 뒤 팔레트가 움직였나
             self.sess: AF.Session | None = None
             self.phase = IDLE
@@ -169,9 +169,11 @@ class FitAssist:
                 return
             self.still = self.still + 1 if (tr.lead_ok and not tr.moving) else 0
             if self.still >= START_STILL and time.monotonic() - self.opened >= START_AFTER:
+                mats = tr.mats_of(img)         # 팔레트를 되짚는 화면과 같은 화면으로
+                mixed = len(set(tr.bands or ())) > 1
                 self.start = (np.array(np.asarray(img)[..., :3]), b, list(tr.lead.rings),
-                              list(tr.lead.skip) + [D.frame_skip(b)], list(tr.mats) if tr.mats else None)
-                log.info("염색 시작 화면 잡음 (재질 %s)", tr.mats)
+                              list(tr.lead.skip) + [D.frame_skip(b)], list(mats) if mats else None, mixed)
+                log.info("염색 시작 화면 잡음 (재질 %s)", mats)
             return
         if tr.moving:
             self.moved = True
@@ -264,10 +266,16 @@ class FitAssist:
             self._emit_phase()
 
     def _build(self, gen):
-        frame, box, rings, skip, mats = self.start
+        frame, box, rings, skip, mats, mixed = self.start
+        refs = self.refs()
+        if refs and mixed and not mats:
+            # 재질이 다른 칸을 한 재질로 되짚으면 무늬가 안 맞아 자동 맞추기가 헤맨다 (2026-11-25)
+            log.info("염색 칸 재질을 몰라 자리 찾기를 하지 않음")
+            self._fail("옷 재질을 읽지 못했습니다 — 팔레트를 다시 열어 주세요")
+            return None
         t0 = time.monotonic()
         self._say("팔레트 읽는 중…")
-        sess = AF.Session(frame, box, rings, skip, self.refs(), mats)
+        sess = AF.Session(frame, box, rings, skip, refs, mats)
         log.info("염색 팔레트 복원 %.1fs, 재질 %s, 시작 화면 일치 %.2f",
                  time.monotonic() - t0, sess.mats, sess.pal.start_score)
         if gen != self.gen:

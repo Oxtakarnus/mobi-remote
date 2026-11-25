@@ -123,6 +123,17 @@ class DyeTracker:
         return self._emit(DyeState("waiting", text, "wait"))
 
     # ── 재질 판정 ──
+    def _judge(self, f: D.Frame, box: D.Palette) -> None:
+        """칸 경계와 칸마다 재질을 이 화면으로 잰다."""
+        self.bands = D.find_bands(f, box, len(self.lead.rings))
+        self.mats = self._band_mats(f, box)
+
+    def mats_of(self, frame) -> list[str] | None:
+        """칸 재질 — 아직 모르면 이 화면으로 다시 잰다 (맞출 자리 찾기가 시작 화면을 잡을 때)."""
+        if self.mats is None and self.box is not None and self.lead is not None and self.lead.rings:
+            self._judge(D.as_frame(frame, self.order), self.box)
+        return self.mats
+
     def _band_mats(self, f: D.Frame, box: D.Palette) -> list[str] | None:
         """칸마다 재질 (팔레트가 뜰 때 한 번 — 12~50ms). 하나라도 모르면 None."""
         g = self.gamut.get() if self.gamut else None
@@ -188,9 +199,10 @@ class DyeTracker:
             self.lead_ok = same and self.lead_still and not moved
             if not self.lead_ok:
                 self.lead, self.bands, self.lead_still = new, None, not moved
-        if self.bands is None and self.lead.rings:
-            self.bands = D.find_bands(f, box, len(self.lead.rings))
-            self.mats = self._band_mats(f, box)
+        # 재질을 모르면 멈출 때마다 다시 잰다 — 팔레트가 뜨는 중의 화면으로 재면 '모름'이 남았다
+        # (2026-11-25 하루 34판 중 2판: 섞인 옷을 한 재질로 계산해 자동 맞추기가 헤맸다)
+        if self.lead.rings and (self.bands is None or (self.mats is None and not moved)):
+            self._judge(f, box)
 
         # NOTE JS 와 같게 읽은 색을 lead 에 되쓰지 않는다 — 가려졌을 때 쓰는 '직전 값' 은
         # 처음 찾을 때 잰 색이다.

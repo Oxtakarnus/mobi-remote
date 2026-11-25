@@ -60,15 +60,16 @@ class FakeGame:
     끌기는 커서가 정수 픽셀이라 정수 px 만 먹는다. 스포이드 색(말풍선)은 섞인 색 (FT.sample, 폭 blend —
     계산 쪽 FT.BLEND 와 일부러 다르게), shift: 스포이드가 실제로 집는 자리가 고리 가운데에서 어긋난 만큼 (px)."""
 
-    def __init__(self, tex, S, blend=0.7, shift=(0.0, 0.0), drops=DROPS):
-        self.tex, self.S, self.blend, self.shift, self.drops = tex, S, blend, shift, drops
+    def __init__(self, tex, S, blend=0.7, shift=(0.0, 0.0), drops=DROPS, eat=1.0):
+        """eat: 회전마다 먹히는 각도 (0 = 시작점에서 멈춰 그려 안 먹히는 경우)."""
+        self.tex, self.S, self.blend, self.shift, self.drops, self.eat = tex, S, blend, shift, drops, eat
         self.pos, self.rot, self.scale = (0.0, 0.0), 0.0, 1.0
 
     def frame(self):
         return render(self.tex, self.S, self.pos, self.rot, self.scale)
 
     def rotate(self, cx, cy, deg, r):
-        d = math.copysign(max(0.0, abs(deg) - 1.0), deg)
+        d = math.copysign(max(0.0, abs(deg) - self.eat), deg)
         q = math.radians(-d)
         x, y = self.pos           # 가운데를 축으로 무늬가 돈다
         self.pos = (x * math.cos(q) - y * math.sin(q), x * math.sin(q) + y * math.cos(q))
@@ -368,6 +369,11 @@ class AutoDriverTest(unittest.TestCase):
     def test_reaches_zoomed_goal(self):
         self.run_case(5, ((-0.12, 0.2), -24.0, FT.WHEEL ** 14))
 
+    def test_reaches_goal_when_rotation_not_eaten(self):
+        # 먹히는 각도는 큰 회전에서 재 둔다 — 안 먹히면 미세 회전에 덧붙이지 않는다
+        drv, _ = self.run_case(3, ((0.1, 0.05), 37.0, 1.0), eat=0.0)
+        self.assertLess(drv.rot_dead, 0.1)
+
     def test_feels_around_when_dropper_is_off(self):
         # 스포이드가 실제로 집는 자리가 고리 가운데에서 1.4px 어긋나 계산 자리에선 안 맞는다 → 말풍선을 보며 둘레를 끈다
         drv, _ = self.run_case(3, ((0.1, 0.05), 37.0, 1.0), shift=(1.4, -1.1))
@@ -455,7 +461,8 @@ class FitAssistTest(unittest.TestCase):
         rings = [_Ring(self.game, a, b) for a, b in DROPS]
         targets = [D.target(hex_of(texel(self.tex, a, b, *self.GOAL)), 3) for a, b in DROPS]
         self.tr = SimpleNamespace(box=D.Palette(0, 0, self.S, self.S), lead=SimpleNamespace(rings=rings, skip=[]),
-                                  lead_ok=True, moving=False, mats=None, slot_targets=lambda: list(targets))
+                                  lead_ok=True, moving=False, mats=None, bands=None, mats_of=lambda img: None,
+                                  slot_targets=lambda: list(targets))
         self.st = SimpleNamespace(status="active", redraw=True, rings=rings)
         self.fa = dye_fit.FitAssist(repaint=lambda: None, emit=self.events.append, focus=lambda: None,
                                     rect=lambda: (0, 0, self.S, self.S), refs=lambda: None, key=lambda: "f10",
@@ -514,6 +521,17 @@ class FitAssistTest(unittest.TestCase):
         self.assertIsNotNone(self.fa.start)
         self.fa.closed()
         self.assertIsNone(self.fa.start)
+
+    def test_unknown_mixed_materials_refused(self):
+        # 재질이 갈린 옷인데 칸 재질을 모르면 한 재질로 되짚어 헤매지 않고 다시 열어 달라고 한다 (2026-11-25)
+        self.tr.bands = [(0, 100), (100, 200), (200, self.S)]
+        self.fa.refs = lambda: {"Cloth": np.zeros((8, 8, 3), np.uint8)}
+        self.fa.closed()
+        self.open_palette()
+        self.fa.press()
+        self.wait(lambda: self.fa.phase == "idle" and "재질" in self.fa.text)
+        self.assertEqual(self.fa.text, "옷 재질을 읽지 못했습니다 — 팔레트를 다시 열어 주세요")
+        self.assertIsNone(self.fa.sess)
 
     def test_retarget_clears_guide(self):
         self.fa.closed()

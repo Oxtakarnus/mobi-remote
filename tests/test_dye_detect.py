@@ -4,6 +4,7 @@
 틀 바깥에도 같은 무늬가 흐리게 깔려 있다.
 """
 import unittest
+from unittest import mock
 
 import cv2
 import numpy as np
@@ -127,6 +128,25 @@ class TrackerTest(unittest.TestCase):
         t = DyeTracker(at=(b.x / w, b.y / h, b.w / w, b.h / h))
         self.assertEqual(t.tick(img).status, "active")
         self.assertEqual(DyeTracker(at=(0.1, 0.1, 0.3, 0.3)).tick(img).status, "waiting")
+
+    def test_materials_judged_again_when_unknown(self):
+        # 팔레트가 뜨는 중의 화면으로 재면 칸 재질이 '모름'으로 남아 맞출 자리 계산이 헤맸다 (2026-11-25)
+        # — 모르면 멈춘 바퀴마다, 맞출 자리 찾기가 시작 화면을 잡을 때도 다시 잰다
+        img, b = screen()
+        t = DyeTracker()
+        t.set_targets(["#3CC828"], [3])
+        rings = [D.Ring(b.x + b.w * k // 6, b.y + b.h // 2, 9, (255, 255, 255), 1.0) for k in (1, 3, 5)]
+        answers = [None, None, ["Cloth", "Cloth", "Metal"], ["Cloth", "Metal", "Metal"]]
+        with mock.patch.object(D, "find_leaders", lambda f, box: D.Leaders(rings=list(rings))), \
+                mock.patch.object(DyeTracker, "_band_mats", lambda self, f, box: answers.pop(0)):
+            t.tick(img)                                   # 막 떴다 — 모름
+            t.tick(img)                                   # 멈췄다 — 스포이드 자리를 다시 찾으며 또 모름
+            t.tick(img)                                   # 자리를 굳힌 바퀴에도 모르면 다시 잰다
+            self.assertTrue(t.lead_ok)
+            self.assertEqual(t.mats, ["Cloth", "Cloth", "Metal"])
+            self.assertEqual(t.mats_of(img), ["Cloth", "Cloth", "Metal"])   # 알면 다시 재지 않는다
+            t.mats = None
+            self.assertEqual(t.mats_of(img), ["Cloth", "Metal", "Metal"])   # 모르면 그 화면으로 다시
 
     def test_redraw_only_when_changed(self):
         img, _ = screen()
