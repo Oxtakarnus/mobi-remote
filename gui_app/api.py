@@ -148,7 +148,7 @@ class Api(DailyApi, CharsApi, QueueApi):
         self._gui = _GuiCall()
         from mabi.runner import load_config
         title = load_config(self.paths)["game"]["window_title"]
-        self.dyes = DyeService(self.dye, self._emit, title, self.gamut)
+        self.dyes = DyeService(self.dye, self._emit, title, self.gamut, fit_key=self._fit_key_name)
         self.dyes.win = win
         self.dyes.on_active = self._dye_active
         self.dyes.set_view(self.settings.get("dyeView"))
@@ -605,6 +605,20 @@ class Api(DailyApi, CharsApi, QueueApi):
         else:
             log.info("염색 도우미 키 → 켬")
             self.dye_start()
+
+    def dye_fit(self):
+        """맞출 자리 찾기 → (한 번 더) 자동 맞추기 → (도는 중) 멈춤 — 염색 탭 단추. 단축키는 _dye_fit_key."""
+        return self.dyes.fit_press() if self.dyes else {"error": "창이 아직 없습니다"}
+
+    def _dye_fit_key(self):
+        """염색 맞추기 키(설정 game.dye_fit_key) — 염색 도우미가 켜져 있을 때만 (queue_api 단축키 감시가 부른다)."""
+        if self.dyes and self.dyes.running:
+            r = self.dyes.fit_press()
+            log.info("염색 맞추기 키 → %s", r.get("error") or ("멈춤" if r.get("stopped") else "누름"))
+
+    def _fit_key_name(self) -> str:
+        from mabi.runner import load_config
+        return str(load_config(self.paths)["game"].get("dye_fit_key") or "f10")
 
     def _grab(self, with_overlay: bool):
         """주 모니터 한 장. 레거시는 리모콘 창을 잠깐 숨겼지만(Electron 캡처는 제외가 안 들었다) mss(BitBlt)에는

@@ -67,7 +67,8 @@ def _occupancy(rgb: np.ndarray) -> np.ndarray:
 
 class Gamut:
     def __init__(self, pals: dict[str, np.ndarray]):
-        """pals: 재질 이름 → BGR 그림 (materials.load)."""
+        """pals: 재질 이름 → BGR 그림 (materials.load). 원본 그림은 맞출 자리 계산(autofit)도 쓴다."""
+        self.pals = dict(pals)
         self.tex: dict[str, np.ndarray] = {}
         self.pairs: dict[str, tuple[np.ndarray, np.ndarray]] = {}
         self.occ: dict[str, np.ndarray] = {}

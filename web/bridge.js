@@ -89,6 +89,7 @@
       reach: c('dye.reach'),
       // 레거시는 화면(렌더러)이 캡처·검출을 했다. 이제 파이썬이 하고 결과만 mm:dye-state 로 보낸다
       start: c('dye.start'), stop: c('dye.stop'), shot: c('dye.shot'), snap: c('dye.snap'),
+      fit: c('dye.fit'),   // 맞출 자리 찾기 → 자동 맞추기 → 멈춤 (단축키와 같다)
       view: c('dye.view'), editArea: c('dye.edit_area'), onView: (cb) => on('mm:dye-view', cb),
       onState: (cb) => on('mm:dye-state', cb),
       onPrefs: (cb) => on('mm:dye-prefs', cb),   // 드레스룸에서 프리셋을 더했을 때

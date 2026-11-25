@@ -6,7 +6,10 @@
 
 검출은 파이썬(mabi/dye)이 하고 게임 위 표시 창에 그린다. 리모콘 화면(웹)에는 켜짐·팔레트 찾음만 보낸다
 — 염색하는 동안은 게임을 보고 있어 리모콘의 상태 표·미리보기는 보이지도 않았다 (2026-10-31 뺌).
+
+맞출 자리 찾기·자동 맞추기는 dye_fit.FitAssist — 캡처 바퀴마다 시작 화면만 잡아 두고, 계산은 단축키를 누를 때.
 """
+import logging
 import re
 import threading
 import time
@@ -20,11 +23,13 @@ from mabi.dye import detect as D
 from mabi.dye.tracker import DyeTracker
 from mabi.window import GameWindow
 
+from .dye_fit import FitAssist
 from .dye_tab import AreaEditor, Overlay, exclude_from_capture
 from .queue_overlay import to_logical
 
 TICK = 0.12
 GATE_TEXT = "염색 미니게임을 기다리는 중…"
+log = logging.getLogger("mabi")
 
 
 def _minigame_open() -> bool | None:
@@ -58,9 +63,10 @@ class _ToGui(QObject):
 
 
 class DyeService:
-    def __init__(self, presets, emit, title: str, gamut=None):
+    def __init__(self, presets, emit, title: str, gamut=None, fit_key=None):
         """presets: PresetStore · emit(채널, 값): 화면 이벤트 · title: 게임 창 제목
-        · gamut: mabi.dye.gamut.GamutStore (못 찾은 색이 '화면 밖'인지 '없음'인지 딱지에 붙인다)."""
+        · gamut: mabi.dye.gamut.GamutStore (못 찾은 색이 '화면 밖'인지 '없음'인지 딱지에 붙인다 — 재질 원본 그림은
+        맞출 자리 계산도 쓴다) · fit_key(): 염색 맞추기 키 이름 (안내 문구·자동 중 멈춤 감시에서 뺄 키)."""
         self.presets, self.emit, self.gamut = presets, emit, gamut
         self.game = GameWindow(title)
         self.overlay: Overlay | None = None
@@ -75,6 +81,9 @@ class DyeService:
         self.editor: AreaEditor | None = None
         self.on_active = None  # on_active(bool): 팔레트가 뜨고 사라질 때 (커서 1px 단축키를 그동안만 건다)
         self.active = False
+        self._rect_last = None
+        self.fit = FitAssist(repaint=self._repaint, emit=lambda d: self.emit("mm:dye-state", d),
+                             focus=self._focus, rect=self._rect, refs=self._refs, key=fit_key or (lambda: "f10"))
 
     # ---- 제어 (작업 스레드에서 불려도 된다) ----
     def start(self) -> dict:
@@ -84,6 +93,7 @@ class DyeService:
         self.tracker = DyeTracker()
         self.tracker.set_targets(cur.get("colors"), cur.get("tol"))
         self.tracker.set_gamut(self.gamut)
+        self.fit.reset(fresh=False)  # 닫힌 것을 한 번 봐야 다음에 뜨는 팔레트를 시작 상태로 믿는다
         self.set_view(self.view)
         self.running = True
         self.thread = threading.Thread(target=self._loop, name="dye", daemon=True)
@@ -97,6 +107,7 @@ class DyeService:
 
     def stop(self) -> dict:
         self.running = False
+        self.fit.reset(fresh=False)  # 자동 맞추기·계산도 멈춘다
         if self.thread:
             self.thread.join(2)
         self._set_active(False)
@@ -108,6 +119,13 @@ class DyeService:
         if self.tracker:
             cur = self.presets.current() or {}
             self.tracker.set_targets(cur.get("colors"), cur.get("tol"))
+            self.fit.retarget()
+
+    def fit_press(self) -> dict:
+        """맞출 자리 찾기 → (한 번 더) 자동 맞추기 → (도는 중) 멈춤. 단축키·염색 탭 단추가 부른다."""
+        if not self.running:
+            return {"error": "염색 도우미가 꺼져 있습니다"}
+        return self.fit.press()
 
     def set_view(self, view: dict) -> None:
         self.view = clean_view(view)
@@ -161,9 +179,11 @@ class DyeService:
         with mss.mss() as sct:
             while self.running:
                 t0 = time.monotonic()
-                if _minigame_open() is False:
+                gate = _minigame_open()
+                if gate is False:
                     # 미니게임이 안 열렸으면 화면을 보지 않는다 — 비슷한 어두운 테두리 창을 팔레트로 잡지 않게 (2026-11-02 사용자)
                     st = self.tracker.idle(GATE_TEXT)
+                    self.fit.closed()
                     self._set_active(False)
                     rect = self._rect()
                     if st.redraw and rect is not None:
@@ -182,11 +202,32 @@ class DyeService:
                     time.sleep(1)
                     continue
                 self._set_active(st.palette is not None)
+                self._rect_last = rect
+                try:
+                    self.fit.observe(img, st, self.tracker, gate)
+                except Exception:  # 맞출 자리 쪽이 틀려도 도우미는 돈다
+                    log.exception("염색 맞출 자리 바퀴 실패")
                 if st.redraw:
                     self.gui.state.emit(st, rect)
                 rest = TICK - (time.monotonic() - t0)
                 if rest > 0:
                     time.sleep(rest)
+
+    def _repaint(self) -> None:
+        """맞출 자리 안내가 바뀌었다 — 마지막 상태로 게임 위 표시를 다시 그린다 (어느 스레드에서든)."""
+        if self.running and self.tracker and self._rect_last:
+            self.gui.state.emit(self.tracker.last, self._rect_last)
+
+    def _focus(self) -> None:
+        try:
+            self.game.focus()
+        except RuntimeError:
+            pass
+
+    def _refs(self):
+        """재질 원본 그림 (게임에서 꺼낸 복사본, GamutStore 가 이미 읽어 둔 것)."""
+        g = self.gamut.get() if self.gamut else None
+        return g.pals if g is not None else None
 
     def _set_active(self, on: bool) -> None:
         if on == self.active:
@@ -227,6 +268,6 @@ class DyeService:
         scale = 1 / r
         ov.items = [] if st.hidden else ddraw.overlay_items(st, scale=scale, origin=(lx - g.x(), ly - g.y()),
                                                              screen_w=g.width(), measure=ov.measure,
-                                                             slots=self.view["marks"])
+                                                             slots=self.view["marks"], guide=self.fit.overlay())
         ov.update()
         self.emit("mm:dye-state", {"found": st.palette is not None, "text": st.text})

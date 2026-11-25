@@ -199,6 +199,7 @@ function wire() {
   mm.dye.onPrefs(() => { loadDye(); });
   $('#dye-start').addEventListener('click', startDye);
   $('#dye-stop').addEventListener('click', stopDye);
+  $('#dye-fit').addEventListener('click', fitDye);
   $('#dye-preset').addEventListener('change', async (e) => {
     dyeUI.prefs = await mm.dye.select(e.target.value);
     paintDyeSlots();

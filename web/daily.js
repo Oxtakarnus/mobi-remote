@@ -443,6 +443,7 @@ function paintPathSettings(s) {
   const fkeys = (cur) => selectOptions(Array.from({ length: 12 }, (_, i) => ['f' + (i + 1), 'F' + (i + 1)]), cur);
   $('#opt-stop-key').innerHTML = fkeys(s.stop_key);
   $('#opt-dye-key').innerHTML = fkeys(s.dye_key);
+  $('#opt-dye-fit-key').innerHTML = fkeys(s.dye_fit_key);
   $('#opt-fit-display').checked = s.fit_display !== false;
   $('#opt-restart-auto').checked = s.restart_auto !== false;
   ['data', 'logs', 'shots'].forEach((k) => { $('#dl-p-' + k).value = s.paths[k] || ''; });
@@ -450,7 +451,9 @@ function paintPathSettings(s) {
 }
 
 async function saveRemoteKeys() {
-  const r = await mm.daily.saveSettings({ stop_key: $('#opt-stop-key').value, dye_key: $('#opt-dye-key').value });
+  const r = await mm.daily.saveSettings({
+    stop_key: $('#opt-stop-key').value, dye_key: $('#opt-dye-key').value, dye_fit_key: $('#opt-dye-fit-key').value,
+  });
   if (!(r && r.error)) { dl.settings = Object.assign(dl.settings || {}, { stop_key: $('#opt-stop-key').value }); paintStopKey(); }
   $('#opt-rkeys-msg').textContent = r && r.error ? r.error : '저장했습니다';
   if (!(r && r.error)) paintPathSettings(await mm.daily.settings());

@@ -32,6 +32,9 @@ BUSY = {"daily": "일일 숙제가 도는 중입니다", "scan": "캐릭터 자�
         "display": "화면 설정 작업 중입니다", "enhance": "각인 강화 반복이 도는 중입니다",
         "restart": "게임을 다시 켜는 중입니다", "char": "카드 캐릭터를 맞추는 중입니다"}
 
+# 리모콘 단축키 ([game] 설정 이름 → 오류 문구에 쓰는 이름) — mabi.keys.REMOTE_KEYS 와 같은 순서
+REMOTE_KEY_LABELS = {"stop_key": "일시정지 키", "dye_key": "염색 도우미 키", "dye_fit_key": "염색 맞추기 키"}
+
 # 반복 종류 → (제목, 장소 칸 = config [종류] 의 키·카드 칸). 둘 다 mabi.tasks.<종류>.repeat 를 같은 틀로 돌린다
 REPEATS = {"abyss": ("어비스", "dungeon"), "raid": ("레이드", "raid")}
 
@@ -497,6 +500,7 @@ class DailyApi:
             "field": str(s["field"]),
             "stop_key": str(doc["game"]["stop_key"]),
             "dye_key": str(doc["game"]["dye_key"]),
+            "dye_fit_key": str(doc["game"].get("dye_fit_key") or "f10"),
             "game_keys": [{"name": n, "label": label, "default": d, "key": gkeys.of(doc, n), "game": gkeys.game_key(n)}
                           for n, (d, label) in gkeys.GAME_KEYS.items()],
             "fit_display": bool(doc["run"]["fit_display"]),
@@ -520,26 +524,23 @@ class DailyApi:
                 s["field"] = v["field"]
             if v.get("sunday") in SUNDAY_CHOICES:
                 doc["weekday_dungeon"]["sunday"] = v["sunday"]
-            if v.get("stop_key"):
-                k = str(v["stop_key"]).lower()
-                if not userconfig.is_fkey(k):  # 게임이 쓰는 글자·Home/End 키와 겹치지 않게 F 키만
-                    return {"error": f"일시정지 키는 F1~F12 중에서: {k}"}
-                doc["game"]["stop_key"] = k
-            if v.get("dye_key"):
-                k = str(v["dye_key"]).lower()
-                if not userconfig.is_fkey(k):
-                    return {"error": f"염색 도우미 키는 F1~F12 중에서: {k}"}
-                if k == str(doc["game"]["stop_key"]).lower():
-                    return {"error": "염색 도우미 키가 일시정지 키와 같습니다"}
-                doc["game"]["dye_key"] = k
+            for name, label in REMOTE_KEY_LABELS.items():
+                if v.get(name):
+                    k = str(v[name]).lower()
+                    if not userconfig.is_fkey(k):  # 게임이 쓰는 글자·Home/End 키와 겹치지 않게 F 키만
+                        return {"error": f"{label}는 F1~F12 중에서: {k}"}
+                    doc["game"][name] = k
+            own = [str(doc["game"][n]).lower() for n in gkeys.REMOTE_KEYS if doc["game"].get(n)]
+            if any(v.get(n) for n in REMOTE_KEY_LABELS) and len(set(own)) < len(own):
+                return {"error": "일시정지·염색 도우미·염색 맞추기 키는 서로 달라야 합니다"}
             gk = v.get("game_keys") or {}
-            mine = {str(doc["game"]["stop_key"]).lower(), str(doc["game"]["dye_key"]).lower()}
+            mine = set(own)
             for n, k in gk.items():
                 k = str(k or "").strip().lower()
                 if err := gkeys.check(n, k):
                     return {"error": err}
                 if k in mine:
-                    return {"error": f"{k.upper()} 는 리모콘의 일시정지·염색 도우미 키입니다"}
+                    return {"error": f"{k.upper()} 는 리모콘 단축키(일시정지·염색)입니다"}
             for n, k in gk.items():
                 k = str(k or "").strip().lower()
                 if k and k == gkeys.game_key(n):

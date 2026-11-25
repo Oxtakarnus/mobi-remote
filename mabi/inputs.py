@@ -8,9 +8,14 @@ user32 = ctypes.windll.user32
 
 INPUT_MOUSE = 0
 INPUT_KEYBOARD = 1
+MOUSEEVENTF_MOVE = 0x0001
 MOUSEEVENTF_LEFTDOWN = 0x0002
 MOUSEEVENTF_LEFTUP = 0x0004
+MOUSEEVENTF_RIGHTDOWN = 0x0008
+MOUSEEVENTF_RIGHTUP = 0x0010
 MOUSEEVENTF_WHEEL = 0x0800
+MOUSEEVENTF_VIRTUALDESK = 0x4000
+MOUSEEVENTF_ABSOLUTE = 0x8000
 KEYEVENTF_KEYUP = 0x0002
 KEYEVENTF_SCANCODE = 0x0008
 KEYEVENTF_EXTENDEDKEY = 0x0001
@@ -84,6 +89,32 @@ def _send(*inputs: INPUT) -> None:
 
 def _mouse(flags: int, data: int = 0) -> INPUT:
     return INPUT(type=INPUT_MOUSE, mi=MOUSEINPUT(0, 0, data, flags, 0, 0))
+
+
+def move_abs(sx: float, sy: float) -> None:
+    """커서를 화면 픽셀 (sx, sy) 가운데로 — 절대좌표 SendInput. SetCursorPos 와 달리 게임이 끌기·회전으로 받고
+    (염색 팔레트 회전은 SetCursorPos 를 무시했다), 상대 이동처럼 마우스 가속을 타지 않아 정수 픽셀에 정확히 떨어진다."""
+    vx, vy = user32.GetSystemMetrics(76), user32.GetSystemMetrics(77)   # 가상 화면 왼쪽 위
+    vw, vh = user32.GetSystemMetrics(78), user32.GetSystemMetrics(79)   # 가상 화면 폭·높이
+    x = int((round(sx) - vx + 0.5) * 65536 / vw)
+    y = int((round(sy) - vy + 0.5) * 65536 / vh)
+    _send(INPUT(type=INPUT_MOUSE, mi=MOUSEINPUT(x, y, 0, MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_VIRTUALDESK, 0, 0)))
+
+
+def mouse_event(flags: int) -> None:
+    """마우스 단추 누름·뗌 (지금 커서 자리)."""
+    _send(_mouse(flags))
+
+
+def wheel_notch(up: bool) -> None:
+    """휠 한 칸 (지금 커서 자리)."""
+    _send(_mouse(MOUSEEVENTF_WHEEL, 120 if up else -120 & 0xFFFFFFFF))
+
+
+def cursor_pos() -> tuple[int, int]:
+    p = wintypes.POINT()
+    user32.GetCursorPos(ctypes.byref(p))
+    return p.x, p.y
 
 
 def _key(vk: int, up: bool) -> INPUT:

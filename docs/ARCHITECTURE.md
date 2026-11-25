@@ -154,6 +154,8 @@ web/                          화면 (빌드 없이 <script> 여러 개가 같�
 | 게임 화면(실제 픽셀) 위에 Qt 창 겹치기 — 게임이 있는 모니터·배율 | `queue_overlay.to_logical` | 작업 큐 오버레이, 염색 표시 |
 | 염색 팔레트가 떠 있나·색 찾을 범위 (자리는 게임 화면 비율로 정해 둠, 테두리로 확인) | `dye.detect.palette_at` · `frame_skip` | `dye.tracker.DyeTracker` |
 | 색을 재질(천·가죽·금속·나무)로 집을 수 있나 · 화면 칸 재질 | `dye.gamut.GamutStore` (`judge`·`reach`) · `Gamut.material_of` | 염색 탭 `dye_reach`, `DyeTracker._note` |
+| 염색 맞출 자리 — 시작 화면 복원·지금 자세·해 찾기(세 색 → 두 색)·안내·게임 판정(말풍선 색) | `dye.autofit.Session` (`solve`·`pose`·`guide`·`caught`) · 자동 입력 `AutoDriver` · 단계 `gui_app/dye_fit.FitAssist` | 염색 맞추기 키·염색 탭 '자리 찾기' |
+| 리모콘이 늘 보는 단축키 (일시정지·염색 도우미·염색 맞추기) — 게임 키·서로 겹치면 안 된다 | `keys.REMOTE_KEYS` · 저장 검사 `daily_api.REMOTE_KEY_LABELS` · 감시 `QueueApi._q_hotkey` | 옵션 창 '리모콘 단축키' |
 | 큐 카드 한 종류 | `workqueue.Kind` 를 상속 (`own_loot`, `run`, `view`, `where` …) | `queue_api` |
 | GUI 에서 게임 조작용 Bot 하나 (만들기 → 주인 이름으로 등록 → 닫기) · 멈추기 · '다른 일이 도는 중인가' | `DailyApi._game_bot(주인)` · `_bot_stop(주인)` · `_busy_reason` (스레드 + 등록된 Bot 모두) · 큐 카드 예외 가르기 `QueueApi._q_failed` (재료가 다 떨어짐 `OutOfStock` → 카드를 빼는 멈춤 이유 `drop`) | 큐 카드(캐릭터 맞추기·각인 강화·게임 다시 켜기), 어비스·레이드 반복, 캐릭터 자동 설정, 화면 설정 |
 | 게임 연결 (창·캡처·입력·Vision·CLI·패킷) — 작업마다 새로 만들지 않고 같이 쓴다. 연결 쪽 설정이 바뀌면 새로 | `session.GameSession` · GUI 는 `DailyApi._game_session(cfg)` (`GameSession.fits`) → `Bot(…, session=)` · `Runner(session=)` | `_game_bot`, 숙제 실행기 |

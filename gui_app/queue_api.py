@@ -731,7 +731,8 @@ class QueueApi:
             q.resume_top()
 
     def _q_hotkey(self) -> None:
-        """앱 단축키를 앱이 켜져 있는 동안 늘 본다 — 일시정지 키(F12)와 염색 도우미 키(F11, _dye_key 가 있을 때).
+        """앱 단축키를 앱이 켜져 있는 동안 늘 본다 — 일시정지 키(F12)와 염색 도우미 키(F11)·염색 맞추기 키(F10,
+        _dye_key·_dye_fit_key 가 있을 때).
         일시정지 키(F12) 하나로 작업 큐 전체를 다룬다.
           큐가 돌고 있으면 → 무엇이 돌든 일시정지 (지금 명령도 끊는다 — ■ 와 같다)
           쉬고 있으면     → 맨 위 일시정지 카드를 이어 한다
@@ -748,6 +749,9 @@ class QueueApi:
                     dye = getattr(self, "_dye_key", None)
                     if dye and g.get("dye_key"):
                         keys.setdefault(vk_of(g["dye_key"]), dye)  # 같은 키면 일시정지가 먼저
+                    fit = getattr(self, "_dye_fit_key", None)
+                    if fit and g.get("dye_fit_key"):
+                        keys.setdefault(vk_of(g["dye_fit_key"]), fit)
                     checked = time.monotonic()
                 now = {vk for vk in keys if key_pressed(vk)}
                 for vk in now - down:

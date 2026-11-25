@@ -21,6 +21,8 @@ GAME_KEYS = {
     "paladin": ("f5", "팔라딘 변신 — 어비스·레이드·드릴·필드 보스 전투"),
 }
 OPTIONAL = {"fast_travel"}  # 비워도 되는 키
+# 리모콘이 앱이 켜진 동안 늘 보는 키 ([game] 설정 이름) — 일시정지·염색 도우미·염색 맞추기
+REMOTE_KEYS = ("stop_key", "dye_key", "dye_fit_key")
 
 _game = None  # mabi.gamebinds.GameBinds — follow_game() 으로 켠다
 
@@ -60,7 +62,7 @@ def _own_keys(bot_or_cfg) -> set[str]:
     game = cfg.get("game") if isinstance(cfg, dict) else None
     if not isinstance(game, dict):
         return set()
-    return {str(game[k]).lower() for k in ("stop_key", "dye_key") if game.get(k)}
+    return {str(game[k]).lower() for k in REMOTE_KEYS if game.get(k)}
 
 
 def check(name: str, key: str) -> str | None:

@@ -21,6 +21,8 @@ const dyeUI = {
   marks: DYE_MARKS.slice(),
   prefs: null,
   reachSeq: 0,      // 재질 판정 응답 순번 — 늦게 온 옛 응답이 새 색을 덮지 않게
+  fit: 'idle',      // 맞출 자리 단계 (gui_app/dye_fit.py): idle · busy · shown · auto
+  fitGoal: false,   // 찾아 둔 자리가 있어 한 번 더 누르면 자동인가
 };
 
 function dyeCurrent() {
@@ -112,6 +114,17 @@ function paintDyeState() {
   pill.className = 'pill ' + st[1];
   $('#dye-start').classList.toggle('hidden', dyeUI.on);
   $('#dye-stop').classList.toggle('hidden', !dyeUI.on);
+  paintDyeFit();
+}
+
+/** 맞출 자리 단추 — 누를 때마다 찾기 → 자동 → 멈춤 (단축키와 같은 단계) */
+function paintDyeFit() {
+  const b = $('#dye-fit');
+  b.classList.toggle('hidden', !dyeUI.on);
+  const f = dyeUI.fit;
+  b.textContent = f === 'auto' ? '멈추기' : f === 'busy' ? '찾는 중…'
+    : f === 'shown' && dyeUI.fitGoal ? '자동 맞추기' : '자리 찾기';
+  b.classList.toggle('btn-warn', f === 'auto');
 }
 
 /* ══ 새 판 알림 ═════════════════════════════════════════════════
@@ -298,6 +311,11 @@ async function stopDye() {
   say('염색 도우미를 껐습니다.');
 }
 
+async function fitDye() {
+  const r = await mm.dye.fit().catch((e) => ({ error: e.message }));
+  if (r && r.error) say(r.error);
+}
+
 /** 파이썬이 한 바퀴마다 보내는 상태 — payload 는 레거시 mm.dye.draw 와 같은 모양이다 */
 function onDyeState(m) {
   if (!m) return;
@@ -306,9 +324,11 @@ function onDyeState(m) {
     return;
   }
   if (m.stopped) {
+    dyeUI.fit = 'idle';
     if (dyeUI.on) { dyeUI.on = false; dyeUI.box = null; paintDyeState(); }
     return;
   }
+  if (m.fit !== undefined) { dyeUI.fit = m.fit; dyeUI.fitGoal = !!m.goal; paintDyeFit(); return; }
   if (m.error) { say('염색 검출 오류: ' + m.error); return; }
   const box = !!m.found;
   if (box !== dyeUI.box) { dyeUI.box = box; paintDyeState(); }  // '팔레트 찾음' ↔ '기다리는 중'
