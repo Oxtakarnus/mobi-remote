@@ -45,6 +45,7 @@ CLI_FLAGS = {
     HOUSING_INN: (False, False), SCENARIO_FIELD: (False, False), DUNGEON: (True, None), DIMENSION: (False, None),
 }
 INN_SUFFIX = "여관"   # CLI 장소 이름 '반호르 여관' — 여관 보관함 구역에선 CLI Housing.IsInHousing 이 false (2026-10-31 실측)
+STELLA_DOME_NAME = "스텔라 돔"   # CLI 장소 이름 — 패킷이 맵을 모를 때(재시작 직후 등) 이것으로 안다 (2026-11-26 실측)
 
 
 def on_map(bot, kind: str) -> bool | None:
@@ -100,6 +101,8 @@ def place(bot) -> Place:
         kind = HOUSING  # 마이 홈
     elif name.endswith(INN_SUFFIX):
         kind = HOUSING_INN
+    elif name == STELLA_DOME_NAME:
+        kind = STELLA_DOME
     elif in_field:
         kind = FIELD
     elif name and any(n in name for n in ("어비스", *gd.abyss_names())):

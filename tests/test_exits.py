@@ -128,6 +128,8 @@ class HousingPlaceTest(unittest.TestCase):
         self.assertIsNone(P.place(b).kind)
         b.environment.return_value = {"ChannelDisplayName": "반호르 여관", "Housing": {"IsInHousing": False}}
         self.assertEqual(P.place(b).kind, P.HOUSING_INN)   # 여관 보관함은 IsInHousing 이 false — 이름으로
+        b.environment.return_value = {"ChannelDisplayName": "스텔라 돔", "Housing": {"IsInHousing": False}}
+        self.assertEqual(P.place(b).kind, P.STELLA_DOME)
 
 
 class UnknownTest(unittest.TestCase):
