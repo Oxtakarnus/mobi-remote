@@ -27,11 +27,12 @@ FIELD = "BattleField"                  # 사냥터
 OPEN_FIELD = "Field"                   # 마을·일반 필드
 FIELD_BOSS = "FieldBoss"
 SCENARIO_FIELD = "ScenarioField"
-# 여관 안쪽 보관함 구역·마이 홈 — 메인 화면처럼 보이지만 오른쪽 위 나가기가 있는 따로 된 구역.
-# 여기서 접속을 끊은 캐릭터로 숙제를 시작하면 이동이 안 돼 헤맨다 → 먼저 나온다 (exits.HousingExit)
+# 여관 안쪽 보관함 구역·마이 홈·스텔라 돔 — 사냥터·던전은 아니지만 메인 화면처럼 보이고 오른쪽 위 나가기가 있는 따로 된 구역.
+# 여기서 숙제를 시작하면 이동이 안 돼 헤맨다 → 먼저 나온다 (exits.SideAreaExit). 새 구역은 SIDE_AREAS 에 한 줄
 HOUSING_INN = "HousingInn"
 HOUSING = "Housing"
-HOUSINGS = (HOUSING_INN, HOUSING)
+STELLA_DOME = "StellaDome"   # 2026-11-26 스텔라 돔 안에서 숙제를 시작해 요일·공물 던전 이동이 안 됐다
+SIDE_AREAS = (HOUSING_INN, HOUSING, STELLA_DOME)
 OPEN_MAPS = (OPEN_FIELD, FIELD, FIELD_BOSS, HOUSING_INN, SCENARIO_FIELD)  # 던전이 아닌 맵 종류
 # 맵 종류마다 CLI get_activity 가 답하는 (던전 안, 사냥터 안) — None 은 따지지 않음. 표에 없는 종류는 (None, False).
 # 패킷 맵이 CLI 와 어긋나나(packet_monitor.cli_sync.map_contradicts)를 이 표 하나로 본다 — 새 맵 종류는 여기 한 줄.

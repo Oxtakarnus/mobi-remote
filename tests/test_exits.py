@@ -93,24 +93,24 @@ class ExitTest(unittest.TestCase):
             self.assertFalse(exits.leave_instance(mock.MagicMock()))
 
 
-class HousingExitTest(unittest.TestCase):
-    """여관 보관함 구역·마이 홈 — 오른쪽 위 나가기. 확인 창 없이 바로 로딩이면 Space 를 누르지 않는다."""
+class SideAreaExitTest(unittest.TestCase):
+    """여관 보관함 구역·마이 홈·스텔라 돔 — 오른쪽 위 나가기. 확인 창 없이 바로 로딩이면 Space 를 누르지 않는다."""
 
     def test_leaves_without_dialog(self):
         b = make_bot()
         b.ui = {"abyss_exit": "exit", "housing_exit_ok": "dlg"}
         inside = iter([True, False])
-        with mock.patch.object(exits.HousingExit, "where", lambda self, bot: next(inside, False)):
+        with mock.patch.object(exits.SideAreaExit, "where", lambda self, bot: next(inside, False)):
             b.map_loading.side_effect = [False, True] + [False] * 50   # 누르자 로딩 시작
             b.wait_loaded.return_value = None
-            self.assertTrue(exits.HousingExit().run(b))
+            self.assertTrue(exits.SideAreaExit().run(b))
         b.key.assert_called_once_with("shift+esc")  # 여기서 나가기 키 → 바로 로딩 (Space 없음)
         b.click.assert_not_called()
 
     def test_leave_instance_picks_housing(self):
-        for kind in ("HousingInn", "Housing"):
+        for kind in ("HousingInn", "Housing", "StellaDome"):
             with (mock.patch("mabi.place.place", return_value=mock.Mock(kind=kind)),
-                  mock.patch.object(exits.HousingExit, "run") as run):
+                  mock.patch.object(exits.SideAreaExit, "run") as run):
                 self.assertTrue(exits.leave_instance(mock.MagicMock()))
                 run.assert_called_once()
 
@@ -135,7 +135,7 @@ class UnknownTest(unittest.TestCase):
 
     def test_unknown_policy(self):
         from mabi.tasks import abyss, drill, field_boss, raid
-        for cls, want in ((abyss.AbyssExit, False), (exits.DungeonExit, False), (exits.HousingExit, False),
+        for cls, want in ((abyss.AbyssExit, False), (exits.DungeonExit, False), (exits.SideAreaExit, False),
                           (drill.DrillExit, True), (field_boss.FieldBossExit, True), (raid.ShipExit, True)):
             e = cls()
             with mock.patch.object(cls, "where", lambda self, bot: None):
@@ -226,7 +226,7 @@ class ContentExitTest(unittest.TestCase):
     def test_leave_key_everywhere_but_drill(self):
         """여기서 나가기 키는 콘텐츠 나가기 모두 — 드릴은 결과 창 ESC 라 빼고 (사용자 11-19)."""
         from mabi.tasks import abyss, drill, field_boss, raid
-        for cls in (exits.DungeonExit, exits.HousingExit, abyss.AbyssExit, raid.RaidExit, raid.ShipExit,
+        for cls in (exits.DungeonExit, exits.SideAreaExit, abyss.AbyssExit, raid.RaidExit, raid.ShipExit,
                     field_boss.FieldBossExit):
             self.assertEqual(cls.HOTKEY, "leave", cls.__name__)
         self.assertEqual(raid.RaidExit(to_field=True).HOTKEY, "leave")  # 필드로 나갈 때도 (예전 X 는 보관함 이동이 이어졌다)

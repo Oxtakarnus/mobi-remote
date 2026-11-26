@@ -326,7 +326,7 @@ def _leave_dungeon(bot: Bot) -> bool:
     from .space import dungeon_state, game_space, hunt_quest, inside_space
     from .steps import wait_until
     from .exits import leave_instance
-    from ..place import ABYSS, DUNGEON, HOUSINGS, RAID, RAID_LOBBY, place
+    from ..place import ABYSS, DUNGEON, SIDE_AREAS, RAID, RAID_LOBBY, place
     # 끊긴 숙제 — 접속 단계가 진행 기록을 'login' 으로 덮었으면 그 전 것(before)을 본다 (DailyState.interrupted).
     # 요일 던전이면 보상 화면에서 추가 루팅까지 (그냥 나가면 숙제 쪽은 일일 달성만 보고 끝내 추가 루팅이 빠진다)
     cut = cut_task(bot)
@@ -335,8 +335,8 @@ def _leave_dungeon(bot: Bot) -> bool:
     if cut and _finish_inside(bot, cut, kind):
         return True
     # 어비스·레이드·출항선 안이면 나온다 — 끊긴 주말 숙제의 판이 아니면 숙제가 아니다 (반복 카드가 멈춘 뒤 숙제 카드가 이어 시작한 경우).
-    # 여관 보관함 구역·마이 홈에서 접속을 끊었으면 거기서는 숙제 이동이 안 된다 → 먼저 나온다
-    if kind in (ABYSS, RAID, RAID_LOBBY, *HOUSINGS):
+    # 여관 보관함 구역·마이 홈·스텔라 돔(SIDE_AREAS)에 있으면 거기서는 숙제 이동이 안 된다 → 먼저 나온다
+    if kind in (ABYSS, RAID, RAID_LOBBY, *SIDE_AREAS):
         return leave_instance(bot)
     # 드릴 안에서 쓰러진 채로 시작 — 드릴은 부활이 없어 그 구역은 끝났다 → 쓰러진 화면의 나가기로 나온다
     # (메인 화면으로 가려다 못 하고, 어두운 화면에서 이름을 못 읽어 다시 접속하게 되던 것, 2026-11-12).

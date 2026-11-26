@@ -181,17 +181,18 @@ class DungeonExit(Exit):
             return None
 
 
-class HousingExit(Exit):
-    """여관 안쪽 보관함 구역·마이 홈: 오른쪽 위 나가기 (던전과 같은 아이콘) → 아래 '반호르 여관에서 나가시겠습니까?'
-    (마을 이름이 들어가 글자 대신 초록 'Space 나가기' 버튼으로 본다) → Space, 안 먹으면 그 버튼.
-    여기서 접속을 끊은 캐릭터는 숙제 이동이 안 돼 헤맨다 — 숙제 시작(login)·실패 뒤 정리(recover)가 먼저 꺼낸다."""
-    NAME, SNAP = "보관함 구역", "housing_leave"
+class SideAreaExit(Exit):
+    """따로 된 구역(여관 보관함 구역·마이 홈·스텔라 돔 — place.SIDE_AREAS): 오른쪽 위 나가기 (던전과 같은 아이콘)
+    → 아래 '반호르 여관에서 나가시겠습니까?' (마을 이름이 들어가 글자 대신 초록 'Space 나가기' 버튼으로 본다)
+    → Space, 안 먹으면 그 버튼. 확인 창 없이 바로 로딩이면 누르지 않는다.
+    여기서는 숙제 이동이 안 돼 헤맨다 — 숙제 시작(login)·실패 뒤 정리(recover)가 먼저 꺼낸다."""
+    NAME, SNAP = "따로 된 구역", "housing_leave"
     LOADING = "loading"   # 확인 창 없이 바로 맵을 떠나기 시작함
 
     def where(self, bot):
-        from ..place import HOUSINGS, place
+        from ..place import SIDE_AREAS, place
         kind = place(bot).kind
-        return None if kind is None else kind in HOUSINGS
+        return None if kind is None else kind in SIDE_AREAS
 
     def dialog(self, bot, timeout):
         end = time.monotonic() + max(0.0, timeout)
@@ -214,10 +215,10 @@ def leave_instance(bot: Bot) -> bool:
     """지금 콘텐츠(일반 던전·어비스·레이드·출항선)·보관함 구역 안이면 맞는 나가기로 밖 메인 화면까지.
     나갔으면 True, 밖이면 False. 맞는 나가기로 못 나오면 안전장치(_escape)를 해 보고, 그래도 안이면 StepTimeout.
     사냥터·검은 구멍은 나가지 않는다 (끝날 때까지 기다리는 것이 숙제 규칙 — login._leave_dungeon)."""
-    from ..place import ABYSS, DUNGEON, HOUSINGS, RAID, RAID_LOBBY, place
+    from ..place import ABYSS, DUNGEON, SIDE_AREAS, RAID, RAID_LOBBY, place
     kind = place(bot).kind
-    if kind in HOUSINGS:
-        name, leave = HousingExit.NAME, lambda: HousingExit().run(bot)
+    if kind in SIDE_AREAS:
+        name, leave = SideAreaExit.NAME, lambda: SideAreaExit().run(bot)
     elif kind == DUNGEON:
         name, leave = DungeonExit.NAME, lambda: DungeonExit().run(bot)
     elif kind == ABYSS:
