@@ -62,6 +62,9 @@ RIFT_TOL = 0.5
 RIFT_OFF = 5.0    # 넘어온 균열에서 송곳니 쪽으로 비켜 서는 칸 — 그 위에서 싸우다 밀리면 재사용 대기(5초)가 끝나자마자 다시
                   # 옮겨진다 (11-19 16:14:05 넘어간 쪽에 송곳니가 있어 균열 위에서 싸움 — 사용자)
 RIFT_WAIT = 1.5   # 균열 자리에 닿고 넘어가길 기다리는 초 — 안 넘어가면 같은 면 다른 균열로
+TURN_SEG = 0.3    # 같은 키를 이만큼 넘게 누른 동안 간 방향을 키 방향과 견준다 (카메라 틀어짐 재기)
+TURN_MOVE = 1.0   # 그동안 이만큼 넘게 가야 잰다 (서 있거나 막힌 때는 빼고)
+TURN_WARN = 30.0  # 어긋남(가운데 값)이 이보다 크면 카메라가 틀어진 것으로 남긴다 (도)
 
 
 def camera_mode(bot: Bot, frame=None) -> str | None:
@@ -79,11 +82,35 @@ def camera_mode(bot: Bot, frame=None) -> str | None:
 
 
 class _Trail:
-    """이동하며 본 내 자리 — 처음·지금 자리와 간 길. 못 갔을 때 왜인지(둘레를 돎·막힘) 남기려고."""
+    """이동하며 본 내 자리 — 처음·지금 자리와 간 길. 못 갔을 때 왜인지(둘레를 돎·막힘) 남기려고.
+    같은 키를 누른 토막마다 실제로 간 방향이 키 방향에서 몇 도 어긋났는지도 모은다 (turns) — 카메라가 틀어지면
+    모든 토막이 비슷한 각도로 어긋난다 (2026-11-26 16:15 물결 격류에서 세 번 연달아 목표에서 멀어짐 — 사용자 '카메라가 뒤틀린 듯')."""
 
     def __init__(self):
         self.start = self.last = None
         self.path = 0.0
+        self.turns: list[float] = []
+        self._seg = None  # (누른 키, 시작 시각, 시작 자리)
+
+    def keys(self, held: tuple, p, now: float, want) -> None:
+        """누른 키가 바뀌는 순간 — 앞 토막이 TURN_SEG 넘고 TURN_MOVE 넘게 갔으면 키 방향(want(키))과 간 방향의 각도 차를 남긴다."""
+        seg = self._seg
+        if seg and seg[0] == held:
+            return
+        if seg and seg[0] and p and now - seg[1] >= TURN_SEG:
+            mx, my = p[0] - seg[2][0], p[1] - seg[2][1]
+            w = want(seg[0])
+            if w and math.hypot(mx, my) >= TURN_MOVE:
+                d = math.degrees(math.atan2(my, mx) - math.atan2(w[1], w[0]))
+                self.turns.append((d + 180) % 360 - 180)
+        self._seg = (held, now, p) if p else None
+
+    def turn(self) -> float | None:
+        """잰 어긋남의 가운데 값 (도, + 는 반시계). 못 쟀으면 None."""
+        if not self.turns:
+            return None
+        t = sorted(self.turns)
+        return t[len(t) // 2]
 
     def add(self, p) -> None:
         if self.last is None:
@@ -503,12 +530,36 @@ class SpearDodge:
             ks.append("d" if b > 0 else "a")
         return ks
 
+    def key_dir(self, held) -> tuple[float, float] | None:
+        """누른 키들이 가는 맵 방향 (calib 기준) — 키가 없거나 서로 지우면 None."""
+        (wx, wy), (ex, ey) = self.calib
+        v = {"w": (wx, wy), "s": (-wx, -wy), "d": (ex, ey), "a": (-ex, -ey)}
+        x = sum(v[k][0] for k in held if k in v)
+        y = sum(v[k][1] for k in held if k in v)
+        return (x, y) if math.hypot(x, y) > 1e-6 else None
+
+    def _report_turn(self, trail: _Trail, target) -> None:
+        """이번 이동에서 잰 어긋남이 크면 남긴다 — 언제부터 틀어졌는지 앞뒤 로그(궁극기·쓰러짐·연출 …)와 견주려고.
+        화면도 찍는다 (카메라가 어디를 보는지)."""
+        d = trail.turn()
+        if d is None or abs(d) <= TURN_WARN:
+            return
+        mode = camera_mode(self.bot)
+        shot = self.bot.snapshot("spear_turn").name
+        self.bot.log.warning(f"이동: 키 방향과 실제 간 방향이 약 {d:+.0f}° 어긋남 — 카메라가 틀어진 듯 "
+                             f"(잰 {len(trail.turns)}번 · 카메라 {mode or '모름'} · 목표 ({target[0]:.1f}, {target[1]:.1f})) → {shot}")
+
     def go(self, target, tol: float, until: float, done, pattern: bool = True) -> bool:
+        ok = self._go(target, tol, until, done, pattern, trail := _Trail())
+        self._report_turn(trail, target)
+        return ok
+
+    def _go(self, target, tol: float, until: float, done, pattern: bool, trail: _Trail) -> bool:
         """target 까지 키를 누른 채 다시 보며 간다. 속도 × LAG 앞에서 떼고, 멈춘 자리가 모자라거나 지나쳤으면 짧게 다시.
         시간 안에 못 가면 간 길과 가까워진 만큼을 남긴다 — 많이 갔는데 안 가까워졌으면 키 방향이 틀어져 목표 둘레를 돈 것,
         조금밖에 못 갔으면 막힌 것 (11-24 테스터 제보 '뺑뺑이' — 전엔 투창 이동은 못 가도 아무것도 안 남았다)."""
         inp, fine, hist = self.bot.input, False, []
-        trail, t0 = _Trail(), time.monotonic()
+        t0 = time.monotonic()
         while time.monotonic() < until and not done() and self.ok(pattern):
             self.bot.check_stop()
             p = self.my_pos()
@@ -524,6 +575,7 @@ class SpearDodge:
                 speed = math.dist(p, hist[0][1]) / (now - hist[0][0]) or SPEED
             lead = 0.0 if fine else min(2.5, max(0.6, speed * LAG))
             if dist <= tol + lead:
+                trail.keys((), p, now, self.key_dir)
                 inp.hold(())
                 time.sleep(0.45)
                 p = self.my_pos(fresh=True) or p
@@ -533,9 +585,12 @@ class SpearDodge:
                     return True
                 fine, hist = True, []
                 continue
-            inp.hold(self.keys_toward(dx, dy))
+            ks = tuple(self.keys_toward(dx, dy))
+            trail.keys(ks, p, now, self.key_dir)
+            inp.hold(ks)
             time.sleep(0.05)
         inp.hold(())
+        trail.keys((), self.my_pos(), time.monotonic(), self.key_dir)
         if trail.start and time.monotonic() >= until and not done() and self.ok(pattern):
             self.bot.log.info(f"이동: ({target[0]:.1f}, {target[1]:.1f}) 에 {time.monotonic() - t0:.1f}초 안에 못 감 — "
                               f"{trail.text(target)}")

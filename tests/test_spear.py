@@ -585,6 +585,7 @@ class GoTrailTest(unittest.TestCase):
         with (mock.patch.object(SpearDodge, "ok", return_value=True),
               mock.patch.object(time, "sleep", sleep), mock.patch.object(time, "monotonic", lambda: clock[0])):
             ok = sd.go((0.0, 0.0), 1.0, clock[0] + secs, lambda: False)
+        self.warned = [str(c.args[0]) for c in bot.log.warning.call_args_list if "어긋남" in str(c.args[0])]
         return ok, [str(c.args[0]) for c in bot.log.info.call_args_list if "못 감" in str(c.args[0])]
 
     def test_arrives_without_log(self):
@@ -603,6 +604,19 @@ class GoTrailTest(unittest.TestCase):
         ok, lines = self.go(0, blocked=True)
         self.assertFalse(ok)
         self.assertIn("간 길 0.0칸", lines[0])
+
+    def test_camera_turn_measured(self):
+        # 카메라가 틀어지면 키 방향과 간 방향이 같은 각도로 어긋난다 — 그 각도를 남긴다 (2026-11-26 물결)
+        self.go(0)
+        self.assertEqual(self.warned, [])
+        self.go(90)
+        self.assertEqual(len(self.warned), 1)
+        m = re.search(r"약 ([+-]\d+)°", self.warned[0])
+        self.assertAlmostEqual(int(m.group(1)), 90, delta=10)
+        self.go(-60)
+        self.assertAlmostEqual(int(re.search(r"약 ([+-]\d+)°", self.warned[0]).group(1)), -60, delta=10)
+        self.go(0, blocked=True)   # 막혀 서 있으면 재지 않는다
+        self.assertEqual(self.warned, [])
 
 
 class RiftTest(unittest.TestCase):
