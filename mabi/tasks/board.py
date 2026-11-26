@@ -132,6 +132,26 @@ def shop_title(bot: Bot, frame=None) -> str | None:
     return title if gd.text("board_shop") in title else None
 
 
+# 넓은 칸에서는 글자 찾기가 마을 이름 덩어리를 놓칠 때가 있다 — 그러면 칸을 좁혀 다시 읽는다 (폭, 화면 px).
+# 2026-11-26 테스터 PC 콜헨: 420px 칸에서 '게시판' 만 읽혀 다른 마을 상점으로 보고 멈춤. 300·240px 에선 '콜헨게시판'.
+# 가장 긴 '이멘마하 게시판' 도 300px 안에 든다
+TITLE_NARROW = (300, 240)
+
+
+def is_town_shop(bot: Bot, town: str, title: str) -> bool:
+    """열린 게시판 상점(제목 title)이 town 것인가. 제목에 마을 이름이 없으면 좁은 칸으로 다시 읽어 본다."""
+    if worldmap.similar(title, town) >= 0.6:
+        return True
+    frame = bot.frame()
+    x, y, w, h = gd.region("board_shop_title")
+    for nw in TITLE_NARROW:
+        again = "".join(nospace(t) for t, _, _ in find_texts(frame, (x, y, min(w, nw), h)))
+        if worldmap.similar(again, town) >= 0.6:
+            bot.log.debug(f"게시판 상점 제목 '{title}' → 좁혀 다시 읽음 '{again}'")
+            return True
+    return False
+
+
 def _panel_button(bot: Bot) -> str | None:
     """구입 창(오른쪽 아래)의 버튼 글자 — '구입하기' · 다 산 물품은 '구입 조건 필요 아이템 보기'. 구입 창이 없으면 None.
     창이 열렸나는 이 버튼으로만 본다: 이름 칸은 목록을 내린 위치에 따라 카드 제목이 그 높이에 걸려, 창이 닫혔는데 열린
@@ -190,7 +210,7 @@ def open_shop(bot: Bot, town: str, c: dict) -> None:
     while time.monotonic() < end:
         title = shop_title(bot)
         if title is not None:
-            if worldmap.similar(title, town) < 0.6:
+            if not is_town_shop(bot, town, title):
                 raise NotSeen(f"{town} 이 아닌 게시판 상점 ('{title}') → {bot.snapshot('board_town').name}")
             bot.log.info(f"{town} 게시판 상점 열림")
             return
@@ -292,7 +312,7 @@ def _shop_of(bot: Bot, town: str) -> bool:
     title = shop_title(bot)
     if title is None:
         return False
-    if worldmap.similar(title, town) >= 0.6:
+    if is_town_shop(bot, town, title):
         return True
     leave(bot)
     return False

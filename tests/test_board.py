@@ -155,3 +155,16 @@ class CurrentTownTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ShopTownTest(unittest.TestCase):
+    """넓은 칸에서 마을 이름 덩어리를 놓치면 좁혀 다시 읽는다 (2026-11-26 테스터 PC 콜헨 — '게시판' 만 읽혀 멈춤)."""
+
+    def test_narrow_read_finds_town(self):
+        from unittest import mock
+        reads = {420: [("게시판", 141, 47)], 300: [("콜헨", 57, 46), ("게시판", 144, 47)]}
+        bot = mock.MagicMock()
+        with mock.patch.object(board, "find_texts", lambda frame, r: reads.get(r[2], [])):
+            self.assertTrue(board.is_town_shop(bot, "콜헨", "게시판"))
+            self.assertFalse(board.is_town_shop(bot, "던바튼", "게시판"))
+            self.assertTrue(board.is_town_shop(bot, "던바튼", "던바튼게시판"))   # 처음에 맞으면 다시 읽지 않는다
