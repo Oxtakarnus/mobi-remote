@@ -636,7 +636,7 @@ class FreeDrawKind(Kind):
                 if not bot.window.find():
                     q.note(it, "실패 — 게임이 꺼져 있습니다")
                     return False
-                bot.background = True  # 누를 때만 앞으로 — 끝나면 돌려준다
+                bot.background = False  # 누를 때마다 앞뒤로 오가면 리모콘 창이 깜빡인다 — 도는 동안 게임을 앞에 둔다 (사용자 2026-11-27)
                 r = free_draw.repeat(bot, table, it.get("target") or {}, int(it.get("limit") or FREE_DRAW_LIMIT),
                                      lambda n, names: q.patch(it["id"], {"prog": {"tries": n, "names": names}}))
                 if r["slot"] is None:
