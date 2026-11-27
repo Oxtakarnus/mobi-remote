@@ -27,6 +27,7 @@ async function loadDaily() {
   paintPick('vg', 'vgChars');
   paintPick('bd', 'bdChars');
   paintWeekend();
+  paintFreeDraw();
   paintDailyRunning(dl.st.running);
   paintDailySettings();
 }
@@ -249,6 +250,61 @@ function startEnhance() {
 }
 
 qRegisterKind('enhance', { amount: () => '성공할 때까지' });
+
+/* 기타 숙제 — 캐시샵 매일 무료 상품 갱신 반복. 고른 목표는 settings 의 freeDraw 로 기억한다.
+ * 목록은 파이썬이 게임 시트에서 만든다 (mm.freedraw.choices ← mabi/freedraw.choices, 처음 한 번 몇 초 걸릴 수 있다).
+ * 실행은 파이썬 (gui_app/queue_api.py FreeDrawKind) — 각인 강화 반복처럼 다른 작업이 돌면 시작하지 않는다 */
+function paintFreeDraw() {
+  if (dl.fd || dl.fdLoading) return;
+  dl.fdLoading = true;
+  mm.freedraw.choices().then((c) => {
+    dl.fdLoading = false;
+    if (!c || !c.ok) { $('#fd-start').disabled = true; $('#fd-start').title = (c && c.message) || '목록을 못 읽음'; return; }
+    dl.fd = c;
+    const saved = pref('freeDraw', {});
+    const jobs = [];
+    c.costumes.forEach((x) => { if (!jobs.includes(x.job)) jobs.push(x.job); });
+    $('#fd-costume').innerHTML = jobs.map((j) => '<optgroup label="' + esc(j) + '">' +
+      selectOptions(c.costumes.filter((x) => x.job === j).map((x) => [x.name, x.name + ' · ' + x.part]), saved.name) +
+      '</optgroup>').join('');
+    $('#fd-min').innerHTML = selectOptions(c.rarities.map((r) => [r.key, r.name + ' 이상']), saved.min || 'Common');
+    $('#fd-color').innerHTML = c.colors.map((v) => '<option value="' + esc(v) + '" style="background:' + esc(v) + '"' +
+      (v === saved.color ? ' selected' : '') + '>' + esc(v) + '</option>').join('');
+    $('#fd-type').value = saved.type || 'costume';
+    $('#fd-limit').value = saved.limit || 100;
+    freeDrawShow();
+  });
+}
+
+function freeDrawShow() {
+  const type = $('#fd-type').value;
+  $('#fd-costume').classList.toggle('hidden', type !== 'costume');
+  $('#fd-min').classList.toggle('hidden', type !== 'costume');
+  $('#fd-color').classList.toggle('hidden', type !== 'dye');
+  const col = $('#fd-color').value;
+  $('#fd-color').style.background = type === 'dye' && col ? col : '';
+}
+
+function freeDrawPick() {
+  const pick = { type: $('#fd-type').value, name: $('#fd-costume').value, min: $('#fd-min').value,
+    color: $('#fd-color').value, limit: Math.max(1, parseInt($('#fd-limit').value, 10) || 100) };
+  setPref('freeDraw', pick);
+  freeDrawShow();
+  return pick;
+}
+
+function startFreeDraw() {
+  if (!dl.fd) return;
+  const cur = qItems.find((x) => x.status === 'run');
+  if (cur) { toast('다른 작업이 도는 중입니다', '"' + cur.label + '" 이 끝난 뒤 시작하세요', 'bad'); return; }
+  const p = freeDrawPick();
+  const target = p.type === 'costume' ? { type: 'costume', name: p.name, min: p.min }
+    : p.type === 'dye' ? { type: 'dye', color: p.color } : { type: 'none' };
+  toast('무료 상품 갱신 시작', '최대 ' + p.limit + '번 · ' + stopKey() + ' = 일시정지', 'ok');
+  qStartNow({ kind: 'free_draw', label: '무료 상품 갱신', target: target, limit: p.limit }, false);
+}
+
+qRegisterKind('free_draw', { amount: (x) => '최대 ' + (x.limit || 100) + '번' });
 
 /* 주간 숙제 — 뱅가드 브리치. 이번 주에 했는지는 들어가기 전에 게임(성장 가이드)으로 보므로 늘 force */
 function vanguardSpec() {
@@ -814,6 +870,8 @@ $('#dl-table').addEventListener('change', (e) => {
 bindPick('dr', 'drillChars');
 bindStartQueue('dr', drillSpec, startHomework);
 $('#en-start').addEventListener('click', startEnhance);
+$('#fd-start').addEventListener('click', startFreeDraw);
+['#fd-type', '#fd-costume', '#fd-min', '#fd-color', '#fd-limit'].forEach((s) => $(s).addEventListener('change', freeDrawPick));
 bindPick('fb', 'fbChars');
 $('#fb-boss').addEventListener('change', () => { paintFieldBossLevels($('#fb-level').value); fieldBossPick(); });
 $('#fb-level').addEventListener('change', fieldBossPick);

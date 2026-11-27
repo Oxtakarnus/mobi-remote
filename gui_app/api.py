@@ -74,7 +74,7 @@ EXEC_WAIT = 120  # 작업 큐 명령이 화면 명령을 기다리는 상한 (�
 CFG_KEYS = {"askFacilityLevelMismatch": bool, "alterWorksFolded": bool, "queueFolded": bool,
             "dyeNudge": bool, "closeToTray": bool, "npcapNoAsk": bool,
             "hwPane": str, "optPane": str, "autoInterval": str, "playlist": str, "fieldBoss": dict,
-            "weekend": dict, "dressroom": dict, "picks": dict}
+            "weekend": dict, "dressroom": dict, "picks": dict, "freeDraw": dict}
 # 별표를 달 수 있는 목록 (레거시 favorites.js). 악보는 재생목록이 곧 즐겨찾기라 없다
 FAV_LISTS = ("craft", "alter", "gather", "items", "facial", "behaviour")
 
@@ -543,6 +543,20 @@ class Api(DailyApi, CharsApi, QueueApi):
                 return {"error": "게임 폴더에서 재질 그림을 꺼내지 못했습니다"}
             out.append([r.to_dict() for r in rs])
         return {"colors": out}
+
+    def freedraw_table(self) -> dict | None:
+        """캐시샵 매일 무료 상품 표 (mabi.freedraw — 게임 시트에서 한 번 만들어 데이터 폴더에 둔다). 못 읽으면 None."""
+        if getattr(self, "_freedraw", None) is None:
+            from mabi import freedraw, gamefiles
+            gdir = gamefiles.game_dir()
+            self._freedraw = freedraw.load(self.paths.data / "cache", gdir) if gdir else None
+        return self._freedraw
+
+    def freedraw_choices(self):
+        """화면 드롭다운 (의상·지정 염색약 색·희귀도). 표를 못 읽으면 ok False."""
+        from mabi import freedraw
+        t = self.freedraw_table()
+        return {"ok": True, **freedraw.choices(t)} if t else {"ok": False, "message": "게임 시트를 읽지 못했습니다"}
 
     def dress_open(self):
         """드레스룸 창 — GPU 를 켠 별도 프로세스로 띄운다 (gui_app/dressroom.py). 떠 있으면 앞으로 부른다."""

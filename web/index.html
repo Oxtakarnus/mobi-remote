@@ -484,6 +484,16 @@
         <div class="row"><span class="spacer"></span>
           <button class="btn btn-primary" id="en-start" title="지금 열려 있는 각인 강화 창에서 시작 — 다른 작업이 도는 중이면 시작하지 않습니다">시작</button></div>
       </div>
+      <div class="card card-wide">
+        <h3 class="h3-tools dr-head">무료 상품 갱신 <small title="캐시샵 추천 픽의 매일 무료 상품 창을 열어 두고 시작합니다. 특수 물품(연금술 촉매·미가공 골드/데카 원석)이나 엘리트 이상이 뜨면 목표와 상관없이 멈춥니다">노리는 상품이 뜰 때까지 상품 갱신</small></h3>
+        <div class="row">
+          <select id="fd-type"><option value="costume">의상</option><option value="dye">지정 염색약</option><option value="none" title="특수 물품·엘리트 이상이 뜰 때만 멈춤">특수만</option></select>
+          <select id="fd-costume" title="직업별 의상"></select><select id="fd-min" title="이 희귀도 이상이면 멈춤"></select>
+          <select id="fd-color" class="hidden" title="지정 염색약 색 코드"></select>
+          <span class="muted ab-lab">최대</span><input type="number" id="fd-limit" min="1" class="num-in" title="이만큼 눌러도 안 뜨면 멈춤"> 번
+          <span class="spacer"></span>
+          <button class="btn btn-primary" id="fd-start" title="지금 열려 있는 무료 상품 창에서 시작 — 다른 작업이 도는 중이면 시작하지 않습니다">시작</button></div>
+      </div>
     </div>
   </section>
 

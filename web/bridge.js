@@ -95,6 +95,7 @@
       onPrefs: (cb) => on('mm:dye-prefs', cb),   // 드레스룸에서 프리셋을 더했을 때
     },
     dress: { open: c('dress.open') },
+    freedraw: { choices: c('freedraw.choices') },
     update: {
       check: c('update.check'), download: c('update.download'), install: c('update.install'), page: c('update.page'),
       notes: c('update.notes'), whatsNew: c('update.whatsNew'), seen: c('update.seen'),

@@ -5,6 +5,7 @@
   goal          : 제작·채집·가공 목표 (판단 엔진 mabi.craft.goal 의 걸음을 하나씩 실행)
   action        : 한 번 하는 행동 (버튼 하나 = 명령 하나, 전체 수령)
   enhance       : 각인 강화 반복 (열어 둔 창에서 성공할 때까지 Space)
+  free_draw     : 캐시샵 매일 무료 상품 갱신 반복 (열어 둔 창에서 노리는 상품이 뜰 때까지)
 실행 중 사람에게 물어야 하면(재료를 직접 구해 와야 함) 'mm:queue-ask' 로 묻고 queue.answer 를 기다린다.
 화면 설정 맞추기는 큐 한 번에 한 번 (q.session), 큐가 다 끝나면 한 번 되돌린다.
 변화는 'mm:queue' {items, running} 로 화면에 보낸다.
@@ -230,6 +231,7 @@ class DailyKind(Kind):
 
 # 숙제 카드 칸 → 이번 실행만 덮어쓸 설정 칸 (주간 숙제 탭에서 고른 필드 보스 · 주말 어비스·레이드)
 CARD_CFG = {"fieldBoss": "field_boss", "weekend": "weekend"}
+FREE_DRAW_LIMIT = 100  # 무료 상품 갱신 반복 — 카드에 최대 횟수가 없을 때
 
 
 def card_cfg(it: dict) -> dict:
@@ -599,6 +601,59 @@ class EnhanceKind(Kind):
         self.api._bot_stop("enhance", STOP_WHY.get(reason, ""))
 
 
+class FreeDrawKind(Kind):
+    """캐시샵 매일 무료 상품 갱신 반복 — 열어 둔 창에서 노리는 상품이 뜰 때까지 '상품 갱신' (mabi.tasks.free_draw).
+    카드: target {type: costume|dye|none, name, min, color} · limit (최대 횟수)."""
+
+    def __init__(self, api):
+        self.api = api
+
+    @staticmethod
+    def detail(x) -> str:
+        from mabi.tasks.free_draw import describe
+        return f"{describe(x.get('target') or {})} · 최대 {x.get('limit') or FREE_DRAW_LIMIT}번"
+
+    def view(self, it):
+        v = super().view(it)
+        p = it.get("prog") or {}
+        if p.get("tries"):
+            v["now"] = f"{p['tries']}번째 · " + " · ".join(p.get("names") or [])
+        return v
+
+    def run(self, q, it):
+        from mabi.tasks import free_draw
+        if (err := self.api._busy_reason()):
+            q.note(it, f"시작 못 함 — {err}")
+            return False
+        table = self.api.freedraw_table()
+        if not table:
+            q.note(it, "실패 — 무료 상품 표를 만들지 못했습니다 (게임 폴더·시트)")
+            return False
+        q.patch(it["id"], {"prog": {}, "note": ""})
+        bot = None
+        try:
+            with self.api._game_bot("free_draw") as bot:
+                if not bot.window.find():
+                    q.note(it, "실패 — 게임이 꺼져 있습니다")
+                    return False
+                bot.background = True  # 누를 때만 앞으로 — 끝나면 돌려준다
+                r = free_draw.repeat(bot, table, it.get("target") or {}, int(it.get("limit") or FREE_DRAW_LIMIT),
+                                     lambda n, names: q.patch(it["id"], {"prog": {"tries": n, "names": names}}))
+                if r["slot"] is None:
+                    q.note(it, f"{r['tries']}번 갱신 — 목표 안 뜸")
+                else:
+                    q.note(it, f"{r['why']}: {r['item']} ({r['tries']}번째)")
+                return True
+        except Exception as e:  # noqa: BLE001 — F12·멈추기는 일시정지
+            status, summary = self.api._q_failed(q, bot, e, "free_draw", "무료 상품 갱신", retry=True)
+            if status != "STOP":
+                q.note(it, f"실패 — {summary}")
+            return False
+
+    def stop(self, reason):
+        self.api._bot_stop("free_draw", STOP_WHY.get(reason, ""))
+
+
 class RestartKind(Kind):
     """게임 다시 켜기 (mabi/restart) — 연속 실행 제한 창을 보면 _q_restart 가 맨 위에 올린다. 시간 정해진 카드처럼(timed)
     끊어도 되는 자리에서 돌던 카드를 밀어내고 먼저 한 뒤 밀린 카드를 이어 한다. 못 하면 일시정지 (사람이 게임을 켜고 ▶)."""
@@ -648,7 +703,7 @@ class QueueApi:
         self._q_pending_ask: dict | None = None
         self.queue = WorkQueue(self.cd.queue_file, self.cd.history_file, emit,
                                {"daily": DailyKind(self), "abyss": AbyssKind(self), "raid": RaidKind(self), "goal": GoalKind(self),
-                                "action": ActionKind(self), "enhance": EnhanceKind(self), "restart": RestartKind(self)},
+                                "action": ActionKind(self), "enhance": EnhanceKind(self), "free_draw": FreeDrawKind(self), "restart": RestartKind(self)},
                                on_drained=self._q_drained, pause_note=self._q_pause_note,
                                snap=self._q_snap, on_report=self._q_report)
         # 시간 정해진 카드가 열리면 돌던 일을 끊어도 되는 자리에서 끊는다

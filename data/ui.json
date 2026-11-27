@@ -173,6 +173,7 @@
     "fb_noreward": [560, 560, 800, 60],
     "fb_exit_button": [1856, 20, 40, 40],
     "enhance_button": [1240, 960, 620, 90],
+    "free_draw_renew": [1260, 520, 460, 90],
     "run_limit_popup": [700, 38, 520, 200],
     "run_limit_button": [740, 160, 440, 40],
     "server_down_popup": [653, 380, 613, 180],
