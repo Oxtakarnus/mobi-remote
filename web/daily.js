@@ -268,8 +268,9 @@ function paintFreeDraw() {
       selectOptions(c.costumes.filter((x) => x.job === j).map((x) => [x.name, x.name + ' · ' + x.part]), saved.name) +
       '</optgroup>').join('');
     $('#fd-min').innerHTML = selectOptions(c.rarities.map((r) => [r.key, r.name + ' 이상']), saved.min || 'Common');
-    $('#fd-color').innerHTML = c.colors.map((v) => '<option value="' + esc(v) + '" style="background:' + esc(v) + '"' +
-      (v === saved.color ? ' selected' : '') + '>' + esc(v) + '</option>').join('');
+    $('#fd-color').innerHTML = selectOptions(c.colors, saved.color);
+    // 색 칠하기는 style 속성 대신 CSSOM 으로 (화면 CSP 가 인라인 style 속성을 막는다)
+    [...$('#fd-color').options].forEach((o) => { o.style.background = o.value; });
     $('#fd-type').value = saved.type || 'costume';
     $('#fd-limit').value = saved.limit || 100;
     freeDrawShow();
