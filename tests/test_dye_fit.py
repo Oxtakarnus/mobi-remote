@@ -606,6 +606,10 @@ class FitKeyTest(unittest.TestCase):
         self.assertEqual(doc["game"]["dye_fit_key"], "f9")
         self.assertIn("error", save({"dye_fit_key": "f11"})[0])      # 염색 도우미 키와 같다
         self.assertIn("error", save({"dye_fit_key": "x"})[0])        # F 키만
+        r, doc = save({"enhance_key": "f9", "free_draw_key": "f8"})
+        self.assertNotIn("error", r or {})
+        self.assertEqual((doc["game"]["enhance_key"], doc["game"]["free_draw_key"]), ("f9", "f8"))
+        self.assertIn("error", save({"free_draw_key": "f12"})[0])    # 일시정지 키와 같다
         self.assertIn("error", save({"game_keys": {"camera": "f10"}})[0])   # 게임 단축키로 못 쓴다
 
 

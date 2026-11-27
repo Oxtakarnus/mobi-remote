@@ -21,8 +21,9 @@ GAME_KEYS = {
     "paladin": ("f5", "팔라딘 변신 — 어비스·레이드·드릴·필드 보스 전투"),
 }
 OPTIONAL = {"fast_travel"}  # 비워도 되는 키
-# 리모콘이 앱이 켜진 동안 늘 보는 키 ([game] 설정 이름) — 일시정지·염색 도우미·염색 맞추기
-REMOTE_KEYS = ("stop_key", "dye_key", "dye_fit_key")
+# 리모콘이 앱이 켜진 동안 늘 보는 키 ([game] 설정 이름) — 일시정지·염색 도우미·염색 맞추기·각인 강화·무료 상품.
+# F8·F9 는 게임 기본 조작키(ControlKeys 시트)가 쓰지 않는다 (2026-11-27 — 게임은 F1~F6·F11)
+REMOTE_KEYS = ("stop_key", "dye_key", "dye_fit_key", "enhance_key", "free_draw_key")
 
 _game = None  # mabi.gamebinds.GameBinds — follow_game() 으로 켠다
 

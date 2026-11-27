@@ -403,7 +403,8 @@ class Commands:
     def enhance(self, a: dict) -> dict:
         if self.api.queue.running:
             raise Refused("다른 작업이 도는 중이라 시작하지 않습니다")
-        return _card(self.api.queue_add({"kind": "enhance", "label": "각인 강화 반복"}, "now"))
+        from .queue_api import enhance_card
+        return _card(self.api.queue_add(enhance_card(), "now"))
 
     def restart_game(self, a: dict) -> dict:
         return _card(self.api.queue_add({"kind": "restart", "label": "게임 다시 켜기", "why": "명령", "force": True}, "now"))

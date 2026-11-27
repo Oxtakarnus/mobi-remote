@@ -234,6 +234,21 @@ CARD_CFG = {"fieldBoss": "field_boss", "weekend": "weekend"}
 FREE_DRAW_LIMIT = 100  # 무료 상품 갱신 반복 — 카드에 최대 횟수가 없을 때
 
 
+def enhance_card() -> dict:
+    return {"kind": "enhance", "label": "각인 강화 반복"}
+
+
+def free_draw_card(pick) -> dict:
+    """화면에서 고른 것(settings freeDraw: type·name·min·color·limit) → 무료 상품 갱신 카드. 화면 단추·단축키가 같이 쓴다."""
+    from mabi import freedraw
+    pick = pick if isinstance(pick, dict) else {}
+    try:
+        limit = max(1, int(pick.get("limit") or FREE_DRAW_LIMIT))
+    except (TypeError, ValueError):
+        limit = FREE_DRAW_LIMIT
+    return {"kind": "free_draw", "label": "무료 상품 갱신", "target": freedraw.target(pick), "limit": limit}
+
+
 def card_cfg(it: dict) -> dict:
     """숙제 카드가 고른 값 → RunOptions.cfg ({설정 칸: {키: 값}})."""
     return {sec: it[k] for k, sec in CARD_CFG.items() if it.get(k)}
@@ -610,8 +625,9 @@ class FreeDrawKind(Kind):
 
     @staticmethod
     def detail(x) -> str:
+        from mabi import freedraw
         from mabi.tasks.free_draw import describe
-        return f"{describe(x.get('target') or {})} · 최대 {x.get('limit') or FREE_DRAW_LIMIT}번"
+        return f"{describe(x.get('target') or freedraw.target(x.get('pick')))} · 최대 {x.get('limit') or FREE_DRAW_LIMIT}번"
 
     def view(self, it):
         v = super().view(it)
@@ -621,6 +637,7 @@ class FreeDrawKind(Kind):
         return v
 
     def run(self, q, it):
+        from mabi import freedraw
         from mabi.tasks import free_draw
         if (err := self.api._busy_reason()):
             q.note(it, f"시작 못 함 — {err}")
@@ -637,7 +654,7 @@ class FreeDrawKind(Kind):
                     q.note(it, "실패 — 게임이 꺼져 있습니다")
                     return False
                 bot.background = False  # 누를 때마다 앞뒤로 오가면 리모콘 창이 깜빡인다 — 도는 동안 게임을 앞에 둔다 (사용자 2026-11-27)
-                r = free_draw.repeat(bot, table, it.get("target") or {}, int(it.get("limit") or FREE_DRAW_LIMIT),
+                r = free_draw.repeat(bot, table, it.get("target") or freedraw.target(it.get("pick")), int(it.get("limit") or FREE_DRAW_LIMIT),
                                      lambda n, names: q.patch(it["id"], {"prog": {"tries": n, "names": names}}))
                 if r["slot"] is None:
                     q.note(it, f"{r['tries']}번 갱신 — " + ("갱신권 다 씀" if r.get("out") else "목표 안 뜸"))
@@ -785,6 +802,22 @@ class QueueApi:
             log.info("F12 → 이어 하기")
             q.resume_top()
 
+    def _enhance_key(self) -> None:
+        """각인 강화 키(F9) — 각인 강화 반복 시작. 큐가 돌면 하지 않는다 (화면 시작 단추와 같다)."""
+        self._key_start(enhance_card(), "각인 강화 키")
+
+    def _free_draw_key(self) -> None:
+        """무료 상품 키(F8) — 기타 숙제 카드에서 마지막으로 고른 목표(settings freeDraw)로 무료 상품 갱신 시작."""
+        self._key_start(free_draw_card(self.cfg_get().get("freeDraw")), "무료 상품 키")
+
+    def _key_start(self, card: dict, what: str) -> None:
+        if (cur := self.queue.current()) is not None:
+            log.info(f"{what} → 안 함 ({cur.get('label')} 도는 중)")
+            self._q_toast("다른 작업이 도는 중입니다", f"\"{cur.get('label')}\" 이 끝난 뒤 누르세요", "bad")
+            return
+        log.info(f"{what} → {card['label']} 시작")
+        self.queue_add(card, "now")
+
     def _q_hotkey(self) -> None:
         """앱 단축키를 앱이 켜져 있는 동안 늘 본다 — 일시정지 키(F12)와 염색 도우미 키(F11)·염색 맞추기 키(F10,
         _dye_key·_dye_fit_key 가 있을 때).
@@ -807,6 +840,9 @@ class QueueApi:
                     fit = getattr(self, "_dye_fit_key", None)
                     if fit and g.get("dye_fit_key"):
                         keys.setdefault(vk_of(g["dye_fit_key"]), fit)
+                    for name, fn in (("enhance_key", self._enhance_key), ("free_draw_key", self._free_draw_key)):
+                        if g.get(name):
+                            keys.setdefault(vk_of(g[name]), fn)
                     checked = time.monotonic()
                 now = {vk for vk in keys if key_pressed(vk)}
                 for vk in now - down:

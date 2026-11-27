@@ -161,6 +161,16 @@ def wanted(it: dict | None, target: dict) -> bool:
     return False
 
 
+def target(pick: dict | None) -> dict:
+    """화면에서 고른 것 {type, name, min, color} → wanted 가 보는 목표. 모르는 종류면 'none' (특수 물품·엘리트 이상만)."""
+    pick = pick or {}
+    if pick.get("type") == "costume" and pick.get("name"):
+        return {"type": "costume", "name": pick["name"], "min": pick.get("min") if pick.get("min") in RARITY else RARITY[0]}
+    if pick.get("type") == "dye" and pick.get("color"):
+        return {"type": "dye", "color": str(pick["color"]).upper()}
+    return {"type": "none"}
+
+
 def judge(items: list[dict | None], target: dict) -> tuple[int, str] | None:
     """세 칸 중 멈출 칸 (칸 번호, 까닭) — 목표가 먼저. 없으면 None."""
     for n, it in enumerate(items):

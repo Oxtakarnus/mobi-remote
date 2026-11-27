@@ -299,10 +299,9 @@ function startFreeDraw() {
   const cur = qItems.find((x) => x.status === 'run');
   if (cur) { toast('다른 작업이 도는 중입니다', '"' + cur.label + '" 이 끝난 뒤 시작하세요', 'bad'); return; }
   const p = freeDrawPick();
-  const target = p.type === 'costume' ? { type: 'costume', name: p.name, min: p.min }
-    : p.type === 'dye' ? { type: 'dye', color: p.color } : { type: 'none' };
   toast('무료 상품 갱신 시작', '최대 ' + p.limit + '번 · ' + stopKey() + ' = 일시정지', 'ok');
-  qStartNow({ kind: 'free_draw', label: '무료 상품 갱신', target: target, limit: p.limit }, false);
+  // 목표로 바꾸는 건 파이썬 (mabi/freedraw.target — 단축키도 같은 것을 쓴다)
+  qStartNow({ kind: 'free_draw', label: '무료 상품 갱신', pick: p, limit: p.limit }, false);
 }
 
 qRegisterKind('free_draw', { amount: (x) => '최대 ' + (x.limit || 100) + '번' });
@@ -501,6 +500,8 @@ function paintPathSettings(s) {
   $('#opt-stop-key').innerHTML = fkeys(s.stop_key);
   $('#opt-dye-key').innerHTML = fkeys(s.dye_key);
   $('#opt-dye-fit-key').innerHTML = fkeys(s.dye_fit_key);
+  $('#opt-enhance-key').innerHTML = fkeys(s.enhance_key);
+  $('#opt-free-draw-key').innerHTML = fkeys(s.free_draw_key);
   $('#opt-fit-display').checked = s.fit_display !== false;
   $('#opt-restart-auto').checked = s.restart_auto !== false;
   ['data', 'logs', 'shots'].forEach((k) => { $('#dl-p-' + k).value = s.paths[k] || ''; });
@@ -510,6 +511,7 @@ function paintPathSettings(s) {
 async function saveRemoteKeys() {
   const r = await mm.daily.saveSettings({
     stop_key: $('#opt-stop-key').value, dye_key: $('#opt-dye-key').value, dye_fit_key: $('#opt-dye-fit-key').value,
+    enhance_key: $('#opt-enhance-key').value, free_draw_key: $('#opt-free-draw-key').value,
   });
   if (!(r && r.error)) { dl.settings = Object.assign(dl.settings || {}, { stop_key: $('#opt-stop-key').value }); paintStopKey(); }
   $('#opt-rkeys-msg').textContent = r && r.error ? r.error : '저장했습니다';

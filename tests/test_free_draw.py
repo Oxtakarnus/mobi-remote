@@ -63,6 +63,39 @@ class JudgeTest(unittest.TestCase):
         self.assertEqual(F.label(None), "모르는 상품")
 
 
+class TargetTest(unittest.TestCase):
+    def test_target_from_pick(self):
+        self.assertEqual(F.target({"type": "costume", "name": "힐러 뱅글", "min": "Rare", "color": "#111111"}),
+                         {"type": "costume", "name": "힐러 뱅글", "min": "Rare"})
+        self.assertEqual(F.target({"type": "costume", "name": "힐러 뱅글", "min": "?"})["min"], "Common")
+        self.assertEqual(F.target({"type": "dye", "color": "#718c41"}), {"type": "dye", "color": "#718C41"})
+        self.assertEqual(F.target({"type": "costume"}), {"type": "none"})   # 이름이 없으면 특수만
+        self.assertEqual(F.target(None), {"type": "none"})
+
+    def test_card(self):
+        from gui_app.queue_api import free_draw_card, FREE_DRAW_LIMIT
+        c = free_draw_card({"type": "dye", "color": "#718C41", "limit": 30})
+        self.assertEqual((c["kind"], c["target"], c["limit"]), ("free_draw", {"type": "dye", "color": "#718C41"}, 30))
+        self.assertEqual(free_draw_card(None)["limit"], FREE_DRAW_LIMIT)
+        self.assertEqual(free_draw_card({"limit": "x"})["limit"], FREE_DRAW_LIMIT)
+
+    def test_key_start(self):
+        # 단축키: 큐가 돌면 안 하고, 쉬면 맨 위에 넣고 바로
+        from gui_app.queue_api import QueueApi
+        api = QueueApi.__new__(QueueApi)
+        added, toasts = [], []
+        api.queue_add = lambda card, where: added.append((card["kind"], where))
+        api._q_toast = lambda *a: toasts.append(a)
+        api.cfg_get = lambda: {"freeDraw": {"type": "dye", "color": "#718C41"}}
+        api.queue = types.SimpleNamespace(current=lambda: {"label": "일일 숙제"})
+        api._free_draw_key()
+        self.assertEqual((added, len(toasts)), ([], 1))
+        api.queue = types.SimpleNamespace(current=lambda: None)
+        api._free_draw_key()
+        api._enhance_key()
+        self.assertEqual(added, [("free_draw", "now"), ("enhance", "now")])
+
+
 class FakePackets:
     """누를 때마다 script 의 다음 세 칸을 shop.free_draw 로 쌓는다. 'fail' = 거절, None = 응답 없음."""
 
