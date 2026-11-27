@@ -105,9 +105,9 @@ class FakeBot:
 
 
 class RepeatTest(unittest.TestCase):
-    def run_it(self, script, target, limit=10, button=(1570, 562)):
+    def run_it(self, script, target, limit=10, button=(1570, 562), left=None):
         bot, seen = FakeBot(script), []
-        with mock.patch.object(free_draw, "renew_button", return_value=button):
+        with mock.patch.object(free_draw, "renew_button", return_value=(button, left)):
             try:
                 return free_draw.repeat(bot, TABLE, target, limit, lambda n, names: seen.append(names)), bot, seen
             except CannotProceed as e:
@@ -125,8 +125,28 @@ class RepeatTest(unittest.TestCase):
 
     def test_limit(self):
         got, bot, _ = self.run_it([(1, 6, 7)] * 5, {"type": "none"}, limit=3)
-        self.assertEqual(got, {"tries": 3, "slot": None})
+        self.assertEqual(got, {"tries": 3, "slot": None, "out": False})
         self.assertEqual(bot.pressed, 3)
+
+    def test_tickets_run_out(self):
+        # 시작할 때 읽은 갱신권만큼만 누른다
+        got, bot, _ = self.run_it([(1, 6, 7)] * 5, {"type": "none"}, limit=10, left=2)
+        self.assertEqual(got, {"tries": 2, "slot": None, "out": True})
+        self.assertEqual(bot.pressed, 2)
+
+    def test_no_tickets(self):
+        got, bot, _ = self.run_it([(1, 6, 7)], {"type": "none"}, left=0)
+        self.assertIn("갱신권이 없음", got)
+        self.assertEqual(bot.pressed, 0)
+
+    def test_ticket_text(self):
+        frame = object()
+        bot = types.SimpleNamespace(frame=lambda: frame)
+        with mock.patch.object(free_draw, "find_texts", return_value=[("갱신권 얻기", 1372, 562), ("상품 갱신", 1570, 556),
+                                                                      ("1,356/1", 1570, 580)]):
+            self.assertEqual(free_draw.renew_button(bot), ((1570, 556), 1356))
+        with mock.patch.object(free_draw, "find_texts", return_value=[("상품갱신 0/1", 1570, 562)]):
+            self.assertEqual(free_draw.renew_button(bot), ((1570, 562), 0))
 
     def test_rejected_stops(self):
         got, bot, _ = self.run_it([(1, 6, 7), "fail"], {"type": "none"})
@@ -147,7 +167,7 @@ class RepeatTest(unittest.TestCase):
     def test_no_packets(self):
         bot = FakeBot([])
         bot.packets.ok = False
-        with mock.patch.object(free_draw, "renew_button", return_value=(1, 1)):
+        with mock.patch.object(free_draw, "renew_button", return_value=((1, 1), 5)):
             with self.assertRaises(CannotProceed):
                 free_draw.repeat(bot, TABLE, {"type": "none"}, 5)
         self.assertEqual(bot.pressed, 0)

@@ -640,7 +640,7 @@ class FreeDrawKind(Kind):
                 r = free_draw.repeat(bot, table, it.get("target") or {}, int(it.get("limit") or FREE_DRAW_LIMIT),
                                      lambda n, names: q.patch(it["id"], {"prog": {"tries": n, "names": names}}))
                 if r["slot"] is None:
-                    q.note(it, f"{r['tries']}번 갱신 — 목표 안 뜸")
+                    q.note(it, f"{r['tries']}번 갱신 — " + ("갱신권 다 씀" if r.get("out") else "목표 안 뜸"))
                 else:
                     q.note(it, f"{r['why']}: {r['item']} ({r['tries']}번째)")
                 return True
