@@ -114,6 +114,8 @@ class _Maker:
         self.max_calls = bot.cfg["arbeit"]["make_max_calls"]
         self.spent = self.paid = self.repeat = 0
         self.last, self.waiting = "", ""
+        self.start: int | None = None   # 처음 읽은 보유량
+        self.made = 0                   # 이 물품을 직접 만든 개수 (제작 결과로 센다)
 
     def fail(self, why: str) -> Made:
         return Made(False, FAILED, f"{self.name}: {why}", self.spent)
@@ -125,8 +127,9 @@ class _Maker:
             snap = _snapshot(self.cd, self.qc)
             if snap.get("error") or snap.get("stale"):
                 return self.fail(snap.get("message") or "조회가 안 됨")
+            have = self.count(snap)
             try:
-                have, st = goal.have(snap, name), goal.next_step(snap, name, self.target)
+                st = goal.next_step(snap, name, self.target)
             except Exception as e:  # noqa: BLE001 — 판단 계산 오류는 이 물품만 막힘으로
                 return self.fail(f"판단 오류 {e}")
             kind = st.get("kind")
@@ -158,6 +161,8 @@ class _Maker:
             r = self.execute(st)
             self.spent += r.wings_spent
             if r.ok:
+                if kind == "craft" and st.get("product") == name:
+                    self.made += produced(r.data, name, (st.get("batch") or 1) * (st.get("per") or 1))
                 continue
             what = step_failure(kind, {"error": r.error, "data": r.data})
             if what == STEP_RETRY_LATER:
@@ -166,6 +171,18 @@ class _Maker:
             if what != STEP_AGAIN:  # 제작 상한을 넘김(AGAIN)은 엔진이 배운 상한으로 다음 걸음에서 맞춘다
                 ko = r.ko or {}
                 return self.fail(f"{st.get('name') or kind} — {ko.get('text') or r.message or r.error or '알 수 없음'}")
+
+    def count(self, snap: dict) -> int:
+        """보유량. 장비·의상은 get_items 에 안 나온다 (CLI 설명 'not equipment/costume/pet', 2026-11-28 아르바이트
+        '두꺼운 전투복 장갑 3개' 를 7개 만들고도 0개로 보여 재료 채집까지 갔다) → 직접 만든 개수를 처음 보유량에 더해
+        스냅샷 보유량을 그만큼 올려 둔다. 조회에 잡히는 물품은 조회가 더 크거나 같아 그대로다."""
+        raw = goal.have(snap, self.name)
+        if self.start is None:
+            self.start = raw
+        if self.start + self.made > raw:
+            snap.setdefault("owned", {})[self.name] = self.start + self.made
+            return self.start + self.made
+        return raw
 
     def execute(self, st: dict) -> ExecResult:
         """걸음 하나 (게임 명령). 게임 안 창(보상·확인 창, 연속 사용 제한)에 막히면 화면을 정리하고 한 번만 더 —
@@ -181,6 +198,19 @@ class _Maker:
         again = _watched(bot, self.cli, lambda: execute(self.cd, self.cli, self.qc, cmd, body))
         again.wings_spent += r.wings_spent
         return again
+
+
+def produced(data, name: str, fallback: int) -> int:
+    """제작 결과 본문(rewards·criticalRewards)에서 name 이 몇 개 나왔나. 못 읽으면 fallback (회수 × 1회당 개수)."""
+    if not isinstance(data, dict):
+        return fallback
+    n, seen = 0, False
+    for key in ("rewards", "criticalRewards"):
+        for x in data.get(key) or []:
+            if isinstance(x, dict) and x.get("DisplayName", x.get("name")) == name:
+                seen = True
+                n += int(x.get("Count", x.get("count", 1)) or 0)
+    return n if seen else fallback
 
 
 def _watched(bot: Bot, cli, fn) -> ExecResult:

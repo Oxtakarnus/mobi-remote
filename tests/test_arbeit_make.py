@@ -238,6 +238,31 @@ class MakerTest(unittest.TestCase):
         self.assertEqual(m.kind, cli_make.FAILED)
         self.assertIn("재료 부족", m.why)
 
+    def test_equipment_counted_by_crafts(self):
+        # 장비는 get_items 에 안 나와 보유량이 늘 0 — 만든 개수로 세서 목표(6)에 닿으면 그만 만든다 (2026-11-28 장갑 7개)
+        bot = mock.MagicMock()
+        bot.cfg = {"arbeit": {"alter_max_sec": 300, "make_max_calls": 10}}
+        craft = {"kind": "craft", "name": "옷감", "product": "옷감", "runs": 6, "batch": 3, "per": 1, "why": "옷감 3회 제작"}
+        seen = []
+
+        def step(snap, name, target):
+            seen.append(snap["owned"].get(name, 0))
+            return {"kind": "done"} if snap["owned"].get(name, 0) >= target else craft
+
+        made = [ExecResult(True, 0, data={"result": "completed", "rewards": [{"DisplayName": "옷감", "Count": 3}]}),
+                ExecResult(True, 0, data={"result": "completed"})]   # 본문에 개수가 없으면 회수 × 1회당 개수
+        with mock.patch.object(cli_make.goal, "snapshot", side_effect=lambda *a, **k: {"owned": {}}),                 mock.patch.object(cli_make.goal, "have", return_value=0),                 mock.patch.object(cli_make.goal, "next_step", side_effect=step),                 mock.patch.object(cli_make, "execute", side_effect=made) as ex,                 mock.patch.object(cli_make.situation, "to_main"):
+            m = cli_make._Maker(bot, None, mock.MagicMock(), None, "옷감", 6, quick.Check(True, sec=90, calls=2)).run()
+        self.assertTrue(m.ok)
+        self.assertEqual(seen, [0, 3, 6])
+        self.assertEqual(ex.call_count, 2)
+
+    def test_produced(self):
+        self.assertEqual(cli_make.produced({"rewards": [{"DisplayName": "장갑", "Count": 2}],
+                                            "criticalRewards": [{"DisplayName": "장갑", "Count": 1}]}, "장갑", 9), 3)
+        self.assertEqual(cli_make.produced({"rewards": [{"DisplayName": "다른 것", "Count": 2}]}, "장갑", 4), 4)
+        self.assertEqual(cli_make.produced(None, "장갑", 4), 4)
+
     def test_unplanned_block_stops(self):
         m, ex, _, _ = self._run([{"kind": "blocked", "reason": "stuck", "message": "기다려도 안 풀림"}])
         self.assertIn("기다려도 안 풀림", m.why)
